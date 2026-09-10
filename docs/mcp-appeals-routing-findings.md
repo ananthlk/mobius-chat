@@ -1000,3 +1000,82 @@ but it *can* own **which name it reads that flag by**, and the durable choice is
 protocol's name, not the library's.
 
 **Read the protocol, not the binding.**
+
+---
+
+## 24. CORRECTION to §23 — the omission half is wrong, and step 2 must not be written as specified
+
+Platform caught this before it was written. **§23's second half is measured wrong and
+would have produced a subtly broken fix that passed review.**
+
+### What §23 claimed, and what is actually true
+
+I wrote that on 2.x the field defaults to `None`, so omission is distinguishable from
+an explicit false, and that fail-closed-on-omission is expressible on 2.x but not 1.x.
+Measured on the deployed 2.2.0:
+
+```
+field spec: alias='isError' default=False required=False      <- same default as 1.x
+
+case                     r.is_error   dump['isError']   key in dump   model_fields_set
+server sent True              True         True             True      ['content','is_error']
+server sent false             False        False            True      ['content','is_error']
+server OMITTED                False        False            True      ['content']
+```
+
+**An omitted flag materialises as `False` on both majors**, and
+`model_dump(by_alias=True)` **always contains the key**, because defaults are
+populated into the dump. **The dump cannot detect omission at all.**
+
+### The tension this exposes, which is the real finding
+
+The only omission discriminator remains `model_fields_set` — and it holds the
+**Python field name, not the alias**: `is_error` on 2.x, `isError` on 1.x. So the two
+halves pull in opposite directions:
+
+- the **value** must be read by the **wire** name to survive renames;
+- **stated-ness** can only be read by the **Python** name — precisely the fragility
+  §23 exists to remove.
+
+**"Read the protocol field and fail closed when it isn't stated" cannot be done in one
+call.** And a fix using `model_dump` alone would treat every omission as success —
+**the current bug, preserved, wearing the shape of its own fix.**
+
+### Step 2, corrected
+
+Take the **value** from `model_dump(by_alias=True)["isError"]`. For failure detection,
+**stop asking the flag about stated-ness** and derive it from something chat owns —
+treat error-shaped content as a failure independently of the flag. Platform's
+preference and mine.
+
+That is not a workaround, it is §11 applied: **the appeals server already sends
+`isError=false` explicitly on a real failure** (§8), so even a perfect
+omission-detector would not have helped there. A flag a peer controls cannot be the
+sole basis of the verdict, however carefully it is read.
+
+**§23's conclusion survives for a different reason than §23 gave.** Pinning is what
+makes the choice knowable — not because fail-closed-on-omission is expressible on one
+major and not the other (it is equally inexpressible on both through the dump), but
+because **the discriminator's spelling is version-dependent**, and a correct check
+cannot be written against an unfixed version.
+
+`model_dump(by_alias=True)` for the value, and *read the protocol, not the binding*,
+both stand.
+
+### How I got it wrong, which is the part worth keeping
+
+My §23 script printed `omitted: r2.is_error = False (None, not False)`. **The value it
+measured was `False`. The parenthetical was a hardcoded label I had typed, asserting
+the opposite.** I read my own annotation instead of my own output, and carried the
+annotation into the doc and into a report.
+
+This is **the fourth check, failed by me, in the message after I endorsed it**:
+
+> *When you write a caveat that would disqualify your evidence, resolve it before you
+> draw the conclusion.*
+
+Here the disqualifying fact was not merely in my notes — it was **on the same line**,
+four characters to the left of the claim that contradicted it. Two seats holding a
+prior incident unread is one failure mode; **printing the refutation and reading past
+it** is a sharper one, and it argues that the check needs to apply to one's own fresh
+output, not only to remembered history.
