@@ -753,3 +753,67 @@ by the seat that filed it.** Two proposed fixes were inert and neither was writt
 The tally is a property of the exchange, not of any seat. It worked because every
 seat reported against its own hypothesis at least once, and because the reasoning
 was published in a form the others could execute rather than merely read.
+
+---
+
+## 20. The asymmetry is REAL after all — proved by resolution timing, not by reading a file
+
+Platform withdrew §18's asymmetry after finding the retained build source
+(`gs://run-sources-mobius-os-dev-us-central1/…`) whose Dockerfile reads
+`pip install … "mcp[cli]>=1.0"` — **no upper bound**. They flagged, correctly, that
+the newest retained source is `2026-08-11T20:51Z` and there is no September source,
+so **what they read is not the build that produced the running image.**
+
+That caveat is the whole answer. **They withdrew a correct claim on the strength of a
+source artefact that is not what is running** — the same error class this entire
+thread is about, in its last paragraph.
+
+### The proof, from PyPI upload times and the image's own build stamp
+
+```
+mcp 1.30.0  first uploaded  2026-09-07T14:34:14Z
+mcp 2.2.0   first uploaded  2026-09-07T16:06:19Z   (1h32m later)
+mcp 2.0.0   first uploaded  2026-07-28T13:45:28Z
+
+appeals image created       2026-09-08T14:08:27Z   (revision 00218-zah)
+  -> installed: mcp 1.30.0
+```
+
+**At the moment the running appeals image was built, `mcp 2.2.0` had been on PyPI for
+22 hours.** An unbounded `mcp[cli]>=1.0` resolves to the newest compatible release —
+that is how chat's build got 2.2.0. Appeals' build landed on **1.30.0, the newest
+1.x**. A resolver does not choose the second-newest by accident.
+
+**No transitive cap explains it:** scanning every `.dist-info/METADATA` in the appeals
+image, **nothing declares a dependency on `mcp` at all** — so no other package
+constrained it. The bound could only have come from the install command itself.
+
+**Conclusion: the build that produced the running appeals image DID carry an upper
+bound**, even though the 08-11 source did not. The image tag — **`pintest-20260908`**,
+i.e. *pin test*, dated the build day — fits exactly: the pin was added on 09-08, in
+source that was never retained.
+
+**One alternative I cannot exclude:** if `mcp 1.30.0` were already present in the base
+image or an earlier layer, `pip install "mcp[cli]>=1.0"` would treat the requirement
+as satisfied and not upgrade, producing 1.30.0 with no bound. I did not pull the base
+layers to test it. Given 1.30.0 was one day old at build time, a base image carrying
+it is unlikely — but it is unexcluded, and Appeals can settle it in one sentence.
+Platform has already asked them.
+
+### What this does and does not change
+
+- **The fix does not move**: pin `mcp` on both sides, chat's is the one that crossed.
+- **The attribution is restored**: appeals bounded the major in the build that is
+  running; chat did not. Chat's omission is the cause.
+- **§18's evidence status was right and is now upgraded** — from *corroborated* to
+  *established by resolution timing*, by a method that reads the running artefact
+  rather than a file describing an older one.
+
+**And the pattern repeats one level up.** Platform's other observation stands and is
+sharpened by this: the appeals service's dependency set is **not reconstructible from
+anything durable** — no manifest in the image, no September source in the bucket, and
+the newest source does not match the running artefact. The only record of what it
+depends on is the installed packages in one image: a **description, not a
+specification**. That is the same defect as `mcp>=1.0.0` one level up — *the thing
+that would have told us what was running was never written down* — and it is why the
+correct claim was retractable at all.
