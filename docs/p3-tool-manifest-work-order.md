@@ -115,28 +115,113 @@ latency test"* — plus the tag convention that now exists:
 
 ---
 
-## 5. OUT OF SCOPE — the enhancements, recorded so they are not lost
+## 5. SEQUENCED AS P6 — not out of scope
 
-Ananth named three, and the sequencing instruction is explicit: get current to work first.
+**Corrected 2026-09-09 on Ananth's instruction.** My first draft parked these as
+"enhancements". He pushed back: *"not out of scope but sequenced."* He is right — they
+are real work with a real gate, and calling something an enhancement is how it quietly
+stops being tracked. They are now **phase P6 — Tool selection**, in
+`scripts/platform/refactor_roadmap.py`, blocked on this pass closing.
 
-**(a) A UX for the tool and capabilities manifest, written to persistence, so a change does not
-require a deploy.** Today the manifest is code (`app/pipeline/tool_manifest.py`, 694 lines).
-Note for whoever builds this: **half the substrate already exists** — `user_tool_subscriptions`
-(migration 035) already persists per-user opt-in/opt-out and `get_allowed_tools_for_user` already
-reads it at turn start. The gap is the *catalogue* being in code, not the *policy*. This is the
-same shape as the governor's config UX (P5) and should probably share its control plane rather
-than grow a second one.
+**(a) Manifest in persistence, with a UX** — change a tool without a deploy. Today the
+catalogue is code (`app/pipeline/tool_manifest.py`, 694 lines). **Half the substrate
+already exists:** `user_tool_subscriptions` (migration 035) persists per-user policy and
+`get_allowed_tools_for_user` already reads it at turn start. The gap is the *catalogue*
+being in code, not the *policy* — so this is smaller than it looks. Shares P5's control
+plane; does not grow a second one.
 
-**(b) Access provisioning** — who is allowed which tool. Related to (a) but a different
-question: (a) is "what exists", (b) is "who may use it". The per-user table is a subscription
-model, not an authorization model; those are not the same thing and conflating them would be a
-mistake worth avoiding early.
+**(b) Access provisioning** — *who* may use a tool. Adjacent to (a) and a different
+question: (a) is what exists, (b) is who may use it. The per-user table is a
+**subscription** model, not an **authorization** model. Conflating them is the mistake
+worth avoiding while it is still cheap.
 
-**(c) Dynamic tool loading over time** — not every task needs every tool; predict which queries
-are likely to need which (Ananth's example: a RAG-type search). This one is genuinely different
-in kind from (a) and (b) — it is a *prediction* problem, and it needs the Stage 0 funnel data as
-its training signal. Which is a reason to do Stage 0 well: **the diagnosis instrument for the
-current bug is the data source for the future feature.**
+**(c) Retrieve the tools for a turn instead of offering all of them.** Ananth's
+mechanism: *"a simple even vector search for tool will be helpful or some kind of search
+— this will cut short on tokens and make a real good determination and make the latency
+also faster."*
 
-These are enhancements, and they get their own gate when they open. They are **not** conditions
-on this pass going green.
+Three effects, and they must be **measured separately** because they are different claims:
+
+| Effect | How it is measured | Available today? |
+|---|---|---|
+| **Fewer prompt tokens** | the manifest is prompt text on every turn — count it | **yes, count it now** |
+| **Better selection** | P3's Stage 0 funnel is the before-measurement | after Stage 0 |
+| **Lower latency** | a *consequence* of the first two | **do not claim independently** |
+
+That third row is the one to hold the line on. Latency here is downstream of token count
+and selection quality; reporting it as its own win double-counts the same improvement.
+
+### The shape that makes (c) work: two representations, not one
+
+**Ananth, 2026-09-09:** *"it allows a tool to fully represent itself, for selection, and
+a narrow set of short react briefs travel with it."*
+
+This is the design, and it is what makes the token claim and the accuracy claim
+compatible rather than in tension. **A tool gets two representations, used at two
+different moments:**
+
+| | **Selection representation** | **ReAct brief** |
+|---|---|---|
+| Read by | the retriever | the model, in the prompt |
+| Cost | matched against, **never spent as prompt tokens** | every token is paid, every turn it survives |
+| So it can be | **long and complete** — full description, when to use and when not, worked examples, failure modes, synonyms, the phrasings real users actually type | **short** — name, one line of what it does, the call shape |
+| Budget | effectively free; make it as rich as it needs to be | scarce; ruthless |
+
+Today there is **one** representation and it does both jobs, which is why it is bad at
+both: every word that helps the model choose correctly is a word paid for on every
+single turn, so the description gets trimmed for cost and the selection gets worse. The
+manifest is 694 lines of that compromise.
+
+Splitting them removes the tension outright. **A tool can finally represent itself fully
+— for selection — because that representation is no longer prompt text.** Only the
+narrow brief travels. That is why this cuts tokens *and* improves determination at the
+same time; those are not two independent wins to be double-counted, they are one
+structural change with two visible effects.
+
+Two consequences worth stating before anyone builds it:
+
+- **The two representations must be authored together and stay consistent.** A rich
+  selection text that promises behaviour the brief does not describe gets a tool
+  retrieved and then not called — which lands us right back in §2's funnel with a new
+  cause. The UX in (a) edits both, side by side, or it is not the right UX.
+- **Retrieval quality is now testable on its own**, separately from the model: given a
+  query, does the right tool come back? That is a fixture-and-assert question with no
+  LLM in the loop, and it is the cheapest test in this whole program. Build it.
+
+### (c) is inspectable in the UX — it is not a separate feature
+
+**Ananth, 2026-09-09:** *"that should be part of the ux build — given a situation what
+tools are selected."*
+
+So the manifest UX in (a) is not only an editor. It must answer, for a **given
+situation**: *which tools does this turn get, and why?* Type or paste a query, see the
+retrieved set, the scores, and what fell below the cut.
+
+This is a correctness requirement, not a nicety, and it is the same argument this whole
+program keeps making. A retrieval step that silently narrows the tool list is **a
+producer whose decision nothing records**: when the model then says it cannot do
+something, nobody can tell whether the tool was withheld or the model failed to call it.
+That is precisely the ambiguity §2 exists to resolve — and shipping (c) without the
+inspector would **reintroduce it one layer earlier**, after we had just paid to remove it.
+
+Which means the per-turn retrieval decision must be **persisted**, not just rendered:
+the UX previews it for a hypothetical query, and the turn record answers it for a real
+one. A preview that reads live code while the log keeps nothing is a read-back of the
+wrong artifact.
+
+Minimum for the phase gate:
+- given a query, show the tools retrieved, with scores, and the ones just below the cut
+- show what changed when the catalogue is edited — before and after, on the same query
+- for a **real past turn**, show the tools that were actually offered and why
+
+**Why P6 follows P3 and cannot lead it.** Retrieval changes *which* tools are offered.
+Ship it while selection is still sporadic and a miss becomes unattributable — retrieval
+did not surface the tool, or the tool was surfaced and not called, and we are straight
+back to the ambiguity this pass exists to resolve. **P3's Stage 0 funnel is also (c)'s
+baseline and its training signal.** That is the strongest single reason to do Stage 0
+properly rather than minimally: it is not overhead for this bug, it is the measurement
+the next phase is built on.
+
+**Embedding note:** pgvector is the standard — do not introduce a second vector store.
+A tool catalogue is small enough that exact search over the whole set is likely viable;
+measure before reaching for an index.
