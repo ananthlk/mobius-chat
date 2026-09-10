@@ -34,7 +34,11 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
-from app.telemetry.spans import traced
+import logging
+
+from app.telemetry.spans import traced, record_decision
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -153,9 +157,26 @@ class ReactRetryGuard:
         and genuinely want to retry with that context.
         """
         sig = inputs_signature(inputs)
+
+        def _record(outcome: str, **extra: Any) -> None:
+            # The ALLOW path is recorded, not just the blocks — and that is the
+            # point of instrumenting this node at all. A guard that has never
+            # reported firing is indistinguishable from a guard that is not
+            # wired: zero blocks reads identically as "no repeats happened" and
+            # "this code never runs". That is make_tool_failed exactly, where
+            # tool_failed was structurally impossible and health stayed green.
+            record_decision(
+                "react_retry_guard", outcome, logger_=logger,
+                tool=tool, streak=self.consecutive_failures_per_tool.get(tool, 0),
+                results_count=current_results_count,
+                attempts_tracked=len(self.failed_attempts), **extra,
+            )
+
         for fa in self.failed_attempts:
             if fa.tool == tool and fa.inputs_sig == sig:
                 if current_results_count <= fa.results_before:
+                    _record("blocked_repeat", results_before=fa.results_before,
+                            failed_round=fa.round, error_code=fa.error_code)
                     return fa
         # Phase 0.19: tool-exhaustion block. If the reasoner has already failed
         # N times on this tool with no intervening success, the planner should
@@ -168,6 +189,8 @@ class ReactRetryGuard:
             # Return the most recent failure for this tool to cite in the hint.
             for fa in reversed(self.failed_attempts):
                 if fa.tool == tool:
+                    _record("blocked_exhausted", threshold=_TOOL_EXHAUSTION_THRESHOLD,
+                            failed_round=fa.round)
                     return FailedAttempt(
                         tool=tool,
                         inputs_sig=sig,
@@ -175,6 +198,7 @@ class ReactRetryGuard:
                         round=fa.round,
                         results_before=fa.results_before,
                     )
+        _record("allowed")
         return None
 
     def all_rounds_failed(self, rounds_completed: int) -> bool:

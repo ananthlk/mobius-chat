@@ -103,3 +103,60 @@ def test_record_decision_never_raises():
         def info(self, *a, **k): raise RuntimeError("logger exploded")
     record_decision("n", "d", logger_=_Boom(), x=1)          # must not raise
     record_decision("n", "d", logger_=None)
+
+
+# ── react_retry_guard: the ALLOW path is the point ──────────────────
+
+def test_guard_records_the_allow_path_not_only_the_blocks():
+    """A guard that has never reported firing is indistinguishable from a guard
+    that is not wired. Zero blocks reads identically as "no repeats happened"
+    and "this code never runs" — make_tool_failed exactly, where tool_failed
+    was structurally impossible and health stayed green.
+
+    Recording the ALLOW is what proves the guard executes at all."""
+    from app.pipeline.react_retry_guard import ReactRetryGuard
+    buf, lg, h = _cap("app.pipeline.react_retry_guard")
+    try:
+        g = ReactRetryGuard()
+        assert g.should_block(tool="rag", inputs={"q": "x"}, current_results_count=0) is None
+    finally:
+        lg.removeHandler(h)
+    out = buf.getvalue()
+    assert "[react_retry_guard] allowed" in out
+    for field in ("tool=", "streak=", "results_count=", "attempts_tracked="):
+        assert field in out
+
+
+def test_a_repeat_is_blocked_and_says_which_attempt_it_cited():
+    from app.pipeline.react_retry_guard import ReactRetryGuard, FailedAttempt, inputs_signature
+    buf, lg, h = _cap("app.pipeline.react_retry_guard")
+    try:
+        g = ReactRetryGuard()
+        g.failed_attempts.append(FailedAttempt(
+            tool="rag", inputs_sig=inputs_signature({"q": "x"}),
+            error_code="no_sources", round=1, results_before=0))
+        hit = g.should_block(tool="rag", inputs={"q": "x"}, current_results_count=0)
+    finally:
+        lg.removeHandler(h)
+    assert hit is not None
+    out = buf.getvalue()
+    assert "blocked_repeat" in out
+    assert "failed_round=1" in out and "error_code='no_sources'" in out
+
+
+def test_block_and_allow_are_distinct_targets():
+    """Both branches must be countable separately, or the ratio — the thing
+    that says whether the guard is doing anything — is unrecoverable."""
+    from app.pipeline.react_retry_guard import ReactRetryGuard, FailedAttempt, inputs_signature
+    buf, lg, h = _cap("app.pipeline.react_retry_guard")
+    try:
+        g = ReactRetryGuard()
+        g.should_block(tool="rag", inputs={"q": "a"}, current_results_count=0)
+        g.failed_attempts.append(FailedAttempt(
+            tool="rag", inputs_sig=inputs_signature({"q": "b"}),
+            error_code="err", round=1, results_before=5))
+        g.should_block(tool="rag", inputs={"q": "b"}, current_results_count=0)
+    finally:
+        lg.removeHandler(h)
+    out = buf.getvalue()
+    assert "allowed" in out and "blocked_repeat" in out
