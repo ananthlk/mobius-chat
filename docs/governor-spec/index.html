@@ -1,0 +1,277 @@
+<title>Governor Contract Spec</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#F5F7F9; --surface:#FFFFFF; --sunk:#EDF1F4;
+    --ink:#12171C; --ink-2:#41505E; --ink-3:#6E8090;
+    --rule:#DCE3E9; --rule-2:#C3CED7;
+    --accent:#0B6E77; --accent-soft:#E2F0F1;
+    --live:#2E6F4E; --live-bg:#E4F1E9;
+    --part:#8A5A00; --part-bg:#FBEEDA;
+    --miss:#2B5590; --miss-bg:#E4ECF7;
+    --bad:#A32A22;  --bad-bg:#F9E4E2;
+    --shadow:0 1px 2px rgba(18,23,28,.06),0 8px 24px -18px rgba(18,23,28,.35);
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0E1319; --surface:#161C24; --sunk:#111720;
+    --ink:#E6EBF0; --ink-2:#AEBCC8; --ink-3:#7D8D9B;
+    --rule:#26313C; --rule-2:#33414F;
+    --accent:#5BC6CE; --accent-soft:#123034;
+    --live:#7BC79A; --live-bg:#13291E;
+    --part:#E0AC5B; --part-bg:#2E2312;
+    --miss:#8FB4E8; --miss-bg:#16233A;
+    --bad:#E88F87;  --bad-bg:#331A18;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -20px rgba(0,0,0,.8);
+  }}
+  :root[data-theme="dark"]{
+    --ground:#0E1319; --surface:#161C24; --sunk:#111720;
+    --ink:#E6EBF0; --ink-2:#AEBCC8; --ink-3:#7D8D9B;
+    --rule:#26313C; --rule-2:#33414F;
+    --accent:#5BC6CE; --accent-soft:#123034;
+    --live:#7BC79A; --live-bg:#13291E;
+    --part:#E0AC5B; --part-bg:#2E2312;
+    --miss:#8FB4E8; --miss-bg:#16233A;
+    --bad:#E88F87;  --bad-bg:#331A18;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -20px rgba(0,0,0,.8);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);
+       font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;font-size:15px;
+       line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1020px;margin:0 auto;padding:40px 24px 96px}
+  h1,h2,h3,h4{font-family:Archivo,"IBM Plex Sans",sans-serif;text-wrap:balance;margin:0}
+  h1{font-size:clamp(28px,4.2vw,40px);font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  h2{font-size:21px;font-weight:600;letter-spacing:-.01em;margin-bottom:2px}
+  h3{font-size:14.5px;font-weight:600}
+  code,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.87em}
+  code{background:var(--sunk);padding:.1em .38em;border-radius:3px;color:var(--ink-2)}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:10px}
+  .lede{color:var(--ink-2);font-size:17px;max-width:64ch;margin:14px 0 0}
+  header{border-bottom:2px solid var(--ink);padding-bottom:22px}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:16px;
+        font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3)}
+  .meta b{color:var(--ink-2);font-weight:500}
+  section{margin-top:40px}
+  .sec-hd{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;
+          border-bottom:1px solid var(--rule);padding-bottom:9px;margin-bottom:16px}
+  .sec-n{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--accent);font-weight:600}
+  p{margin:10px 0 0;color:var(--ink-2);max-width:66ch}
+  .tag{display:inline-flex;align-items:center;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+       font-weight:600;letter-spacing:.05em;padding:2px 8px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
+  .t-live{background:var(--live-bg);color:var(--live)}
+  .t-part{background:var(--part-bg);color:var(--part)}
+  .t-miss{background:var(--miss-bg);color:var(--miss)}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+  .creed{border:2px solid var(--accent);border-radius:8px;background:var(--surface);
+         box-shadow:var(--shadow);padding:22px 24px;margin-top:18px}
+  .creed .terms{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:16px}
+  .creed .term{border-top:2px solid var(--accent);padding-top:9px}
+  .creed .term b{display:block;font-family:Archivo,sans-serif;font-size:15px;color:var(--ink)}
+  .creed .term span{font-size:13.4px;color:var(--ink-3)}
+  .creed blockquote{margin:0;font-family:Archivo,sans-serif;font-size:19px;font-weight:600;
+                    color:var(--ink);line-height:1.42;text-wrap:balance}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13.6px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+     color:var(--ink-3);font-weight:600;border-bottom:1.5px solid var(--rule-2)}
+  td{color:var(--ink-2)} td b{color:var(--ink);font-weight:600}
+  td.num{font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+  pre{background:var(--sunk);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;
+      overflow-x:auto;margin:14px 0 0;font-family:"IBM Plex Mono",monospace;font-size:12.5px;
+      line-height:1.6;color:var(--ink-2)}
+  pre b{color:var(--ink);font-weight:600}
+  pre .c{color:var(--ink-3)}
+  .note{border-left:3px solid var(--rule-2);padding:2px 0 2px 16px;margin:16px 0 0;
+        color:var(--ink-2);font-size:14px;max-width:66ch}
+  .note.warn{border-left-color:var(--bad)} .note.warn b{color:var(--bad)}
+  .note.acc{border-left-color:var(--accent)}
+  .rules{list-style:none;padding:0;margin:14px 0 0;display:flex;flex-direction:column;gap:1px;
+         background:var(--rule);border:1px solid var(--rule);border-radius:5px;overflow:hidden}
+  .rules li{background:var(--surface);padding:12px 15px}
+  .rules b{color:var(--ink)}
+  .rules p{margin:3px 0 0;font-size:13.6px}
+  footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--rule);
+         color:var(--ink-3);font-size:12.6px;max-width:70ch}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">mobius-chat · actor spec · governor</div>
+  <h1>Governor Contract Spec</h1>
+  <p class="lede">The governor is the only actor in a turn that holds a decision.
+    It sets the contract at admission, schedules every round against it, and decides
+    when the turn ends — including ending it early.</p>
+  <div class="meta">
+    <span><b>Spec owner</b> chat seat (orchestrator)</span>
+    <span><b>Build owner</b> governor seat</span>
+    <span><b>Companion</b> Orchestrator Turn Schema</span>
+    <span><b>Date</b> 2026-09-10</span>
+  </div>
+</header>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">01</span><h2>Authority</h2></div>
+  <p>Every other actor in the loop executes. Tool selection proposes, the model answers,
+    tools run, results are classified. <b>None of them decides whether the turn continues.</b>
+    That is the governor's alone, and it is the property that makes the loop auditable —
+    one decider means one place to ask <em>why did this turn do that</em>.</p>
+  <div class="creed">
+    <blockquote>Close the open gaps — within the prescribed time, within cost,
+      at the desired quality, without errors.</blockquote>
+    <div class="terms">
+      <div class="term"><b>Time</b><span>The promise clock, from POST to publish</span></div>
+      <div class="term"><b>Cost</b><span>LLM spend, the dominant term today</span></div>
+      <div class="term"><b>Quality</b><span>The tier's posture: none · some · best</span></div>
+      <div class="term"><b>Errors</b><span>Tool failures and dead ends, not silently absorbed</span></div>
+    </div>
+  </div>
+  <p class="note acc">Everyone contributes to this contract; only the governor sets it.
+    That asymmetry is the spec.</p>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">02</span><h2>What it reads</h2></div>
+  <p>Four inputs. Two are live today, two are not — and the spec is written so a
+    governor built now steers on what exists and <b>declares</b> what it lacks, rather
+    than defaulting the missing terms and appearing to steer on four.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Input</th><th>State</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><b>Time left</b></td><td><span class="tag t-live">live</span></td>
+        <td>Promise clock. <code>promised_latency_s</code> against elapsed. Shipped 2026-09-10.</td></tr>
+      <tr><td><b>Cost so far</b></td><td><span class="tag t-live">live · unwired</span></td>
+        <td><code>ctx.usages</code> is appended <em>during</em> the turn — after every LLM call
+            (<code>react/prompts.py:766</code>) and for tool-time LLM (<code>react_loop.py:841</code>) —
+            and <code>compute_cost()</code> exists in <code>services/cost_model.py</code>.
+            <b>Readable at round top today; nothing reads it.</b></td></tr>
+      <tr><td><b>Quality so far</b></td><td><span class="tag t-part">partial</span></td>
+        <td>Critic verdict and groundedness exist but are <b>end-of-turn</b> artifacts. There is no
+            per-round quality signal.</td></tr>
+      <tr><td><b>Open gaps</b></td><td><span class="tag t-part">partial</span></td>
+        <td>An enrichment field off <code>evidence_review</code>. No lifecycle, no owner. <b>The
+            load-bearing hole.</b></td></tr>
+      <tr><td><b>Errors so far</b></td><td><span class="tag t-live">live · unwired</span></td>
+        <td><code>ReactRetryGuard</code> holds <code>FailedAttempt(tool, inputs_sig, error_code,
+            round, results_before)</code> and <code>consecutive_failures_per_tool</code>.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note warn"><b>Measured caveat on cost, not assumed.</b> Over seven days,
+    8,935 of 10,224 <code>llm_calls</code> carry a real cost and <b>none is a false zero</b> —
+    but <code>react_1</code> reports cost on only <b>686 of 1,236</b> calls. Cost-so-far is
+    therefore understated on the exact path the governor steers. An accurate cost term
+    requires llm_manager to close that attribution gap; until then the governor must treat
+    its cost input as a <b>floor</b>, and say so.</p>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">03</span><h2>What it decides</h2></div>
+  <p>Six levers. Four exist today in some form; two are new and are the substance of
+    the expanded role.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Lever</th><th>State</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><b>Continue · finalize · abort</b></td><td><span class="tag t-part">extends</span></td>
+        <td>Sole authority, and it now includes <b>early exit</b> — today early exits are decided inside react.</td></tr>
+      <tr><td><b>Round budget</b></td><td><span class="tag t-part">extends</span></td>
+        <td>What this round may spend: tool calls, a time slice, a cost slice.</td></tr>
+      <tr><td><b>Run the critic?</b></td><td><span class="tag t-miss">new</span></td>
+        <td>At the governor's discretion. Today it is gated on
+            <code>agentic AND rounds-left AND ledger&gt;0</code> — a mode test standing in for a judgement.</td></tr>
+      <tr><td><b>Enrichers in integrate?</b></td><td><span class="tag t-miss">new</span></td>
+        <td>Does react output publish directly, or go through the enrichers? A quality-for-cost call,
+            and the governor's to make.</td></tr>
+      <tr><td><b>Agent role</b></td><td><span class="tag t-live">live</span></td>
+        <td>Already derived from the directive.</td></tr>
+      <tr><td><b>Reasoning depth</b></td><td><span class="tag t-live">live</span></td>
+        <td>Already derived from the directive.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">04</span><h2>The interface</h2></div>
+  <p>Three objects. The contract is set once; the directive is produced every round;
+    the disposition is produced once, at exit.</p>
+<pre><b>TurnContract</b>            <span class="c"># set ONCE at admission, never re-made mid-turn</span>
+  promise_version : str        <span class="c"># the promise this turn is judged against</span>
+  tier            : str        <span class="c"># fast | normal | thinking | null</span>
+  budget_time_s   : float|None <span class="c"># null when the tier promised nothing</span>
+  budget_cost_c   : float|None
+  quality_bar     : str        <span class="c"># none | some | best</span>
+  unpromised_why  : str|None   <span class="c"># populated when the terms are null</span>
+
+<b>RoundDirective</b>           <span class="c"># produced at the TOP of every round</span>
+  action          : continue | finalize | abort
+  reason          : str        <span class="c"># human-readable, and recorded</span>
+  gaps_targeted   : [GapId]    <span class="c"># which gaps this round is for</span>
+  budget          : {tool_calls:int, time_slice_s:float, cost_slice_c:float}
+  agent_role      : str
+  reasoning_depth : str
+  run_critic      : bool
+
+<b>TurnDisposition</b>          <span class="c"># produced ONCE, at exit</span>
+  outcome         : completed | finalized_early | aborted
+  use_enrichers   : bool       <span class="c"># integrate quality-for-cost call</span>
+  terms_met       : {time:bool|None, cost:bool|None, quality:bool|None, errors:bool}
+  unmet_reason    : str|None</pre>
+  <p class="note acc"><b>Why <code>terms_met</code> is tri-state.</b> A term the turn could not
+    measure must read <code>null</code>, never <code>false</code> and never <code>true</code>.
+    <em>Could-not-check</em> and <em>checked-and-failed</em> are different facts, and collapsing
+    them is the defect this program has catalogued more than any other.</p>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">05</span><h2>Rules the governor must hold</h2></div>
+  <ol class="rules">
+    <li><b>Do not own the gap set.</b>
+      <p>The governor reads gaps; it must not write them. An actor that both produces and
+        consumes its own evidence cannot be checked — and "the loop terminated because the
+        governor said its own gaps were closed" is unfalsifiable. One writer, many readers.</p></li>
+    <li><b>Never invent a term.</b>
+      <p>A turn whose tier promised nothing carries null budgets and an
+        <code>unpromised_why</code>. Defaulting them to a neighbouring tier's numbers
+        manufactures a contract nobody offered.</p></li>
+    <li><b>Every directive records its inputs.</b>
+      <p><em>"Extend"</em> cannot be checked against anything. <em>"extend · gaps 2 · 41s left of
+        95 · 18¢ of 45¢ · quality unmeasured"</em> can. Every input that could have changed the
+        branch travels with the branch.</p></li>
+    <li><b>Be the only granter of continuation.</b>
+      <p>Two actors granting extensions from one ledger, on two different deadline defaults,
+        is a defect that exists today. Sole authority retires it rather than repairing it.</p></li>
+    <li><b>Declare a floor as a floor.</b>
+      <p>While <code>react_1</code> under-reports cost, the cost term is a lower bound. A
+        governor that spends against an understated number and reports the budget kept is
+        wrong in the direction that costs money.</p></li>
+  </ol>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">06</span><h2>Open — for the governor seat to answer</h2></div>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Question</th><th>Why it blocks</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>What signal decides <b>run_critic</b>?</td>
+        <td>Today a mode test. Quality-so-far would be the honest input, and it does not exist per round — so either the critic decision waits for it, or it runs on something weaker that must be named.</td></tr>
+      <tr><td class="num">2</td><td>Is <b>use_enrichers</b> decided once at admission, or per round?</td>
+        <td>Changes whether it lives on the contract or the directive.</td></tr>
+      <tr><td class="num">3</td><td>How is <b>budget</b> divided across rounds?</td>
+        <td>Even split, front-loaded, or demand-led. Decides whether a slice is advisory or enforced.</td></tr>
+      <tr><td class="num">4</td><td>What happens to a gap that <b>will not close</b>?</td>
+        <td>Without a give-up rule, "terminate on no gaps open" is bounded only by the round cap it replaced.</td></tr>
+      <tr><td class="num">5</td><td>Does <b>abort</b> differ from <b>finalize</b> for the user?</td>
+        <td>One publishes what it has; the other says it could not. They are different products.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  Input states were read from the deployed revision on 2026-09-10, not inferred from source.
+  Cost-attribution figures are seven days of <code>llm_calls</code>. Line references are
+  pointers as of commit <code>6abb963</code> and will drift.
+  Companion document: the Orchestrator Turn Schema, which places this actor in the full turn.
+</footer>
+</div>
