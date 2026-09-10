@@ -178,6 +178,30 @@ narrow brief travels. That is why this cuts tokens *and* improves determination 
 same time; those are not two independent wins to be double-counted, they are one
 structural change with two visible effects.
 
+**The second-order effect, which is probably the real prize.** Today the cost of a tool
+is paid by *every* turn, including the turns that will never use it — the manifest is
+prompt text on all of them. So each new tool taxes the whole system, and the rational
+response is to have **few, broad, general-purpose tools**. That is a design constraint
+imposed by the prompt budget, not by the problem.
+
+Retrieval removes it. Once a tool costs approximately nothing on turns that do not
+retrieve it, the economics invert: **many narrow, specific, well-described tools beat a
+few general ones.** A tool that serves 3% of turns is currently not worth its prompt
+weight; with retrieval it is straightforwardly worth building. Ananth's read —
+*"this will allow for better options"* — is that, and it is the durable part: the token
+saving is a one-time win, but the change in what is *worth building* compounds.
+
+It also makes the tool catalogue a place where product knowledge can accumulate. A
+narrow tool with a rich selection representation is a specific capability that
+announces exactly when it applies — that is a thing you can keep adding to. Under the
+current shape, adding is a cost.
+
+**Caveat, so this is not read as a licence to proliferate:** more tools also means more
+ways for retrieval to be wrong, and a wrong retrieval is now *invisible to the model* —
+it cannot call what it was never offered. That is exactly why the inspector and the
+persisted per-turn decision above are gate items and not nice-to-haves. The economics
+only improve if the selection stays honest and checkable.
+
 Two consequences worth stating before anyone builds it:
 
 - **The two representations must be authored together and stay consistent.** A rich
