@@ -103,3 +103,57 @@ def test_success_and_emptiness_are_recorded_as_separate_kinds():
     from app.telemetry.spans import KIND_TOOL_DISPATCHED, KIND_TOOL_RESULT, _KINDS
     assert KIND_TOOL_DISPATCHED != KIND_TOOL_RESULT
     assert KIND_TOOL_RESULT in _KINDS
+
+
+# ── the fourth layer: a declared absence is not an empty result ──────
+# appeals_get_playbook's not-found path returns {"found": False, "message":
+# "No playbook for X. Default FL Medicaid: 60 days, certified mail."} — a
+# SYNTHESISED payload announcing an absence. It is not empty, so an emptiness
+# check alone answers "yes, something came back" and the funnel reads a correct
+# answer as a bug. This is the state that decides turn 143309c1.
+
+@pytest.mark.parametrize("result,expected", [
+    # a real hit the tool stands behind
+    ({"success": True, "result": "60d deadline, certified mail",
+      "sources": [{"id": 1}], "signal": None}, "content"),
+    # the not-found fallback: non-empty payload, tool declares no sources
+    ({"success": True, "result": '{"found": false, "message": "No playbook"}',
+      "sources": [], "signal": "no_sources"}, "no_sources"),
+    # nothing at all
+    ({"success": True, "result": "", "sources": [], "signal": None}, "empty"),
+    ({"success": True, "result": None, "sources": [], "signal": None}, "empty"),
+    (None, "empty"),
+    # success=False but with a declared absence still reads as no_sources
+    ({"success": False, "result": "none found", "sources": [],
+      "signal": "no_sources"}, "no_sources"),
+])
+def test_declared_absence_is_its_own_state(result, expected):
+    from app.pipeline.react_loop import tool_result_verdict
+    assert tool_result_verdict(result) == expected
+
+
+def test_a_synthesised_absence_is_not_reported_as_content():
+    """The specific regression: if this returns 'content', a tool that found
+    nothing looks like a tool whose result the answer ignored — an L3 bug that
+    is not there, and someone goes hunting for it."""
+    from app.pipeline.react_loop import tool_result_verdict
+    not_found = {
+        "success": True,
+        "result": '{"found": false, "message": "No playbook for Sunshine Health. '
+                  'Default FL Medicaid: 60 days, certified mail."}',
+        "sources": [],
+        "signal": "no_sources",
+    }
+    assert tool_result_verdict(not_found) == "no_sources"
+
+
+def test_signal_is_read_not_inferred_per_tool():
+    """Uses the shared RETRIEVAL_SIGNAL_NO_SOURCES constant every
+    retrieval-shaped tool already sets, rather than appeals-specific
+    found/usable — so the discriminator generalises instead of being reinvented
+    per tool."""
+    from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES
+    from app.pipeline.react_loop import tool_result_verdict
+    assert RETRIEVAL_SIGNAL_NO_SOURCES == "no_sources"
+    assert tool_result_verdict(
+        {"result": "x", "signal": RETRIEVAL_SIGNAL_NO_SOURCES}) == "no_sources"

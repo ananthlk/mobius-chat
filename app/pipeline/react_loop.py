@@ -141,6 +141,41 @@ from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_th
 # tool output into a concise Summary block" logic used by the healthcare
 # lookup branches too. Retained (renamed) because those remain in the
 # tool dispatch.
+def tool_result_verdict(result: object) -> str:
+    """Did this tool return CONTENT, nothing, or a declared absence?
+
+    Three states, because two are not enough:
+
+      * ``empty``      — no payload at all.
+      * ``no_sources`` — a payload IS present, and the tool declares it found
+                         nothing (``signal == "no_sources"``).
+      * ``content``    — a payload the tool stands behind.
+
+    The middle state is the one that matters and the one an emptiness check
+    alone cannot see. ``appeals_get_playbook`` on its not-found path returns
+    ``{"found": False, "message": "No playbook for X. Default FL Medicaid: 60
+    days, certified mail."}`` — a SYNTHESISED payload announcing an absence. It
+    is not empty, so "did anything come back?" answers yes, and the funnel would
+    read a correct answer as a bug.
+
+    It also decides turn 143309c1. If that call carried ``no_sources``, the model
+    read a declared absence and answered CORRECTLY, and the apparent bug is a
+    span recording ``success`` for a call that found nothing. If it carried
+    content, the answer ignored a real playbook and it is an L3 defect. Opposite
+    conclusions; one field separates them.
+
+    ``signal`` is used rather than the appeals-specific ``found``/``usable``
+    because it is a shared constant every retrieval-shaped tool already sets
+    (``RETRIEVAL_SIGNAL_NO_SOURCES``, doc_assembly.py:175) — so this reads the
+    tool's own declaration instead of inferring one per tool.
+    """
+    if tool_result_is_empty(result):
+        return "empty"
+    if isinstance(result, dict) and (result.get("signal") or "") == "no_sources":
+        return "no_sources"
+    return "content"
+
+
 def tool_result_is_empty(result: object) -> bool:
     """Did this tool return nothing?
 
@@ -5834,10 +5869,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             _outcome = "success" if (isinstance(result, dict) and result.get("success")) else "failure"
             _rec(ctx, KIND_TOOL_DISPATCHED, f"{tool or 'search_corpus'}:{_outcome}")
 
-            # Funnel stage 3: did anything actually COME BACK.
+            # Funnel stage 3: did anything actually come back, and does the
+            # tool stand behind it. Three states — see tool_result_verdict.
             _rec(ctx, KIND_TOOL_RESULT,
-                 f"{tool or 'search_corpus'}:"
-                 f"{'empty' if tool_result_is_empty(result) else 'nonempty'}")
+                 f"{tool or 'search_corpus'}:{tool_result_verdict(result)}")
         except Exception:
             pass
 
