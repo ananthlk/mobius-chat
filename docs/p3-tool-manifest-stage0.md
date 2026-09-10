@@ -119,3 +119,54 @@ conversation.
 
 No fix. No instrumentation added yet. No second contract tag (held pending
 Eval's ruling on tag shape). `react_loop.py` untouched.
+
+---
+
+# Manifest prompt-token cost — the P6 baseline
+
+Taken while the instrument was open, per the addendum. **Not needed to diagnose
+the bug**; it is the before-measurement for P6, and a number taken after the
+change is not a baseline.
+
+**8,137 tokens per render** — exact, from Gemini's own tokenizer
+(`count_tokens` on `gemini-2.5-flash`), not an estimate. For the record the
+chars/4 estimate was 8,110, within 0.3%; the exact figure is the one to hold P6
+against. Source string is `get_tool_manifest(None)`, i.e. the unfiltered manifest
+that 76 of 76 turns actually used. 32,441 chars · 4,601 words · 487 rendered
+lines, from a 694-line module.
+
+**It is rendered once per ReAct ROUND, not per turn** — it sits inside the system
+prompt built by `_react_reasoning_system`, called from `build_reasoning_context`,
+which the spans show running in every round. At 2.05 rounds/turn that is
+**~16,681 manifest tokens per turn**.
+
+Measured over 12h of `llm_calls` (note: a slightly wider window than the ~10.75h
+funnel above — stated rather than smoothed over):
+
+| stage | calls | avg prompt | manifest share of avg | of its smallest prompt |
+|---|---:|---:|---:|---:|
+| react_1 | 88 | 19,484 | **41.8%** | 63.9% (12,730) |
+| react_2 | 47 | 27,403 | 29.7% | 63.0% (12,913) |
+| react_3 | 23 | 25,754 | 31.6% | 62.0% (13,129) |
+
+**Totals: 158 react calls · 3,594,875 prompt tokens · 1,285,646 of them manifest
+= 35.8%.**
+
+**Better than a third of everything the planner reads, on every round, is the
+tool catalogue** — and on the leanest turns it is roughly two thirds.
+
+## Why this belongs in the Stage 0 report rather than beside it
+
+The addendum's design argument is that one representation is doing two jobs —
+selection and instruction — so every word that helps the model *choose* is paid
+for on every round, and the description gets trimmed for cost. **This number is
+the size of that tax**, and it makes the trim pressure concrete rather than
+rhetorical: at 35.8% of prompt, any improvement to a tool's description is
+immediately expensive, so the incentive runs against making selection better.
+
+It also bears on the layer question left open above. If the funnel's drop is at
+L2 — offered but not called — then "was the description good enough to choose
+on?" is live, and it was written under a budget that punished being good enough.
+**Stage 0 cannot currently show whether the drop is at L2**, for the reasons in
+the previous section; that remains the finding. This measurement does not change
+it, and is recorded as a baseline, not as evidence for a layer.
