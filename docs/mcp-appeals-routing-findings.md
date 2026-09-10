@@ -4,7 +4,9 @@
 **Verified against:** deployed `mobius-chat-00977-8bl` (digest `sha256:ca0695e4…9327a`), live logs, live DB.
 **Status:** findings only. **No code changed** — chat build is on hold pending Ananth.
 
-Confirming Platform's routing report, and adding the mechanism they could not see
+Confirming the routing report from **Platform (mobius-c2, the platform /
+product-awareness seat)** — referred to as "Platform" throughout — and adding the
+mechanism they could not see
 from outside. Their two independently-confirmed facts join, but **not through the
 link either of us proposed.**
 
