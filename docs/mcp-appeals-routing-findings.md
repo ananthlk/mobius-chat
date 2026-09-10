@@ -478,3 +478,71 @@ failure — not omitting the field and being defaulted. **It asserts that a fail
 succeeded.** Appeals' fix, independent of chat. This does not change §11: chat must
 still stop trusting the flag, because a server that lies explicitly defeats
 `model_fields_set` too.
+
+---
+
+## 15. 🔴 Fixing the misroute in isolation would INCREASE the failure rate
+
+Appeals found the mechanism behind the CARC 197 timeout (`9e94a7f`, via Platform).
+It is not a slow backend: their MCP server is mounted in the same FastAPI app and
+its tools call **the service's own REST endpoints over HTTP from inside a request
+handler**. `/rules/197` answers in 0.149s against a 30s timeout — a 30-second
+timeout fired on a 150-millisecond endpoint.
+
+Verified here independently against the deployed service (their file:line claims
+are their reading; their repo is not checked out here):
+
+```
+template minScale      = ABSENT        <- scale-to-zero
+template maxScale      = 2
+service  minScale      = ABSENT
+containerConcurrency   = 80            <- thread-pool starvation, not deadlock
+APPEALS_AGENT_SELF_URL = UNSET -> falls back to localhost
+```
+
+A service whose handlers call themselves, capped at 2 instances, scaling to zero.
+Under concurrent load a request occupies a worker while waiting on another worker
+of the same pool. That is why it is intermittent, why a `curl` and an MCP probe
+measured opposite things and both were right, and why CARC 197 tips first at
+~3.4× the payload of CARC 29.
+
+**The sequencing consequence, and it is sharper than my own "routing alone would
+not fix the symptom":**
+
+> **The misroute has been accidentally suppressing the load that triggers their
+> bug.** Every appeals call has been going to the primary and dying as
+> `Unknown tool` — so the appeals service has received almost none of this traffic.
+> **Correctly routing those calls delivers, for the first time, the exact load
+> pattern that starves it**, and the resulting failures will read as a regression
+> introduced by the routing fix.
+
+So Appeals' two — internal handlers called directly, `isError=True` on failure —
+go **before or with** the routing work. Neither is blocked by chat's hold. Chat's
+(1) is unaffected and still first.
+
+### Consolidated order
+
+1. **chat** — pin `mcp` to the deployed version → `isError` via
+   `'isError' in result.model_fields_set` (**not** a `getattr` default) →
+   `_skill_success` structured, not string → `registry.py:312` sets `success=False`
+2. **appeals** — internal handlers called directly; `isError=True` on failure
+3. **chat** — both doors: appeals branch above `:2759` **and** `tool_agent:902`
+4. **chat** — origin URL carried on `SkillSpec`
+5. **chat** — `signal` + the self-citing `SourceRef`
+
+### A config doing undeclared safety work
+
+`fleet.yaml:89` has appeals at `{mode: standby}`. A service whose handlers call
+themselves is incompatible with standby/scale-to-zero, so that setting is holding
+off a latent defect without saying so. **Same class as `mobius-payor`'s `min: 1`
+holding off `payer_context` degradation** — see
+`project_payer_context_silent_degradation`. Raised as fleet-power, not chat, and
+not acted on here.
+
+### Third standing lesson, from Appeals
+
+**"I had the fact and drew the smaller conclusion."** They had already described
+their own fail-open to the Tool Manifest seat — as a *parsing hazard for the
+caller*, missing that it was a *protocol violation on their end*. Not a wrong
+fact: a correct fact scoped to the wrong owner. Distinct from §13's two, and the
+hardest of the three to catch, because nothing about it looks like an error.
