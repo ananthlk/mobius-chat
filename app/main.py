@@ -2817,6 +2817,19 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # a declared one. That constraint lives in the deep-research seat's prompt
     # and schema; this allowlist entry only says the stage may route here.
     "research_parse",
+    # mobius-skills/deep-research worker (2026-09-09), Cloud Run Job. Its loop
+    # was calling with stage="parser" / "adjudicate" — not in this set, so every
+    # call 400'd and each turn spent a full agentic draft it could not then read.
+    # Namespaced to match the rag_* / appeals_* convention rather than sitting in
+    # the global namespace as "parser".
+    #
+    # The seat could have sent `research_parse`, which is already allowed and
+    # close enough to pass unnoticed. They refused, and were right to: a stage is
+    # the routing and telemetry key, so borrowing payor's stage would corrupt the
+    # bandit's reward attribution for BOTH modules and make llm_calls quietly
+    # wrong. That is a lie the data cannot recover from.
+    "deep_research_parse",       # answer text -> structured fields + quotes
+    "deep_research_adjudicate",  # per-field verdict against its evidence
     # mobius-payor (2026-09-09). Both were declared in the payor seat's
     # PAYOR_STAGES but never here, so every hosted call returned 400 while dev
     # fell through to direct Vertex and worked — a latent outage on two live

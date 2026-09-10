@@ -101,10 +101,18 @@ KIND_TOOL_DISPATCHED = "tool.dispatched"
 # Recorded as its own kind rather than folded into tool.dispatched's target, so
 # the existing series stays comparable across the change.
 KIND_TOOL_RESULT = "tool.result"
+# One tool ARGUMENT paired with the outcome it produced. Exists for a specific
+# experiment: appeals matches the payor key EXACTLY, and "Sunshine Health" hits
+# while "sunshine health" returns 200 with {} — byte-identical to "this payor
+# has no playbook". A count of empty results cannot separate those; the argument
+# paired with the outcome can. Grouped by distinct argument string, it answers
+# "N calls came back empty for payors that DO have playbooks", which is the
+# actual claim under test.
+KIND_TOOL_ARG = "tool.arg"
 
 _KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_DB_ACQUIRE, KIND_LLM, KIND_HTTP, KIND_ROUND,
           KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED,
-          KIND_TOOL_RESULT}
+          KIND_TOOL_RESULT, KIND_TOOL_ARG}
 
 # Span names are NODE KEYS from the chat schema, not ad-hoc labels.
 #

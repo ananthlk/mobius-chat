@@ -3189,6 +3189,12 @@ def _execute_tool(
                 }
 
             if tool == "appeals_get_playbook":
+                # RAW, before any normalisation. The experiment turns on the
+                # difference between what the model emitted and what we sent —
+                # logging a stripped/case-folded copy would record what we think
+                # was sent rather than what was sent, which is exactly the gap
+                # being measured.
+                _payor_raw = inputs.get("payor")
                 payor = (inputs.get("payor") or "").strip()
                 carc_group = (inputs.get("carc_group") or "").strip()
                 carc = inputs.get("carc") or 0
@@ -3208,11 +3214,6 @@ def _execute_tool(
                 # guessed at. quote() because the payor is interpolated into a
                 # URL path and previously was not encoded at all.
                 from urllib.parse import quote as _q
-                try:
-                    from app.telemetry.spans import record as _rec_pb, KIND_TOOL_DISPATCHED
-                    _rec_pb(ctx, KIND_TOOL_DISPATCHED, f"appeals_get_playbook:payor={payor[:60]}")
-                except Exception:
-                    pass
                 _pb_reason = ""
                 # TRANSPORT vs CONTENT, kept separate on purpose.
                 #   _call_ok  — did the request work at all
@@ -3263,6 +3264,29 @@ def _execute_tool(
                 found = bool(pb)
                 if not found and not _pb_reason:
                     _pb_reason = "unsourced"
+                # THE EXPERIMENT (Ananth, direct): the payor string actually
+                # sent, paired with whether the lookup came back empty. If
+                # empties cluster on strings that are not exact display names,
+                # the free-text-payor-key hypothesis is confirmed; if they do
+                # not, it is dead and retired on evidence rather than reasoning.
+                #
+                # `_payor_raw` is recorded UNMODIFIED alongside the sent value
+                # so a model emitting " Sunshine " or "sunshine health" is
+                # visible as itself. No normaliser is built here on purpose:
+                # the canonical payor mapping lives in the Lexicon, and chat
+                # inventing its own name-matching would be the same mistake as
+                # chat inventing an FL Medicaid deadline — a service with no
+                # payor data making a payor judgement.
+                try:
+                    from app.telemetry.spans import record as _rec_pb, KIND_TOOL_ARG
+                    _raw_repr = "" if _payor_raw is None else str(_payor_raw)
+                    _drift = "" if _raw_repr == payor else f" raw={_raw_repr[:40]!r}"
+                    _rec_pb(ctx, KIND_TOOL_ARG,
+                            f"appeals_get_playbook payor={payor[:60]!r}"
+                            f" lookup={str(lookup)[:20]!r}"
+                            f" -> {'nonempty' if found else 'empty'}{_drift}")
+                except Exception:
+                    pass
                 #
                 # NO INVENTED DEFAULT. This branch used to substitute
                 # "Default FL Medicaid: 60 days, certified mail." for a missing

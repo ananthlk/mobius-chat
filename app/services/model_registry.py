@@ -1030,7 +1030,16 @@ REACT_COMPLETION_CRITIC_STAGES = ["react_completion_critic"]
 # construction: the call succeeds. Four allowlisted stages are in that state
 # right now — appeals_investigation, org_intel_report, org_intel_synthesis,
 # payor_fact_reverify — reported to their owners rather than fixed blind here.
-RESEARCH_PARSE_STAGES = ["research_parse"]
+RESEARCH_PARSE_STAGES = [
+    "research_parse",
+    # deep-research worker's own two stages (2026-09-09). Registered at the same
+    # time as the allowlist entry, because an allowlisted-but-unrouted stage
+    # gets zero candidates, falls through to fallback_no_models, and SUCCEEDS —
+    # bypassing the bandit silently. Same narrow {flash, pro} pool: both are
+    # extract/judge-shaped against supplied evidence, not open reasoning.
+    "deep_research_parse",
+    "deep_research_adjudicate",
+]
 
 # mobius-payor fact re-verification (2026-09-09), routed AT THE STAGE OWNER'S
 # REQUEST — they own it, they asked for this pool, and their reasoning matches
