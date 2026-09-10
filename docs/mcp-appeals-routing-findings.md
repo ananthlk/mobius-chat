@@ -715,9 +715,9 @@ peer service resolves separately.
 
 Platform's addition: appeals **bounded** the major (`mcp[cli]>=1.0,<2`); chat did
 not (`requirements.txt:113`, `mcp>=1.0.0`). **Only chat crossed.** So "pin `mcp` on
-both sides" is right, but the fix should not read as symmetric blame — chat's
-omission is the one that caused it, and appeals' constraint is the one chat should
-have copied.
+both sides" is right. **[SUPERSEDED — see §22. The "chat should have copied
+appeals" framing below is WITHDRAWN and must not be restored; the underlying fact
+survives, the blame does not.]**
 
 **Evidence status, because this thread's own lesson applies to it:**
 
@@ -804,7 +804,9 @@ Platform has already asked them.
 
 - **The fix does not move**: pin `mcp` on both sides, chat's is the one that crossed.
 - **The attribution is restored**: appeals bounded the major in the build that is
-  running; chat did not. Chat's omission is the cause.
+  running; chat did not. **The FACT only — see §22.** "Chat should have copied
+  appeals" is withdrawn: their bound is two days old, was a targeted response to
+  their own outage, and 5 of their 6 dependencies remain unbounded.
 - **§18's evidence status was right and is now upgraded** — from *corroborated* to
   *established by resolution timing*, by a method that reads the running artefact
   rather than a file describing an older one.
@@ -877,3 +879,69 @@ context for this entire investigation. Platform had it in their notes with the r
 method attached (*grep the import, not the requirements file*). **Two seats each held
 the answer and neither consulted it.** Every other retraction in this thread was
 reasoning under uncertainty; this one was failing to read a record we already had.
+
+---
+
+## 22. The withdrawal splits — the fact returns, the blame does not
+
+Appeals settled §20 independently: commit `06e46d5`, 2026-09-08, *"pin mcp below 2.x
+— the MCP surface had been silently gone for 29 days."* So the resolution-timing
+inference and their git history agree. Platform verified the PyPI figures too.
+
+**What is established:** appeals' *running* build bounds the major; chat's does not.
+
+**What is WITHDRAWN and must not be restored:** that appeals had a standing practice
+chat should have copied. **Appeals asked for this specifically and they are right:**
+
+- the bound is **two days old**,
+- it was a targeted response to *their own* outage,
+- and their file is still **5 of 6 unpinned** — `fastapi`, `uvicorn`, `httpx`,
+  `asyncpg`, `anyio`.
+
+There was no practice to copy, and it is not a pattern in their own file either.
+**§18 and §20 have been struck accordingly.** Resolution timing proves what pip
+*did*; it never established what anyone *intended*, and I should have kept that
+distinction when I restored the fact.
+
+### The artefact Platform read was the one that caused the outage
+
+```
+mcp 2.0.0 shipped          2026-07-28
+bucket source              2026-08-11T20:51Z   ("mcp[cli]>=1.0", unbounded)
+appeals pin commit         2026-09-08          ("silently gone for 29 days")
+                           08-11 -> 09-08  =  28 days
+```
+
+That unbounded source resolved to 2.x at build time, and its window **is** the outage
+window. Platform did not merely read an older build — **they read the exact artefact
+that caused the 29-day outage, and mistook it for evidence against the fix.**
+
+### Correcting my own framing of the sixth withdrawal
+
+I called it *"the first time our discipline cost us a true finding."* **Platform's
+reading is better and I withdraw mine.** Discipline cost nothing. They read a real
+artefact, noted **in the same paragraph** that it was not the running one, and drew
+the conclusion anyway. The disqualifying fact was already written down; it just did
+not govern the conclusion.
+
+That is not excess rigour — it is the same failure as everything else today, and the
+same shape as both of us holding the 29-day outage in our own notes while hunting a
+novel cause: **holding the disqualifying fact and not applying it.**
+
+### The fourth check, in its final form
+
+> **When you write a caveat that would disqualify your evidence, resolve it before
+> you draw the conclusion — not after, and not in the same breath.**
+
+That is Platform's, and it is strictly better than "check whether this shape has
+happened before," which it subsumes: the prior incident *was* the disqualifying fact,
+sitting in two sets of notes, unapplied.
+
+### Left open rather than tidied
+
+If `mcp 1.30.0` were already present in the base image or an earlier layer, pip would
+treat `>=1.0` as satisfied and not upgrade — 1.30.0 with no bound. The git commit makes
+this near-moot, but **nobody pulled the base layers**, and Platform kept it visible
+rather than closing it on the strength of a commit message. Correct call: that is the
+same substitution — a record *about* the build standing in for the build — that this
+section exists to document.
