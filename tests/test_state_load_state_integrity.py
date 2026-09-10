@@ -95,6 +95,7 @@ def _run(msg: str = "what about Cigna in Texas"):
 
 
 # ── the core guarantee ───────────────────────────────────────────────
+@pytest.mark.guards("state_load:no_silent_reset")
 def test_failed_read_does_not_overwrite_stored_state(store):
     """A read failure plus a delta-bearing message must leave the row alone."""
     before, before_ver = store.stored("t-1")
@@ -119,6 +120,7 @@ def test_healthy_read_still_persists_the_delta(store):
     assert after != {}, "state was replaced with defaults on a healthy read"
 
 
+@pytest.mark.guards("state_load:no_silent_reset")
 def test_error_and_absence_are_distinguishable(store):
     """The root cause: one value meant two opposite things."""
     from app.storage.threads import StateUnavailable, get_state
@@ -128,6 +130,7 @@ def test_error_and_absence_are_distinguishable(store):
         get_state("t-1")
 
 
+@pytest.mark.guards("state_load:no_silent_reset")
 def test_undecodable_row_raises_rather_than_looking_new(store):
     """A row that exists but does not decode used to return None — so the
     recovery was to overwrite the row we had just failed to read."""
@@ -195,13 +198,22 @@ def test_tracked_write_still_refuses_a_genuinely_concurrent_change(store):
     assert store.stored("t-1")[0] == {"active": {"payer": "United"}}
 
 
+@pytest.mark.guards("state_load:no_silent_reset")
 def test_tracked_write_is_suppressed_after_a_failed_read(store):
+    """`before` is captured BEFORE the turn runs, on purpose.
+
+    Captured after, this test passed even with the guarantee removed: the turn
+    had already overwritten the row, `before` snapshotted the damaged value, and
+    the final assert then held for an unrelated reason (a compare-and-set miss).
+    A tagged test that survives its own guarantee being deleted is a green light
+    with nothing behind it — found by mutating, not by reading.
+    """
     from app.storage.threads import save_state_tracked
+    before = store.stored("t-1")          # pristine, pre-turn
     store.fail_reads = True
     ctx = _run()
-    before = store.stored("t-1")
     assert save_state_tracked(ctx, {"active": {}}) is False
-    assert store.stored("t-1") == before
+    assert store.stored("t-1") == before, "the failed read reached the stored row"
 
 
 def test_empty_thread_id_is_absence_not_failure(store):
