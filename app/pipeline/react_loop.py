@@ -3264,11 +3264,20 @@ def _execute_tool(
                 found = bool(pb)
                 if not found and not _pb_reason:
                     _pb_reason = "unsourced"
-                # THE EXPERIMENT (Ananth, direct): the payor string actually
-                # sent, paired with whether the lookup came back empty. If
-                # empties cluster on strings that are not exact display names,
-                # the free-text-payor-key hypothesis is confirmed; if they do
-                # not, it is dead and retired on evidence rather than reasoning.
+                # PURPOSE UPDATED 2026-09-10 — this is no longer chasing payor
+                # names. The free-text-payor-key hypothesis is RETIRED on
+                # evidence: 121 paired observations recovered from
+                # chat_turns.thinking_log (Feb-Sep) showed empties clustering on
+                # `Sunshine Health`, the EXACT display name (23 of 25), while the
+                # non-exact strings that appeared — `sunshine-health`,
+                # `FL Medicaid` — returned USABLE. The prediction inverted.
+                #
+                # It stays because it records `lookup` beside the payor, which
+                # settles the replacement hypothesis: a playbook is keyed
+                # (payor x CARC) and appeals covers 72 CARCs, so a CARC outside
+                # that set is a LEGITIMATE miss — which is what turn 143309c1
+                # turned out to be. The retrospective emit data carries the payor
+                # but not the CARC, so only this can answer it.
                 #
                 # `_payor_raw` is recorded UNMODIFIED alongside the sent value
                 # so a model emitting " Sunshine " or "sunshine health" is
