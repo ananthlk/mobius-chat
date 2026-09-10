@@ -708,3 +708,48 @@ than resolved independently by two `pip install` runs months apart.
 It also sharpens §11 one last time. Chat must derive the outcome from something it
 owns — and "something it owns" cannot include a field name in a dependency that a
 peer service resolves separately.
+
+---
+
+## 18. The asymmetry — and its evidence status, stated honestly
+
+Platform's addition: appeals **bounded** the major (`mcp[cli]>=1.0,<2`); chat did
+not (`requirements.txt:113`, `mcp>=1.0.0`). **Only chat crossed.** So "pin `mcp` on
+both sides" is right, but the fix should not read as symmetric blame — chat's
+omission is the one that caused it, and appeals' constraint is the one chat should
+have copied.
+
+**Evidence status, because this thread's own lesson applies to it:**
+
+- **Chat's side is verified directly** — `mcp>=1.0.0` at `requirements.txt:113`,
+  read here.
+- **Appeals' `<2` bound is Platform's read of their repo**, which is not checked out
+  here. I tried to confirm it from the deployed image and **could not**: the appeals
+  image (Cloud Run source deploy) carries no `requirements.txt`, `pyproject.toml` or
+  `Dockerfile` in any layer I pulled — 5,435 files across its app and site-packages
+  layers, no build manifest among them.
+- **Corroborating, not confirming:** the appeals image has `mcp 1.30.0` installed.
+  An unbounded `mcp>=1.0` resolving at its 2026-09-08 build would have taken the
+  latest — chat's build took 2.2.0. Landing on the newest **1.x** is what a `<2`
+  bound produces. That is consistent with Platform's read and is not a substitute
+  for it.
+
+**Recorded as corroborated rather than verified**, which is the same distinction
+this thread spent a day learning. The fix does not depend on it: pin both sides
+regardless.
+
+## 19. Closing note — what actually made this work
+
+Appeals' observation, kept in their framing rather than paraphrased:
+
+> *the productive move wasn't either of us being right, it was both of us
+> publishing reasoning that could be checked.*
+
+Five causes were named and withdrawn — the manifest example text, routing-alone,
+`tool_agent` as the caller, "the retry guard is spared", and the `getattr` lead
+(withdrawn, then wrongly excluded by me, then confirmed correct). **None was found
+by the seat that filed it.** Two proposed fixes were inert and neither was written.
+
+The tally is a property of the exchange, not of any seat. It worked because every
+seat reported against its own hypothesis at least once, and because the reasoning
+was published in a form the others could execute rather than merely read.
