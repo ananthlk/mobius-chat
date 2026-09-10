@@ -1079,3 +1079,38 @@ four characters to the left of the claim that contradicted it. Two seats holding
 prior incident unread is one failure mode; **printing the refutation and reading past
 it** is a sharper one, and it argues that the check needs to apply to one's own fresh
 output, not only to remembered history.
+
+---
+
+## 25. Step 2 took three passes, and all three were caught before code
+
+Worth recording plainly, because it is the concrete case for the hold rather than an
+argument about it:
+
+| pass | proposed | why it failed | caught by |
+|---|---|---|---|
+| 1 | `getattr(result,"isError",True)` — flip the default to fail closed | **inert.** pydantic materialises the default before `getattr` runs, so it returns `False` either way | Platform, measuring it |
+| 2 | `'isError' in result.model_fields_set` | **inert.** `model_fields_set` holds field *names*, not aliases — it contains `is_error` | Platform, measuring it |
+| 3 | `model_dump(by_alias=True)["isError"]` + fail closed on omission | **half right.** the value read is correct and version-proof; the omission half is impossible — the dump always carries the key | Platform, measuring it after I mis-read my own output |
+
+**Three plausible fixes, none written.** Each would have shipped, and each would have
+looked correct in review — the third most dangerous of all, because it fixes the
+visible symptom while preserving the bug on the omission path.
+
+**Final form of step 2:** value from `model_dump(by_alias=True)["isError"]`; failure
+derived from error-shaped content, which chat owns; do not ask the flag about
+stated-ness. Plus the pin, which is what makes the discriminator's spelling knowable
+at all.
+
+### And the safe form of the habit that caused §24
+
+Platform's generalisation of my print-label defect, which lands on their method too —
+their probes annotated the *meaning* of a value (`<- what :127 evaluates`) rather than
+restating it, which is why none of theirs inverted. **That is a habit, not a
+safeguard:** one slip from `<- what this evaluates` to `<- which is None` reproduces
+the defect exactly.
+
+> **Print the value and let it speak, or compute the label from the value. Never type
+> an assertion about a value next to it.**
+
+The label is written *before* the value is known, and is never re-examined afterwards.
