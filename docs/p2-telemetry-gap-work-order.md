@@ -123,6 +123,14 @@ The convention already exists from P2b — **use it, do not invent a second one.
 - [ ] spans bound to schema node keys, joinable to a turn
 - [ ] the 38 swallow handlers in scope each record something structured
 - [ ] **one query per new signal returning real rows** on dev, post-deploy
+- [ ] **and the field can take MORE THAN ONE VALUE.** Chat Master's addition,
+      2026-09-10, from a live example: `llm_calls.is_fallback` exists, is read at
+      `orchestrator.py:174`, and is `false` on **all 1,988 calls in 24h** because
+      nothing ever writes `True`. It passes "producer exists", "consumer exists" AND
+      "query returns rows" while carrying no information. **A distinct-value count of
+      1 over a real window is the tell** — the same shape as a legal enum value with
+      0–1 rows, generalised from enums to booleans. Report distinct values per new
+      signal, not just row counts.
 - [ ] counts carry targets
 - [ ] suite clean against `docs/chat-test-baseline.json` — may shrink, never grow
 - [ ] a **contract tag** where a guarantee is now enforceable, mutation-demonstrated
