@@ -438,6 +438,15 @@ def run_pipeline(
     dev mode / when auth is disabled.
     """
     t0 = t0_start if t0_start is not None else time.perf_counter()
+    # Stamp correlation_id on the logging ContextVar HERE, not only in the
+    # worker. ContextVars deliberately do NOT cross thread boundaries, and the
+    # worker runs the turn in a separate thread whenever the signal.alarm path
+    # isn't available -- so a value set in process_one is invisible to the
+    # thread that actually logs. Measured: the worker-level set alone left
+    # jsonPayload.correlation_id null on the deployed build.
+    # run_pipeline is where the turn runs, in whichever thread that is.
+    from app.logging_config import reset_request_context, set_request_context
+    _log_tokens = set_request_context(correlation_id=correlation_id)
     start_progress(correlation_id)
 
 
@@ -1017,6 +1026,10 @@ def run_pipeline(
                 _pipeline_span_cm.__exit__(None, None, None)
             except Exception:
                 pass
+        try:
+            reset_request_context(_log_tokens)
+        except Exception:
+            pass
         # Close the Product Promise. ONE site, deliberately: there are three
         # publish terminals reached from eight call sites, plus an early return
         # on empty payload. Writing this inside _publish_completed would give
