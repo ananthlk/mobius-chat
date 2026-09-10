@@ -337,3 +337,67 @@ is also sound**, since it records the planner's selection before any dispatch.
 So: §3.2's *selection* finding is unaffected, and its *dispatch-succeeded* column
 should be read as unverified for MCP tools until fix (1) lands. Corrected in the
 schematic rather than left for a reader to discover.
+
+---
+
+## 11. The unifying statement — chat has no failure detection it owns
+
+Platform's framing, and it deserves to be one sentence rather than three findings:
+
+> **Every mechanism chat uses to decide whether a remote tool failed is a value the
+> remote service controls.**
+
+| # | mechanism | who controls it | how it fails |
+|---|---|---|---|
+| 1 | `getattr(result, "isError", False)` — `mcp_manager.py:127` | the **server**, via a wire flag | absent/renamed attribute reads as success |
+| 2 | `text.startswith("Unknown skill")` — `react_loop.py:2792` | the **server**, via its error wording | any other phrasing passes |
+| 3 | the appeals server's `isError` | the **server**, and it sets `False` on a real failure | flag is present and wrong |
+
+All three fail **open**. There is no fourth mechanism holding the line, and
+`SkillEnvelope.success` — the field introduced to be that mechanism — defaults to
+`True` and is never set by `registry.py:312`.
+
+**Why "the server should set `isError`" is true but not sufficient** (Platform's
+point, and the reason #3 matters more than it first appears): the flag *is* the
+thing that is wrong, so nothing that trusts it can help. Fixing the appeals server
+fixes one server. **Chat has to stop trusting a flag a peer service controls, in
+exactly the way `:2792` has to stop matching a string a peer service controls.**
+Same lesson, two mechanisms, and the fix for both is the same shape — derive the
+outcome from something chat owns, and treat a remote-supplied value as evidence
+rather than as a verdict.
+
+That is what makes fail-closed a **correctness** requirement rather than a
+diagnostic convenience, and it is why it holds even if §4 is never explained:
+
+> 🔴 **Fixing the routing alone would not have fixed the symptom.** Route the
+> appeals calls to the correct server and the identical pathology reappears with a
+> different error string — a real backend timeout, wrapped as a `SourceRef` citing
+> itself, recorded by the funnel as a success.
+
+## 12. §4 stays open — deliberately, and permanently if need be
+
+Platform proposes not writing the join up as closed **even if the `getattr` lead
+becomes provable**. Agreed, and adopted.
+
+What is genuinely established: the *server-changed* escape is dead (primary
+unredeployed since `2026-09-08T13:20Z`, before the 14:12 / 14:14 / 14:35Z rows;
+`isError True` consistently; same-SDK comparison came out identical rather than
+revealing a difference). `getattr` failing open is the only explanation still
+standing and it fits matching text, constant server, and production's `completed`
+line.
+
+**"Only explanation standing" is not "confirmed."** Three seats have now each named
+a cause and been wrong at least once in this thread — the manifest example text,
+routing-alone, `tool_agent` as the caller, and my own "retry guard is spared."
+**The packet is worth more with one honest unknown than with a fourth cause that is
+inferred.** It stays open until the image or the log line settles it.
+
+## 13. The two standing lessons from this thread
+
+1. **Distrust log text that explains rather than observes.** *"Builtins win; MCP
+   tool not registered"* asserted a false cause while accurately reporting a true
+   event. Three seats read the assertion and skipped the event.
+2. **Verifying that a branch exists is not verifying that it runs.** Three seats
+   independently confirmed the appeals hardening at `:3073` and none asked whether
+   control reaches it. It does not. `gate_with_no_caller`, applied to a dispatch
+   branch.
