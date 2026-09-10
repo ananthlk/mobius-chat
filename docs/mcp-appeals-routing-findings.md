@@ -134,3 +134,56 @@ That is also why 16 turns could cite `Unknown tool` without anything intervening
 **Order matters:** fixing routing (3) first would make appeals calls *succeed*
 against the appeals server, which would look like a fix while leaving the Tier-1
 path still dead and the self-citation still inflating groundedness to 100%.
+
+---
+
+## 7. CORRECTION, later 2026-09-10 — `react_loop` is **not** excluded as the caller
+
+Platform and Appeals concluded, from Appeals' reading, that *"the five tools **are**
+hardened at `react_loop.py:3073` — unconditional set membership, no fall-through —
+so react_loop cannot be the caller,"* and moved to `tool_agent.py` as the
+explanation. **The premise is true and the conclusion does not follow.**
+
+The set membership at `:3073` is unconditional **if you reach it**, and on this path
+you do not. Proven by AST rather than reading:
+
+```
+registry-fallback `if _skill_registry.has(tool):`   lines 2759-2873
+returns inside that block:                          [2859, 2873]
+last stmt of block:                                 Return at line 2873
+appeals branch `if tool in {...}`                   lines 3073-3614
+  after registry block?                             True
+  nested inside registry block?                     False
+```
+
+**The registry-fallback block ends in an unconditional `Return` at `:2873`.** The
+appeals branch begins at `:3073`, after it and not nested inside it. So whenever
+`_skill_registry.has("appeals_lookup_rules")` is true, `_execute_tool` returns at
+`:2873` and **`:3073` is never reached.** The hardening is real and unreachable —
+which is the same shape as the finding in §2, not a counter to it.
+
+**And `has()` is true on every instance, by either branch of the log.** Where the
+log says *"registered 5 MCP tool(s) as skills: appeals_lookup_rules, …"*, the name
+was just registered. Where it says *"skipping … a skill with that name is **already
+registered**"*, the name was already held. Both outcomes leave `has()` true.
+
+**There is no builtin appeals skill for it to be held by.** `grep -rn "appeals_"
+app/skills/` excluding `mcp_adapter.py` returns nothing. The only registrations of
+these names are MCP ones, so the holder is always an MCP registration and dispatch
+always lands on `mcp_adapter` → `call_mcp_tool` → the primary.
+
+**What this changes:** `tool_agent.py` is a genuine second unhardened door — its
+`:902` is the same bare `_skill_registry.has(hint)` with no appeals interception —
+and it is worth fixing. But it is **not needed to explain the caller**, and
+treating it as *the* caller would leave the main chat path unfixed. Both doors
+route to the registry; the hardening at `:3073` protects neither.
+
+This does not disturb Platform's fix ordering, but it does change what "fix the
+door" means: moving the appeals branch above `:2759` (or excluding those five names
+from the registry fallback) is required in `react_loop` **as well as** hardening
+`tool_agent`.
+
+**Unchanged and still open:** `success=True` on an `isError=True` response. Platform
+is right that it needs one log line at `mcp_adapter.py:223` recording `success` and
+`getattr(result, "isError", None)`. **I have not added it — chat builds are on hold
+pending Ananth**, and I will not open that door on a peer's request.
