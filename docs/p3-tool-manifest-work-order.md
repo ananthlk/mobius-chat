@@ -67,6 +67,12 @@ playbook and the answer said there was none, and follow it through all three lay
 persisted evidence. If the evidence to do that is not persisted — say so; that is itself the
 finding and it is the same producer-without-a-consumer class, and it changes this work order.
 
+**Also capture, while you are in there: the manifest's prompt-token cost per turn.**
+Added 2026-09-09. It is not needed to diagnose this bug — it is P6(c)'s
+before-measurement, it is countable today, and it will never be cheaper to take than
+while you already have the instrument open. A number taken after the change is not a
+baseline.
+
 **Report Stage 0 to me before writing a fix.** I will not treat a layer as identified on a
 plausible reading; per the standing rule, a name-based search answers "is there a symbol called
 X", never "does X happen".
