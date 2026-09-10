@@ -1222,6 +1222,32 @@ class GatePublishFailed(Exception):
         self.cause = cause
 
 
+def _origin_of(url: str | None) -> str:
+    """scheme+host from a URL, or "" — deliberately ORIGIN ONLY.
+
+    The PHI-classifier seat uses this to suppress a payer's OWN name and
+    corporate contact block on that payer's own domain (the Molina-homepage
+    false positives), scoped to that origin and recall-safe: patient PHI on the
+    same page still hard-blocks.
+
+    Origin only, never the full URL, and that is the security-relevant part: a
+    path or query string is exactly where PHI hides in a URL
+    (`?patient=…`, `/members/1234567/claims`). Stripping to scheme+host is what
+    keeps this consistent with the standing rule not to widen the classifier
+    payload — an origin is a public fact about a website, not information about
+    a person.
+    """
+    try:
+        from urllib.parse import urlparse
+        p = urlparse((url or "").strip())
+        if p.scheme in ("http", "https") and p.hostname:
+            port = f":{p.port}" if p.port and p.port not in (80, 443) else ""
+            return f"{p.scheme}://{p.hostname}{port}"
+    except Exception:
+        pass
+    return ""
+
+
 def _run_hipaa_gate_sync(
     document_id: str,
     rag_url: str,
@@ -1234,6 +1260,7 @@ def _run_hipaa_gate_sync(
     correlation_id: str | None = None,
     _test_gate_override: str | None = None,
     _test_mode_override: bool | None = None,
+    source_url: str | None = None,
 ) -> dict:
     """Run HIPAA gate synchronously on an extract-only document.
 
@@ -1297,7 +1324,14 @@ def _run_hipaa_gate_sync(
         logger.info("[hipaa-gate] TEST OVERRIDE applied: gate=%s for doc=%s", _ov, document_id[:8])
     else:
         try:
-            _body = _json_mod.dumps({"text": doc_text, "document_id": document_id}).encode()
+            _cls_payload: dict[str, Any] = {"text": doc_text, "document_id": document_id}
+            _origin = _origin_of(source_url)
+            if _origin:
+                # Origin only — see _origin_of. Omitted entirely when we cannot
+                # derive one, rather than sent empty: a blank field would read
+                # as "no origin known" and "not a web fetch" identically.
+                _cls_payload["source_origin"] = _origin
+            _body = _json_mod.dumps(_cls_payload).encode()
             _req = _urllib_req.Request(
                 f"{phi_url}/classify",
                 data=_body,
@@ -1801,6 +1835,7 @@ def _handle_instant_rag_upload(
                 correlation_id=None,  # no turn exists at upload time
                 _test_gate_override=gate_override,
                 _test_mode_override=mode_override,
+                source_url=source_url,
             )
         except GatePublishFailed as _pub_fail:
             # The gate REACHED a verdict and the store then refused the write.
@@ -1860,55 +1895,113 @@ def _handle_instant_rag_upload(
                 "ceiling": "private",
             }
 
-        if gate_result.get("blocked"):
-            _action = gate_result.get("action_taken", "blocked_indeterminate")
-            _gate = gate_result.get("gate", "indeterminate")
-            logger.info(
-                "[hipaa-gate] BLOCKED doc=%s action=%s gate=%s",
-                str(document_id)[:8], _action, _gate,
-            )
-            _diag: dict[str, Any] = {
-                "gate": _gate,
-                "phi_flag": gate_result.get("phi_flag", True),
-                "evidence_categories": gate_result.get("evidence_categories", []),
-                "identifier_labels": gate_result.get("identifier_labels", []),
-                "hipaa_mode_allowed": gate_result.get("hipaa_mode_allowed", False),
-                "action_taken": _action,
-                "reason": gate_result.get("reason", ""),
-                "transaction_id": gate_result.get("transaction_id", ""),
-                "document_name": filename,
-                "document_id": str(document_id),
-            }
-            if _action == "blocked_phi":
-                _msg = (
-                    f'"{filename}" contains protected health information (PHI) '
-                    f"and cannot be processed in the current mode. It was not stored."
-                )
-            else:
-                _msg = (
-                    f'"{filename}" couldn\'t be verified for safety right now. '
-                    f"It was not stored. Please try again shortly."
-                )
-            return {
-                "status": "blocked",
-                "blocked": True,
-                "action_taken": _action,
-                "gate": _gate,
-                "filename": filename,
-                "document_id": str(document_id),
-                "upload_id": upload_id,
-                "message": _msg,
-                "thread_id": (thread_id or ""),
-                "hipaa_diagnostics": _diag,
-                "file_purpose": file_purpose,
-                "verification_tier": "rag",
-                "ux_path": "blocked",
-            }
-        # Gate passed (clean or phi+mode-on) — /publish already called by gate.
-        gate_result.setdefault("blocked", False)
     else:
-        logger.debug("[hipaa-gate] PHI_CLASSIFIER_URL unset — gate skipped for doc=%s", str(document_id)[:8])
+        # FAIL-CLOSED on misconfiguration (PHI-classifier seat's ruling,
+        # 2026-09-09). An unset PHI_CLASSIFIER_URL yields NO verdict at all —
+        # the strongest case to block, not the one exception allowed through.
+        #
+        # Before this, the branch logged at DEBUG and left gate_result empty, so
+        # `gate_result.get("blocked")` was falsy and the document published
+        # UNSCREENED with no audit row. A deploy that forgot the env var would
+        # have silently published PHI, and the only trace was a debug line that
+        # production does not emit. Fail-open guarded by nothing but an
+        # environment variable being remembered.
+        #
+        # `blocked_unconfigured` is deliberately DISTINCT from
+        # blocked_indeterminate and blocked_publish_failed: per the same
+        # attributability principle, a misconfiguration and a real indeterminate
+        # verdict must not be the same value. Three different causes, three
+        # different words.
+        #
+        # No PHI audit row is written here on the seat's instruction — there is
+        # no classification to audit. The error log and the emitted verdict are
+        # the record.
+        logger.error(
+            "[hipaa-gate] PHI_CLASSIFIER_URL unset — FAILING CLOSED, blocking "
+            "doc=%s (cannot screen -> refuse; misconfiguration must fail safe)",
+            str(document_id)[:8],
+        )
+        gate_result = {
+            "blocked": True,
+            "action_taken": "blocked_unconfigured",
+            "gate": "indeterminate",
+            "phi_flag": True,
+            "evidence_categories": [],
+            "identifier_labels": [],
+            "hipaa_mode_allowed": False,
+            "reason": ("PHI screening is required but the classifier is not "
+                       "configured (PHI_CLASSIFIER_URL unset) — cannot screen, "
+                       "refusing to publish."),
+            "transaction_id": "",
+            "classifier_version": "",
+            "layers_run": ["unconfigured"],
+            "confidence": None,
+            "ceiling": "private",
+        }
 
+
+    # Blocked-handling runs for BOTH branches. It used to sit INSIDE
+    # `if phi_url:`, so the fail-closed verdict built in the else above
+    # was constructed and then never acted on — the document published
+    # anyway. Caught by the test, which is why the test drives this
+    # function rather than a copy of its logic.
+    if gate_result.get("blocked"):
+        _action = gate_result.get("action_taken", "blocked_indeterminate")
+        _gate = gate_result.get("gate", "indeterminate")
+        logger.info(
+            "[hipaa-gate] BLOCKED doc=%s action=%s gate=%s",
+            str(document_id)[:8], _action, _gate,
+        )
+        _diag: dict[str, Any] = {
+            "gate": _gate,
+            "phi_flag": gate_result.get("phi_flag", True),
+            "evidence_categories": gate_result.get("evidence_categories", []),
+            "identifier_labels": gate_result.get("identifier_labels", []),
+            "hipaa_mode_allowed": gate_result.get("hipaa_mode_allowed", False),
+            "action_taken": _action,
+            "reason": gate_result.get("reason", ""),
+            "transaction_id": gate_result.get("transaction_id", ""),
+            "document_name": filename,
+            "document_id": str(document_id),
+        }
+        if _action == "blocked_phi":
+            _msg = (
+                f'"{filename}" contains protected health information (PHI) '
+                f"and cannot be processed in the current mode. It was not stored."
+            )
+        elif _action == "blocked_unconfigured":
+            # NOT "try again shortly" — retrying cannot succeed. The
+            # screening service is unconfigured and will stay unconfigured
+            # until someone changes a deploy variable. Telling a user to
+            # retry something that cannot work is the same plausible-but-
+            # wrong answer this gate keeps producing in other forms.
+            _msg = (
+                f'"{filename}" couldn\'t be screened for protected health '
+                f"information, so it was not stored. The screening service "
+                f"isn't configured — please contact an administrator."
+            )
+        else:
+            _msg = (
+                f'"{filename}" couldn\'t be verified for safety right now. '
+                f"It was not stored. Please try again shortly."
+            )
+        return {
+            "status": "blocked",
+            "blocked": True,
+            "action_taken": _action,
+            "gate": _gate,
+            "filename": filename,
+            "document_id": str(document_id),
+            "upload_id": upload_id,
+            "message": _msg,
+            "thread_id": (thread_id or ""),
+            "hipaa_diagnostics": _diag,
+            "file_purpose": file_purpose,
+            "verification_tier": "rag",
+            "ux_path": "blocked",
+        }
+    # Gate passed (clean or phi+mode-on) — /publish already called by gate.
+    gate_result.setdefault("blocked", False)
     # ── UX path selection ──────────────────────────────────────────
     # All new uploads use the background path. Blocking inline (eta<120s)
     # was removed because it caused the Cloud Run LB to drop client
