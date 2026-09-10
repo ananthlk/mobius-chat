@@ -817,3 +817,63 @@ depends on is the installed packages in one image: a **description, not a
 specification**. That is the same defect as `mcp>=1.0.0` one level up — *the thing
 that would have told us what was running was never written down* — and it is why the
 correct claim was retractable at all.
+
+---
+
+## 21. Chat's 2.x exposure, MEASURED — and it is the worse half
+
+Appeals confirmed the pin (`06e46d5`, 09-08): *"pin mcp below 2.x — the MCP surface
+had been silently gone for 29 days."* An unbounded `mcp` resolved to 2.x, which
+renamed `mcp.server.fastmcp`; their MCP surface was **entirely absent for 29 days**
+with health 200 and a clean startup log. Platform's reframing is right: the 09-09
+error onset is the **first observation** of a dispatch bug, not its start — nothing
+could route while the surface was down.
+
+Platform then raised chat's exposure to the same *invisible* half. **Measured, and
+the answer is no — for a reason that matters.**
+
+Chat's only `mcp` imports, all six sites:
+```
+mcp.client.session.ClientSession               -> OK under 2.2.0
+mcp.client.streamable_http.streamable_http_client -> OK under 2.2.0
+mcp.server.fastmcp                             -> ModuleNotFoundError
+```
+**Chat never imports `mcp.server.fastmcp`, because chat is a CLIENT, not a server.**
+Both imports it does use resolve cleanly under the deployed 2.2.0. There is no
+absent capability in chat and no 29-day-style outage waiting.
+
+### The contrast is the finding
+
+```
+server-side 2.x break :  LOUD    ModuleNotFoundError, and the message itself names
+                                 the rename and links the migration guide
+client-side 2.x break :  SILENT  renamed field + back-compat alias + getattr default
+```
+
+mcp 2.x's own error text is unusually good — it says FastMCP became `MCPServer`, links
+the migration guide, and suggests `pin 'mcp<2'`. **That break could not have been
+missed except by swallowing it**, which is exactly what happened, and it still cost 29
+days.
+
+**Chat's break cannot be caught that way, because it never raises.** A field renamed
+with a serialization alias, read through `getattr(..., False)`, produces no exception,
+no warning, and no failed import — just a wrong answer, on every call, forever. **No
+swallow is required.** Appeals' outage needed a `try/except` to stay hidden; chat's
+hides itself.
+
+So the argument for pinning is not "chat might lose a capability like appeals did."
+It is stronger and simpler: **the same unbounded range on the same library has already
+produced a month-long invisible failure in a sibling service, and the form it took in
+chat is the one that cannot announce itself at all.** That argument stands
+independently of the join, the routing, and the attribution — like the fail-closed
+argument, it needs no mystery to justify it.
+
+### The fourth check
+
+Platform's, and I hold it more squarely than they do: **before hunting a novel cause,
+check whether this shape has already happened here.** The 29-day outage was in my own
+memory — same service, same library, same major bump, same green health — loaded in my
+context for this entire investigation. Platform had it in their notes with the right
+method attached (*grep the import, not the requirements file*). **Two seats each held
+the answer and neither consulted it.** Every other retraction in this thread was
+reasoning under uncertainty; this one was failing to read a record we already had.
