@@ -1026,10 +1026,6 @@ def run_pipeline(
                 _pipeline_span_cm.__exit__(None, None, None)
             except Exception:
                 pass
-        try:
-            reset_request_context(_log_tokens)
-        except Exception:
-            pass
         # Close the Product Promise. ONE site, deliberately: there are three
         # publish terminals reached from eight call sites, plus an early return
         # on empty payload. Writing this inside _publish_completed would give
@@ -1057,6 +1053,15 @@ def run_pipeline(
         except Exception:
             logger.exception("[promise] attestation close failed cid=%s",
                              correlation_id[:8])
+        # LAST, after the attestation has been written and emitted. Resetting
+        # earlier clears the ContextVar that ContextFilter reads, so the
+        # attestation's own log line would go out with an empty
+        # correlation_id -- which is exactly what it did until this was
+        # measured on the deployed build.
+        try:
+            reset_request_context(_log_tokens)
+        except Exception:
+            pass
 
 
 def _run_document_selection(
