@@ -447,3 +447,96 @@ class TestPlannerManifestIntegration:
         ])
         adapter_cleanup.extend(registered)
         assert "mcp_test_entity" in registry.entity_tools()
+
+
+# ── Characterization: signal is single-valued across both branches ──────
+#
+# 2026-09-10 (Payor Policy Agent, from live dev telemetry). These tests
+# PIN CURRENT BEHAVIOUR AND DOCUMENT A DEFECT. They are deliberately not
+# a fix: the fix belongs with the MCP/tool owner and is sequenced behind
+# Ananth's tool schematic. When someone corrects the adapter, these fail
+# loudly — that is their job.
+#
+# The defect: the success branch attaches a SourceRef and, in the same
+# envelope, declares ``signal="no_sources"``. So ``signal`` carries the
+# SAME value whether the call succeeded with content or failed outright.
+# A field that cannot take a second value cannot discriminate, and three
+# consumers read it expecting that it can:
+#
+#   1. react_loop's ``_skill_golden`` inference requires
+#      ``signal not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)`` — so a
+#      successful MCP analytics answer is never authoritative, and the
+#      loop stays free to escalate to google_search and anchor
+#      composition on web content instead.
+#   2. react_loop:6099 only updates ``final_signal`` when the signal is
+#      not no_sources — so the answer badge reads "no sources" on a turn
+#      that returned real rows.
+#   3. ``tool_result_verdict`` reports ``tool.result=<tool>:no_sources``
+#      for every MCP call, success or failure — funnel stage 3 is blind
+#      across the whole MCP surface.
+#
+# Observed live on dev rev 00977-8bl: get_market_size, get_top_orgs and
+# get_market_share_timeseries each emitted, dispatched:success, returned
+# real figures — and every one recorded tool.result=…:no_sources.
+#
+# ``ReactRetryGuard._is_zero_result`` is NOT affected: it requires
+# no_sources AND an empty sources list, and the success branch attaches
+# one source. Checked, not assumed — the third test below pins exactly
+# that, because it is the only thing standing between this defect and
+# successful analytics tools being counted as consecutive failures.
+
+
+class TestMcpSignalIsSingleValued:
+    def _dispatch(self, adapter_cleanup, name, mcp_return):
+        registered = register_mcp_skills(tools=[
+            {"name": name, "description": "Analytics tool."},
+        ])
+        adapter_cleanup.extend(registered)
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp:
+            mock_mcp.return_value = mcp_return
+            return registry.dispatch(SkillCall(
+                name=name, inputs={}, question="what's the market size?",
+            ))
+
+    def test_success_envelope_contradicts_itself(self, adapter_cleanup):
+        """A source IS attached, and the same envelope says there are none."""
+        env = self._dispatch(
+            adapter_cleanup, "mcp_char_ok",
+            ("Total paid dollars: $793,099,275.81 across 9,108,368 claims", True),
+        )
+        assert len(env.sources) == 1, "success branch does attach a source"
+        assert env.signal == "no_sources", (
+            "…and declares it has none. This is the defect being pinned."
+        )
+
+    def test_signal_cannot_discriminate_success_from_failure(self, adapter_cleanup):
+        """The whole point: one value, both branches."""
+        ok = self._dispatch(
+            adapter_cleanup, "mcp_char_ok2", ("real rows here", True),
+        )
+        bad = self._dispatch(
+            adapter_cleanup, "mcp_char_bad", ("connection refused", False),
+        )
+        assert ok.success is not bad.success, "success DOES discriminate"
+        assert ok.signal == bad.signal == "no_sources", (
+            "signal does NOT. A consumer reading signal alone cannot tell a "
+            "populated analytics answer from a dead MCP server."
+        )
+
+    def test_attached_source_is_what_spares_the_retry_guard(self, adapter_cleanup):
+        """_is_zero_result needs no_sources AND empty sources; we supply
+        only the first. Remove the SourceRef and successful MCP calls
+        would start incrementing consecutive_failures_per_tool."""
+        from app.pipeline.react_retry_guard import ReactRetryGuard
+
+        env = self._dispatch(
+            adapter_cleanup, "mcp_char_guard", ("real rows here", True),
+        )
+        result = {
+            "success": True,
+            "signal": env.signal,
+            "sources": [s.to_dict() for s in env.sources],
+        }
+        assert ReactRetryGuard._is_zero_result(result) is False
+        # Same result, source stripped — the near miss:
+        assert ReactRetryGuard._is_zero_result({**result, "sources": []}) is True
