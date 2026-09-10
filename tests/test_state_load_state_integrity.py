@@ -305,3 +305,38 @@ def test_absent_and_empty_blocks_are_distinguishable(store, monkeypatch):
     assert "last_turns='empty'" in out          # returned [], not missing
     assert "last_turn_sources='absent'" in out  # returned None
     assert "route_standalone" in out            # the routing decision, separately
+
+
+def test_the_instrumentation_pass_did_not_add_a_swallow():
+    """This node went from 1 handler none-swallowing to 2 swallowing WHILE it
+    was being instrumented — a swallow introduced by the pass whose purpose is
+    removing swallows. Same shape as the governor's NameError-into-`except:
+    pass`, which would have hidden a log line that never logged, forever.
+
+    A handler here is acceptable only if it REPORTS: re-raises, logs, or returns
+    the exception to a caller that logs it. Bare `except: pass` is not.
+    """
+    import ast
+    import inspect
+    import app.stages.state_load as sl
+
+    tree = ast.parse(inspect.getsource(sl))
+    silent = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        reports = False
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Raise):
+                reports = True
+            elif isinstance(sub, ast.Return) and sub.value is not None:
+                reports = True          # returns the error to a caller
+            elif isinstance(sub, ast.Call):
+                f = sub.func
+                name = getattr(f, "attr", None) or getattr(f, "id", "")
+                if name in ("warning", "error", "exception", "info", "debug",
+                            "record_decision", "record_ambient"):
+                    reports = True
+        if not reports:
+            silent.append(getattr(node, "lineno", "?"))
+    assert not silent, f"swallowing handler(s) at line(s) {silent}"

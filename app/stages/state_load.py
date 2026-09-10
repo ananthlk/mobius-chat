@@ -8,7 +8,7 @@ from app.state.context_router import route_context
 from app.state.model import ThreadState
 from app.state.state_extractor import extract_state_delta
 from app.storage.results import clear_tool_results
-from app.telemetry.spans import record_decision
+from app.telemetry.spans import KIND_DB_READ, record_ambient, record_decision
 from app.storage.threads import (
     StateUnavailable,
     get_last_turn_messages,
@@ -115,7 +115,11 @@ def run_state_load(
         _t0 = _t.perf_counter()
         try:
             return fn(*a), target, (_t.perf_counter() - _t0) * 1000.0, None
-        except Exception as exc:                      # never let a read kill the turn
+        except Exception as exc:
+            # NOT a swallow: the exception is RETURNED and logged by _take
+            # below. Broad on purpose — one slow or broken table must degrade
+            # its own block, not kill the turn — but it is reported, and the
+            # block reports read_failed rather than empty.
             return None, target, (_t.perf_counter() - _t0) * 1000.0, exc
 
     _tid = ctx.thread_id
@@ -143,11 +147,14 @@ def run_state_load(
             return default
         val, target, ms, exc = fut.result()
         _raw[name] = val if exc is None else "__error__"
-        try:
-            from app.telemetry.spans import record_ambient, KIND_DB_READ
-            record_ambient(KIND_DB_READ, target, ms=ms)
-        except Exception:
-            pass
+        # No try/except around this. record_ambient already guarantees it never
+        # raises and logs its own failures, so a wrapper here would be redundant
+        # AND would swallow that warning — a swallow introduced by the pass whose
+        # whole purpose is removing swallows. (Caught in review: this node went
+        # from 1 handler none-swallowing to 2 swallowing while being
+        # instrumented. Same shape as the governor's NameError-into-`except:
+        # pass`, which the instrumentation would have hidden forever.)
+        record_ambient(KIND_DB_READ, target, ms=ms)
         if exc is not None:
             logger.warning("[state_load] %s read failed: %s", target, exc)
             return default
