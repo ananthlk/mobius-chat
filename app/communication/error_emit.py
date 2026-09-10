@@ -97,6 +97,22 @@ def classify_exception(
     # ── Content filtering (Vertex BLOCK_SAFETY, Anthropic 400 content policy) ─
     # Must come before the 4xx/5xx scans: a 400 content-filter hit would
     # otherwise fall through to internal_error (no URL → not scrape, not 5xx).
+    # Truncation is checked FIRST and separately. It used to match
+    # "vertexblockederror" below and tell the user their question was blocked by
+    # a content safety rule and to rephrase it — for what is actually our own
+    # output-token budget running out. A wrong cause is bad; a wrong cause that
+    # implies the user's content was refused is worse.
+    if "vertextruncatederror" in lower or "exhausted its output budget" in lower:
+        return ErrorEnvelope(
+            # token_budget, not a new code: it is in the contract's Literal set
+            # and it names this exactly — the OUTPUT budget was exhausted.
+            error_code="token_budget",
+            user_facing_message=(
+                "The answer was cut off before it could be written. "
+                "This is a limit on our side, not a problem with your question — "
+                "please try again."
+            ),
+        )
     _CF_SIGNALS = (
         "output blocked by content filtering",
         "content filtering policy",

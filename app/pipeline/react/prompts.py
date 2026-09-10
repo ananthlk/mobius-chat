@@ -696,7 +696,7 @@ def _call_llm_json(
     path below — ``generate_sync()`` doesn't accept these yet, so the
     legacy sync fallback branch is untouched.
     """
-    from app.services.llm_provider import VertexBlockedError
+    from app.services.llm_provider import VertexBlockedError, VertexTruncatedError
 
     if (stage or "").startswith("react_"):
         # Reasoning rounds may return longer thoughts + final answer JSON; Flash sometimes truncated at 800.
@@ -733,6 +733,18 @@ def _call_llm_json(
 
     try:
         raw, usage = _run(prompt)
+    except VertexTruncatedError:
+        # Deliberately NOT condensed-retried. Truncation means the OUTPUT budget
+        # ran out; shrinking the INPUT cannot fix that and just spends another
+        # full call to fail the same way. Re-raised so the real cause reaches
+        # the caller instead of being laundered into a safety block.
+        logger.warning(
+            "[react] vertex TRUNCATED on stage=%s — output budget exhausted, not "
+            "a safety block; not retrying condensed (cid=%s)",
+            stage,
+            getattr(ctx, "correlation_id", "?")[:8] if ctx else "?",
+        )
+        raise
     except VertexBlockedError:
         # Vertex safety filter blocked the response (empty candidate). This
         # commonly happens when tool results carry dense financial tables.

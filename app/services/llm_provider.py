@@ -11,8 +11,54 @@ import urllib.request
 
 
 class VertexBlockedError(RuntimeError):
-    """Raised when Vertex AI returns a candidate with no content parts (safety block or empty response)."""
+    """Raised when Vertex REFUSED to produce content — a genuine safety stop."""
     pass
+
+
+class VertexTruncatedError(RuntimeError):
+    """Raised when Vertex ran OUT OF OUTPUT BUDGET before emitting a visible token.
+
+    Distinct from VertexBlockedError because the remedies are opposite. A safety
+    block is answered by condensing or rephrasing the INPUT; truncation is
+    answered by raising max_tokens, and condensing the input cannot fix it —
+    it just spends another call to fail the same way.
+
+    Both surface identically at the SDK: `response.text` raises ValueError("no
+    parts") in either case, and the SDK's message helpfully guesses "likely
+    blocked by the safety filters" regardless. `finish_reason` is what actually
+    distinguishes them (1 STOP, 2 MAX_TOKENS, 3 SAFETY, 4 RECITATION) and it is
+    already in hand at the raise site.
+
+    Reported 2026-09-10 by the deep-research seat: a preflight with
+    max_tokens=16 against a THINKING model — which spends budget reasoning
+    before emitting anything visible — was reported as a safety block, with
+    finish_reason=2 printed in the same message that called it blocked."""
+    pass
+
+def vertex_no_content_error(finish_reason: object, max_tokens: object,
+                            cause: Exception) -> Exception:
+    """Choose the RIGHT error for a candidate that carried no visible content.
+
+    Pure and public so a test can exercise the decision itself. Inline at the
+    raise site it was untestable without standing up a Vertex response, so the
+    tests could only check the plumbing downstream of it — and a mutation that
+    deleted the branch entirely left every one of them green.
+
+    Proto enum: 1 STOP, 2 MAX_TOKENS, 3 SAFETY, 4 RECITATION. Matched on both
+    the numeric and symbolic forms because the SDK's repr varies by version.
+    """
+    f = str(finish_reason or "").upper()
+    if "MAX_TOKENS" in f or f == "2" or f.endswith(".2") or f.endswith(" 2"):
+        return VertexTruncatedError(
+            f"vertex response truncated: the model exhausted its output budget "
+            f"(finish_reason={finish_reason}, max_tokens={max_tokens}) before "
+            f"emitting a visible token. Raise max_tokens — condensing the "
+            f"prompt will not help."
+        )
+    return VertexBlockedError(
+        f"vertex response blocked (finish_reason={finish_reason}): {cause}"
+    )
+
 from typing import Any, AsyncIterator, Callable, Dict
 
 from app.services.usage import LLMUsageDict, zero_usage, usage_dict
@@ -597,21 +643,36 @@ def _vertex_generate_sync(
     try:
         text = response.text or ""
     except ValueError as _ve:
-        # Vertex returns a candidate with zero content parts when the safety
-        # filter blocks the response. The SDK raises ValueError("Response
-        # candidate content has no parts (and thus no text).").
+        # `response.text` raises ValueError("...has no parts...") whenever the
+        # candidate carries no visible content — which happens for a SAFETY
+        # stop, for MAX_TOKENS, and for RECITATION alike. The SDK's own message
+        # guesses "likely blocked by the safety filters" in every case.
+        #
+        # finish_reason is what actually distinguishes them, and it was already
+        # being read here — but only to decorate the message, never to decide
+        # the error. So a budget exhaustion was raised as a safety block with
+        # the number that disproves it printed alongside.
         _finish = None
         try:
             _finish = str(response.candidates[0].finish_reason) if response.candidates else "unknown"
         except Exception:
             pass
-        logger.warning(
-            "[vertex] response blocked — no content parts (model=%s finish_reason=%s err=%s)",
-            model_name, _finish, _ve,
-        )
-        raise VertexBlockedError(
-            f"vertex response blocked (finish_reason={_finish}): {_ve}"
-        ) from _ve
+        _err = vertex_no_content_error(
+            _finish, (gen_config or {}).get("max_output_tokens"), _ve)
+        if isinstance(_err, VertexTruncatedError):
+            logger.warning(
+                "[vertex] response TRUNCATED — output budget exhausted before any "
+                "visible token (model=%s finish_reason=%s max_tokens=%s). Thinking "
+                "models spend budget reasoning first, so a small max_tokens yields "
+                "no text at all rather than short text.",
+                model_name, _finish, (gen_config or {}).get("max_output_tokens"),
+            )
+        else:
+            logger.warning(
+                "[vertex] response blocked — no content parts (model=%s finish_reason=%s err=%s)",
+                model_name, _finish, _ve,
+            )
+        raise _err from _ve
     usage = zero_usage("vertex", model_name)
     if getattr(response, "usage_metadata", None) is not None:
         um = response.usage_metadata
