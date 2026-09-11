@@ -20,7 +20,7 @@
  *
  * Built to docs/AB_HARNESS_FE_RENDER_CONTRACT.md against app/api/ab_harness.py.
  */
-import { renderEnvelope, renderSourcesList, type EnvBlock } from "./render/bubble";
+import { renderEnvelope, renderSourcesList, _inlineMd, type EnvBlock } from "./render/bubble";
 
 const API = window.location.origin;
 const LS_KEY = "ab:expandAll";
@@ -283,6 +283,12 @@ export function renderComparison(cmp: Comparison, root: HTMLElement): void {
   const toggle = el("button", "ab-expand-all", expandAll ? "Collapse all detail" : "Expand all detail") as HTMLButtonElement;
   toggle.addEventListener("click", () => { writeExpandAll(!expandAll); renderComparison(cmp, root); });
   header.appendChild(toggle);
+
+  // Live fork — run every arm on this question at the same instant and watch both fill in.
+  const forkBtn = el("button", "ab-fork-btn", "▶ Run live fork") as HTMLButtonElement;
+  forkBtn.title = "Run every arm on this question simultaneously and stream both answers in";
+  forkBtn.addEventListener("click", () => { forkBtn.disabled = true; void startFork(cmp, root); });
+  header.appendChild(forkBtn);
   root.appendChild(header);
 
   root.appendChild(el("h1", "ab-question", cmp.question.q));
@@ -307,6 +313,158 @@ export function renderComparison(cmp: Comparison, root: HTMLElement): void {
   }
 
   root.appendChild(renderTerms(cmp, arms, expandAll));
+}
+
+// ── live simultaneous fork ────────────────────────────────────────────────────
+// Ananth: "simultaneous and onscreen rendering is important — that's how I would know
+// what works and how." Sequential arms 20 min apart can't separate "the governor
+// decided better" from "the model rolled differently"; running together holds corpus,
+// manifest, roster, cache, load and wall-clock constant. It does NOT hold the model's
+// sampling — one fork is ONE sample of two, and the page must never read as a verdict.
+interface ForkResponse {
+  run_id: string; question_id: string; question: string; mode: string;
+  launched: Record<string, string>;      // {arm: correlation_id}
+  errors?: Record<string, string> | null;
+  simultaneous: boolean;
+  held_constant_by_running_together: string[];
+  still_varied: string[];
+}
+type LiveStatus = "running" | "streaming" | "done" | "error";
+interface LiveArm { status: LiveStatus; thinking?: string; draft?: string; error?: string; final?: ArmData; }
+
+/** A live box: running/streaming shows progress + streamed draft; done reuses the
+ *  production render path (renderArmBox on the captured snapshot). Column order is
+ *  fixed by experiment.arms — the faster arm must NEVER jump left, or every screenshot
+ *  lies about which arm is which. v2 settled 22s ahead of v1 on the first fork. */
+function renderLiveBox(arm: ArmMeta, live: LiveArm, expandAll: boolean): HTMLElement {
+  if (live.status === "done" && live.final) return renderArmBox(arm, live.final, expandAll);
+
+  const box = el("section", "ab-box ab-box--live");
+  const head = el("header", "ab-box-head");
+  head.appendChild(el("span", "ab-box-arm", arm.label));
+  const badge = el("span", `ab-box-status ab-live--${live.status}`,
+    live.status === "error" ? "error" : live.status === "streaming" ? "streaming…" : "running…");
+  head.appendChild(badge);
+  box.appendChild(head);
+
+  if (live.status === "error") {
+    box.appendChild(el("div", "ab-answer ab-answer--error", live.error || "stream error"));
+    return box;
+  }
+  const body = el("div", "ab-answer ab-live-body");
+  if (live.draft) {
+    // The streamed draft, through the same inline-markdown the bubble uses. A preview —
+    // the final answer swaps in on completion, rendered by the production path.
+    const d = el("div", "ab-live-draft");
+    d.innerHTML = _inlineMd(live.draft);
+    body.appendChild(d);
+  } else {
+    const spin = el("div", "ab-live-spinner");
+    spin.appendChild(el("span", "ab-live-dot"));
+    spin.appendChild(el("span", "ab-live-word", live.thinking || "thinking…"));
+    body.appendChild(spin);
+  }
+  box.appendChild(body);
+  return box;
+}
+
+/** Open the fork, then a stream per arm. Never reorders columns. Stream first, snapshot
+ *  second — reading the snapshot while a stream runs would render an empty column that
+ *  looks like "no answer" instead of "still thinking". */
+async function startFork(cmp: Comparison, root: HTMLElement): Promise<void> {
+  let fork: ForkResponse;
+  try {
+    const r = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/fork`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (r.status === 409) {
+      const msg = await r.json().catch(() => ({}));
+      alert(`Fork not enabled on this service: ${(msg as { detail?: string }).detail || "MOBIUS_V2_AB_FORK off"}`);
+      return;
+    }
+    if (!r.ok) throw new Error(`fork: HTTP ${r.status}`);
+    fork = await r.json();
+  } catch (e) {
+    alert(`Could not start fork: ${(e as Error).message}`);
+    return;
+  }
+
+  const arms = cmp.experiment.arms;              // ORDER FROZEN here, once.
+  const state: Record<string, LiveArm> = {};
+  for (const a of arms) {
+    state[a.id] = fork.launched[a.id] ? { status: "running" } : { status: "error", error: "not launched" };
+  }
+  const expandAll = readExpandAll();
+
+  function paint(): void {
+    root.textContent = "";
+    root.appendChild(el("div", "ab-banner",
+      "A/B HARNESS — both arms forked on identical input at the same instant. Nobody was served."));
+
+    // The two provenance strips, from payload data (not hardcoded). still_varied stays
+    // visible: one fork is one sample of two, and simultaneity removes the confound, not
+    // the model's own sampling variance.
+    const prov = el("div", "ab-fork-prov");
+    const held = el("div", "ab-fork-held");
+    held.appendChild(el("span", "ab-exp-key", "Held constant by running together"));
+    held.appendChild(el("span", "ab-exp-val", fork.held_constant_by_running_together.join(" · ")));
+    const varied = el("div", "ab-fork-varied");
+    varied.appendChild(el("span", "ab-exp-key", "Still varied"));
+    varied.appendChild(el("span", "ab-exp-val", fork.still_varied.join(" · ")));
+    prov.appendChild(held);
+    prov.appendChild(varied);
+    root.appendChild(prov);
+
+    root.appendChild(el("h1", "ab-question", cmp.question.q));
+    const grid = el("div", "ab-grid");
+    grid.style.setProperty("--ab-cols", String(arms.length));
+    for (const a of arms) grid.appendChild(renderLiveBox(a, state[a.id], expandAll));
+    root.appendChild(grid);
+  }
+  paint();
+
+  async function captureAndFinalize(armId: string, cid: string): Promise<void> {
+    try {
+      await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/arm/${encodeURIComponent(armId)}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correlation_id: cid }) });
+      const cr = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`);
+      const fresh: Comparison = await cr.json();
+      state[armId] = { status: "done", final: fresh.arms[armId] };
+    } catch (e) {
+      state[armId] = { status: "error", error: `capture failed: ${(e as Error).message}` };
+    }
+    paint();
+  }
+
+  for (const a of arms) {
+    const cid = fork.launched[a.id];
+    if (!cid) continue;
+    const es = new EventSource(`${API}/chat/stream/${encodeURIComponent(cid)}`);
+    es.onmessage = (e: MessageEvent) => {
+      let parsed: { event: string; data?: Record<string, unknown> };
+      try { parsed = JSON.parse(e.data as string); } catch { return; }
+      const d = parsed.data || {};
+      if (parsed.event === "thinking" && d.line != null) {
+        if (state[a.id].status === "running") { state[a.id].thinking = String(d.line); paint(); }
+      } else if (parsed.event === "draft_ready" && d.text != null) {
+        state[a.id].status = "streaming"; state[a.id].draft = String(d.text); paint();
+      } else if (parsed.event === "completed") {
+        try { es.close(); } catch { /* already closed */ }
+        void captureAndFinalize(a.id, cid);
+      } else if (parsed.event === "error" && d.message != null) {
+        try { es.close(); } catch { /* already closed */ }
+        state[a.id] = { status: "error", error: String(d.message) }; paint();
+      }
+    };
+    es.onerror = () => {
+      // A transport drop after completion is normal (we already closed). Only surface it
+      // if the arm hadn't finished — otherwise it's the expected close.
+      if (state[a.id].status === "running" || state[a.id].status === "streaming") {
+        try { es.close(); } catch { /* noop */ }
+        state[a.id] = { status: "error", error: "stream disconnected before completion" };
+        paint();
+      }
+    };
+  }
 }
 
 // ── question navigator ────────────────────────────────────────────────────────

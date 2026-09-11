@@ -1161,6 +1161,13 @@ function renderComparison(cmp, root) {
     renderComparison(cmp, root);
   });
   header.appendChild(toggle);
+  const forkBtn = el("button", "ab-fork-btn", "\u25B6 Run live fork");
+  forkBtn.title = "Run every arm on this question simultaneously and stream both answers in";
+  forkBtn.addEventListener("click", () => {
+    forkBtn.disabled = true;
+    void startFork(cmp, root);
+  });
+  header.appendChild(forkBtn);
   root.appendChild(header);
   root.appendChild(el("h1", "ab-question", cmp.question.q));
   const meta = el("div", "ab-question-meta");
@@ -1182,6 +1189,150 @@ function renderComparison(cmp, root) {
       root.appendChild(div);
   }
   root.appendChild(renderTerms(cmp, arms, expandAll));
+}
+function renderLiveBox(arm, live, expandAll) {
+  if (live.status === "done" && live.final)
+    return renderArmBox(arm, live.final, expandAll);
+  const box = el("section", "ab-box ab-box--live");
+  const head = el("header", "ab-box-head");
+  head.appendChild(el("span", "ab-box-arm", arm.label));
+  const badge = el(
+    "span",
+    `ab-box-status ab-live--${live.status}`,
+    live.status === "error" ? "error" : live.status === "streaming" ? "streaming\u2026" : "running\u2026"
+  );
+  head.appendChild(badge);
+  box.appendChild(head);
+  if (live.status === "error") {
+    box.appendChild(el("div", "ab-answer ab-answer--error", live.error || "stream error"));
+    return box;
+  }
+  const body = el("div", "ab-answer ab-live-body");
+  if (live.draft) {
+    const d = el("div", "ab-live-draft");
+    d.innerHTML = _inlineMd(live.draft);
+    body.appendChild(d);
+  } else {
+    const spin = el("div", "ab-live-spinner");
+    spin.appendChild(el("span", "ab-live-dot"));
+    spin.appendChild(el("span", "ab-live-word", live.thinking || "thinking\u2026"));
+    body.appendChild(spin);
+  }
+  box.appendChild(body);
+  return box;
+}
+async function startFork(cmp, root) {
+  let fork;
+  try {
+    const r = await fetch(
+      `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/fork`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+    );
+    if (r.status === 409) {
+      const msg = await r.json().catch(() => ({}));
+      alert(`Fork not enabled on this service: ${msg.detail || "MOBIUS_V2_AB_FORK off"}`);
+      return;
+    }
+    if (!r.ok)
+      throw new Error(`fork: HTTP ${r.status}`);
+    fork = await r.json();
+  } catch (e) {
+    alert(`Could not start fork: ${e.message}`);
+    return;
+  }
+  const arms = cmp.experiment.arms;
+  const state = {};
+  for (const a of arms) {
+    state[a.id] = fork.launched[a.id] ? { status: "running" } : { status: "error", error: "not launched" };
+  }
+  const expandAll = readExpandAll();
+  function paint() {
+    root.textContent = "";
+    root.appendChild(el(
+      "div",
+      "ab-banner",
+      "A/B HARNESS \u2014 both arms forked on identical input at the same instant. Nobody was served."
+    ));
+    const prov = el("div", "ab-fork-prov");
+    const held = el("div", "ab-fork-held");
+    held.appendChild(el("span", "ab-exp-key", "Held constant by running together"));
+    held.appendChild(el("span", "ab-exp-val", fork.held_constant_by_running_together.join(" \xB7 ")));
+    const varied = el("div", "ab-fork-varied");
+    varied.appendChild(el("span", "ab-exp-key", "Still varied"));
+    varied.appendChild(el("span", "ab-exp-val", fork.still_varied.join(" \xB7 ")));
+    prov.appendChild(held);
+    prov.appendChild(varied);
+    root.appendChild(prov);
+    root.appendChild(el("h1", "ab-question", cmp.question.q));
+    const grid = el("div", "ab-grid");
+    grid.style.setProperty("--ab-cols", String(arms.length));
+    for (const a of arms)
+      grid.appendChild(renderLiveBox(a, state[a.id], expandAll));
+    root.appendChild(grid);
+  }
+  paint();
+  async function captureAndFinalize(armId, cid) {
+    try {
+      await fetch(
+        `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/arm/${encodeURIComponent(armId)}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correlation_id: cid }) }
+      );
+      const cr = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`);
+      const fresh = await cr.json();
+      state[armId] = { status: "done", final: fresh.arms[armId] };
+    } catch (e) {
+      state[armId] = { status: "error", error: `capture failed: ${e.message}` };
+    }
+    paint();
+  }
+  for (const a of arms) {
+    const cid = fork.launched[a.id];
+    if (!cid)
+      continue;
+    const es = new EventSource(`${API}/chat/stream/${encodeURIComponent(cid)}`);
+    es.onmessage = (e) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      const d = parsed.data || {};
+      if (parsed.event === "thinking" && d.line != null) {
+        if (state[a.id].status === "running") {
+          state[a.id].thinking = String(d.line);
+          paint();
+        }
+      } else if (parsed.event === "draft_ready" && d.text != null) {
+        state[a.id].status = "streaming";
+        state[a.id].draft = String(d.text);
+        paint();
+      } else if (parsed.event === "completed") {
+        try {
+          es.close();
+        } catch {
+        }
+        void captureAndFinalize(a.id, cid);
+      } else if (parsed.event === "error" && d.message != null) {
+        try {
+          es.close();
+        } catch {
+        }
+        state[a.id] = { status: "error", error: String(d.message) };
+        paint();
+      }
+    };
+    es.onerror = () => {
+      if (state[a.id].status === "running" || state[a.id].status === "streaming") {
+        try {
+          es.close();
+        } catch {
+        }
+        state[a.id] = { status: "error", error: "stream disconnected before completion" };
+        paint();
+      }
+    };
+  }
 }
 function renderNav(run, current, onPick) {
   const nav = el("nav", "ab-nav");

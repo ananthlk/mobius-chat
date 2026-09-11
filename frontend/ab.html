@@ -36,6 +36,26 @@
   .ab-expand-all{margin-left:auto;border:1px solid var(--mobius-border,#e2e8f0);background:#fff;border-radius:6px;
                  padding:5px 12px;font-size:12px;cursor:pointer;color:var(--mobius-text-primary,#1a1d21)}
   .ab-expand-all:hover{border-color:#7c3aed}
+  .ab-fork-btn{border:1px solid #7c3aed;background:#7c3aed;color:#fff;border-radius:6px;padding:5px 14px;
+               font-size:12px;font-weight:600;cursor:pointer}
+  .ab-fork-btn:hover{background:#6d28d9}
+  .ab-fork-btn:disabled{opacity:.5;cursor:default}
+
+  /* Live fork provenance — held-constant + still-varied, both visible. still_varied is
+     the honesty: one fork is one sample of two. */
+  .ab-fork-prov{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;padding:12px 14px;
+                background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px}
+  .ab-fork-held .ab-exp-key,.ab-fork-varied .ab-exp-key{display:inline-block;min-width:230px}
+  .ab-fork-varied .ab-exp-val{color:#7c3aed;font-weight:600}
+  .ab-box--live{min-height:120px}
+  .ab-live--running,.ab-live--streaming{color:#7c3aed}
+  .ab-live--error{color:#dc2626}
+  .ab-live-body{min-height:80px}
+  .ab-live-spinner{display:flex;align-items:center;gap:10px;color:var(--mobius-text-muted,#64748b);font-size:13px}
+  .ab-live-dot{width:9px;height:9px;border-radius:50%;background:#7c3aed;animation:ab-pulse 1s ease-in-out infinite}
+  @keyframes ab-pulse{0%,100%{opacity:.3}50%{opacity:1}}
+  .ab-live-draft{font-size:13.5px;line-height:1.55;color:var(--mobius-text-primary,#1a1d21);opacity:.85}
+  @media (prefers-reduced-motion:reduce){.ab-live-dot{animation:none}}
 
   .ab-question{font-size:19px;font-weight:650;letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
   .ab-question-meta{display:flex;gap:6px;margin-bottom:18px}
