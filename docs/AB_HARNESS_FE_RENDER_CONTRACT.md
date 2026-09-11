@@ -20,6 +20,16 @@ real bubble, the judgement is about your page, not the orchestrator."* Everythin
 Corollary: **the endpoint returns v1's answer as the REAL `assistant_envelope`** — the exact object the
 production turn produced and the bubble consumes — **not pre-rendered HTML, not markdown, not a summary.**
 If I'm handed HTML I cannot guarantee parity with the bubble, and the comparison is compromised.
+Passthrough is verbatim `{version, blocks}`, not re-wrapped, `version` not stripped — Governor asserts byte
+identity with `/chat/response/{cid}` in the endpoint test rather than trusting the composer.
+
+**The A/B page is a container for two instances of the production renderer, not a rendering path of its own**
+(Ananth asked "same UI both boxes?" — yes, and this is why). Same renderer both sides means any visible
+difference between box 1 and box 2 is a real difference in *what the orchestrator produced*, never a difference
+in the viewer. That has a consequence Governor now imposes on the arms, not the page: **the renderer accepts
+exactly ONE contract, so v2's COMMUNICATE must emit the same `assistant_envelope` shape or box 2 falls back to
+trace-mode permanently.** The shape isn't a convention the two arms agree to (agreement splits the moment one
+side wants a variant) — it's a constraint the single renderer imposes on both.
 
 ---
 
@@ -58,16 +68,19 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
       "answer_envelope": null,              // ← null NOW (posture machine, shadow); a real envelope at R1,
                                             //   rendered IDENTICALLY to v1. box 2 = answer-mode when present,
                                             //   trace-mode when null. The switch is data-driven, no retrofit.
-      "decision_trace": [ { "round_n": 1, "posture": "gather", "directive": "…", "gaps_opened": ["g1","g2"], "gaps_closed": [], "rationale": "…" } ],
+      "decision_trace": [                   // v2's rows carry the SHADOW HALF — the compare() output, stored
+        { "round_n": 1, "posture": "gather", "directive": "…", "gap_targeted": "g1",
+          "gaps_opened": ["g1","g2"], "gaps_closed": [], "rationale": "…",
+          "v1_directive": "…", "v1_reason": "…", "v1_maps_to": "gather",
+          "verdict": "agree" }              // verdict ∈ {agree, diverge, unmapped}; = turn_rounds.shadow_verdict,
+                                            //   AUTHORED server-side in compare(). Read it; NEVER recompute it FE-side.
+      ],
       "delivered": { "latency_ms": null, "cost_usd": null, "exit_mode": "shadow", "rounds": 12 },
       "kept": null, "in_band": null         // null renders "—", never "false" (unset ≠ false; the count-vs-total lesson)
     }
-  },
-  "divergences": [                          // §5 payoff: the R0 view where the machines disagree, by round
-    { "round_n": 9, "dimension": "exit", "v1": "complete", "v2": "gaps_increasing",
-      "verdict": "diverge", "why": "v2 saw 2 gaps still open" }
-    // verdict ∈ {agree, diverge, unmapped}. "unmapped" ≠ "diverge" — see §2 render rule.
-  ]
+  }
+  // NO separate divergences[] array. The strip is a FILTERED VIEW of v2.decision_trace
+  // (rows where verdict != "agree"), never a second representation — §2. One source.
 }
 ```
 
@@ -85,10 +98,15 @@ Notes that are load-bearing, not stylistic:
 - `answer_envelope` ← **`GET /chat/response/{correlation_id}`.`assistant_envelope`**, the verbatim object the live
   turn produced ({version, blocks}). No pre-render, no markdown, no reconstruction — box 1 runs the bubble's code.
 - `decision_trace` ← **`turn_rounds`** (migration 068, dev-applied, idempotent). Column map: `round_n`←`round_index`,
-  `posture`←`posture`, `directive`←`directive`, `rationale`←`rationale`, `gaps_opened/closed`←JSONB of same name.
-  Shadow half for the divergence view: `v1_directive`, `v1_reason`, `v1_maps_to`, `shadow_verdict`. NOT `turn_spans`
-  — that table has a `sampled`/`sample_rate` column that can make a row absent by config; `turn_rounds` has none and
-  that absence is the row-is-truth guarantee. Trace is a persisted row now, never computed from a log line.
+  `posture`←`posture`, `directive`←`directive`, `rationale`←`rationale`, `gap_targeted`←`gap_targeted`,
+  `gaps_opened/closed`←JSONB of same name. v2's rows also carry the shadow half: `v1_directive`, `v1_reason`,
+  `v1_maps_to`, and `verdict`←`shadow_verdict`. NOT `turn_spans` — that table has a `sampled`/`sample_rate` column
+  that can make a row absent by config; `turn_rounds` has none and that absence is the row-is-truth guarantee.
+  Trace is a persisted row now, never computed from a log line.
+- **ONE source, no sibling array (Governor's call, my §2 one level up).** There is no pre-composed `divergences[]`.
+  A second array carrying facts already in `decision_trace[]` drifts the first time someone edits one and not the
+  other — the exact defect family this program removed repeatedly this week. The divergence strip is a **filtered
+  view** of `v2.decision_trace` (rows where `verdict != "agree"`), computed at render time, never stored twice.
 
 ---
 
@@ -131,16 +149,25 @@ so the near-production comparison is the resting state and the machine detail is
   remembered (localStorage, per the standard try/catch-guarded pattern) so a reviewer working through 20 questions
   isn't re-collapsing on every one.
 
-**Divergences render `unmapped` ≠ `diverge` (Governor's condition, load-bearing):** the strip keys off
-`divergence.verdict`, and the three verdicts get three visibly different treatments — never one lumped "they
-disagreed" row:
-- `agree` → not shown in the strip (it's the null result; no divergence to surface).
-- `diverge` → v1 and v2 reached different postures on the same, mapped dimension. This is the real signal —
-  neutral "⚑ round N · v1 X vs v2 Y" row, the thing a human judges.
-- `unmapped` → v1 said something the shadow mapping doesn't cover. **This is a finding about the MAPPING, not
-  evidence against v2** — render it in a distinct, clearly-not-a-conflict style (muted, tagged "mapping gap",
-  e.g. "⊘ round N · v1 X — not covered by mapping") and keep it out of any "where v2 differs" framing. Collapsing
-  it into `diverge` would make Governor's mapping coverage look like v2 errors; the contract forbids that.
+**Divergences = a filtered view of `v2.decision_trace`, keyed on the STORED `verdict` (Governor's condition,
+load-bearing):** the strip is `v2.decision_trace.filter(r => r.verdict !== "agree")` — no separate array. Each
+row's `verdict` gets a visibly different treatment; never one lumped "they disagreed" row:
+- `agree` → filtered out (the null result; no divergence to surface).
+- `diverge` → v1 and v2 reached different postures on the same, mapped dimension. The real signal — neutral
+  "⚑ round N · v1 X vs v2 Y" row, the thing a human judges.
+- `unmapped` → v1 said something the shadow mapping doesn't cover. **A finding about the MAPPING, not evidence
+  against v2** — distinct, clearly-not-a-conflict style (muted, "mapping gap", e.g. "⊘ round N · v1 X — not
+  covered by mapping"), kept out of any "where v2 differs" framing. Lumping it into `diverge` would make
+  Governor's mapping coverage look like v2 errors.
+
+> **🔴 Read the verdict; NEVER recompute it FE-side.** The page filters on the stored `verdict` field. It must
+> **not** derive divergence by comparing `v1_maps_to`/`posture` values itself — that would be a *second mapping*,
+> and it would disagree with the server's exactly where the server's is most interesting: `extend` resolves by
+> **reason**, not by name. Two `extend` rounds with identical directives map to different postures depending on
+> whether the reason is "quality issue flagged" vs "round budget exhausted"; a posture-vs-posture diff can't see
+> that and would flag correct behaviour as divergence. `compare()` authors the verdict once, server-side; the page
+> is a viewer. If a verdict ever looks wrong, the move is to tell Governor his mapping is wrong (which the FE is
+> well placed to spot — that's the whole point of `unmapped` being its own state), NOT to out-vote it in render.
 
 **The rendering (box 1/2) is the judgement surface; the terms are diagnostic and clearly subordinate** — which
 is exactly why they collapse and the answers don't. Never an aggregate score. 20 comparisons = **0** data points
