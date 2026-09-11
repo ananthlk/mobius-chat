@@ -81,16 +81,27 @@ def test_CAPABILITY_never_takes_the_finalize_path():
 # ── the known-wrong prompt, declared rather than discovered ─────────────────
 
 def test_the_prompt_mismatch_is_RECORDED_not_hidden():
-    """EXPLORE and ALTERNATIVES get v1's remediation prompt because v1 has no
-    other extend prompt at this branch. That is reproduced deliberately —
-    fixing it would vary the prompt, and then a divergence could not be
-    attributed to the decision. It must arrive on the row."""
+    """EXPLORE extends into v1's REMEDIATION prompt because v1 has no
+    extend-to-gather prompt at this branch. Reproduced deliberately — fixing it
+    would vary the prompt, and a divergence could no longer be attributed to
+    the decision. It must arrive on the row."""
     assert ex.decide(Decision(Posture.EXPLORE, "thin")).prompt_mismatch
-    assert ex.decide(Decision(Posture.ALTERNATIVES, "stuck")).prompt_mismatch
-    # NARROW is what the remediation prompt is actually for — no mismatch.
-    assert ex.decide(Decision(Posture.NARROW, "named claims")).prompt_mismatch is None
-    # and a non-extend action can never carry one
+    # NARROW is a WRAP-UP and no longer extends at all — nothing to mismatch.
+    assert ex.decide(Decision(Posture.NARROW, "nothing worth buying")).prompt_mismatch is None
     assert ex.decide(Decision(Posture.COMMUNICATE, "done")).prompt_mismatch is None
+
+
+def test_ALTERNATIVES_records_that_its_output_is_never_generated():
+    """v2 chooses to offer routes; v1 has no alternatives prompt, so they are
+    decided and never rendered — the person saw a normal answer.
+
+    An instruction whose output nothing reads is the worst shape in this
+    program's catalogue. The comparison must not be able to credit v2 with an
+    answer nobody saw.
+    """
+    a = ex.decide(Decision(Posture.ALTERNATIVES, "3 gaps unreachable"))
+    assert a.directive == ex.COMPLETE
+    assert a.prompt_mismatch == ex.ALTERNATIVES_NOT_RENDERED
 
 
 # ── the vocabulary is react_loop's, checked against react_loop ──────────────
@@ -267,3 +278,67 @@ def test_the_substitution_is_WRITTEN_and_READ_not_decided_and_discarded():
         assert producer in react, f"no producer for {column}"
         assert column in ledg, f"{column} not written"
         assert reader in api, f"no reader for {column}"
+
+
+# ── the runaway, as a regression ────────────────────────────────────────────
+
+def test_wrapup_postures_never_extend():
+    """THE runaway, 2026-09-11: 98 rounds on one turn, 420s against a 31s
+    promise, v1 saying `finalize` every round and v2 overriding it to `extend`.
+
+    posture.py returns NARROW and ALTERNATIVES from exactly one branch — the
+    one where worth_spending() ALREADY returned None. Mapping either to "buy
+    another round" inverts the decision that was just made. The first version
+    of this table mapped the NOUN; this asserts the BRANCH.
+    """
+    for posture in (Posture.NARROW, Posture.ALTERNATIVES):
+        a = ex.decide(Decision(posture, "gaps open but none worth buying"))
+        assert not a.continues, posture
+        assert a.directive == ex.COMPLETE, (posture, a.directive)
+
+
+def test_only_the_two_affordability_checked_postures_can_extend():
+    """EXPLORE and VALIDATE are the only postures select() returns after an
+    affordability check. Anything else extending means the fuse is the only
+    thing between a decision and an unbounded spend."""
+    can = {p for p in Posture if ex.decide(Decision(p, "x")).continues}
+    assert can == {Posture.EXPLORE, Posture.VALIDATE}, can
+
+
+def test_the_ceiling_stops_an_extend_even_when_every_other_signal_says_go():
+    """The fuse, checked BEFORE the exit mode so it holds when the exit mode is
+    WRONG — which is precisely the case that produced the runaway: select()
+    counted every open gap and said NARROW, exit_mode() counted only material
+    gaps and said COMPLETE, and nothing stopped the loop.
+
+    v1's max_it grows by one on every extend, so react_loop cannot stop me —
+    I am the one telling it to continue. The bound lives with the decision.
+    """
+    d = Decision(Posture.EXPLORE, "one more would close it")
+    assert ex.decide(d, ExitMode.COMPLETE, extensions_used=0).continues
+    at_ceiling = ex.decide(d, ExitMode.COMPLETE,
+                           extensions_used=ex.MAX_V2_EXTENSIONS)
+    assert not at_ceiling.continues
+    assert "CEILING" in at_ceiling.because
+    assert "fuse, not by the decision" in at_ceiling.because
+
+
+def test_the_population_mismatch_is_filed_in_code_not_only_in_a_doc():
+    """select() counts all open_gaps; exit_mode() counts only material ones.
+    Same state, same round, two answers — a decision-core defect, deliberately
+    not fixed in the change that stopped the runaway, because the right fix
+    changes what every recorded exit mode has meant.
+
+    An objection you agree with and do not act on is worse than one you argue
+    with. This is the least: making it impossible to rediscover."""
+    assert "min_importance" in ex.POPULATION_MISMATCH
+    assert "two answers" in ex.POPULATION_MISMATCH
+
+
+def test_the_ceiling_is_actually_WIRED_at_the_call_site():
+    """A ceiling the caller never supplies defaults to 0 forever and the guard
+    is decorative — the 'gate with no caller' shape. v1's own
+    _pp_extension_rounds_used is the counter; it must be passed."""
+    src = _react_src()
+    i = src.index("STEP 2: v2 DECIDES")
+    assert "extensions_used=_pp_extension_rounds_used" in src[i:i + 5000]

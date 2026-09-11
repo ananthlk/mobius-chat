@@ -72,18 +72,38 @@ V1_DIRECTIVES = (EXTEND, FINALIZE, COMPLETE)
 #     the same direction v1's own is, and that loss is RECORDED (see
 #     PROMPT_MISMATCH) rather than left to be discovered.
 #
+#
+# 🔴 CORRECTED 2026-09-11 AFTER A LIVE RUNAWAY: 98 rounds on one turn, v1
+# saying `finalize` and v2 overriding it to `extend` every single round.
+#
+# The first version of this table mapped POSTURE NAMES. NARROW sounds like
+# remediation, so I mapped it to `extend`. But posture.py returns NARROW from
+# exactly ONE branch -- the one where `worth_spending()` already returned None
+# -- and its own docstring says what it means there:
+#
+#     NARROW        -- what are we claiming, and what is left open
+#     ALTERNATIVES  -- given that it is open and we cannot reach it,
+#                      what CAN the user do
+#
+# Both are WRAP-UP postures, reached only when nothing is worth buying. Mapping
+# either to "buy another round" inverts the decision it just made. Read the
+# BRANCH that returns a posture, never the noun.
+#
 _POSTURE_TO_DIRECTIVE = {
-    # Keep gathering. Evidence is thin and a gap is worth spending on.
+    # The ONLY posture that means "buy another round": returned when
+    # worth_spending() found a gap it can afford. The affordability check has
+    # already happened inside select().
     Posture.EXPLORE: EXTEND,
-    # Remediation: the critique named unsupported claims and the next round is
-    # aimed at them. Same action as EXPLORE at this branch, different reason --
-    # and react_loop injects the critique either way.
-    Posture.NARROW: EXTEND,
-    # Run the check again. At THIS branch the groundedness floor has already
-    # run, so VALIDATE means "that verdict was not good enough, go again".
+    # A fix round, and select() only returns this when validate_worth_it() says
+    # it is affordable. Genuinely another round.
     Posture.VALIDATE: EXTEND,
-    # Give the person somewhere to go instead of "I don't know".
-    Posture.ALTERNATIVES: EXTEND,
+    # WRAP-UP. "gaps open but none worth buying: scope and name what is left."
+    # Nothing is worth buying -- that is how this branch was reached.
+    Posture.NARROW: COMPLETE,
+    # WRAP-UP. Its output is part of what gets SAID, not a round of its own:
+    # posture.py, "its output is part of what gets said (communicate delivers
+    # it)". See ALTERNATIVES_NOT_RENDERED below for what v1 loses here.
+    Posture.ALTERNATIVES: COMPLETE,
     # Done deciding. Whether it ships clean or with a notice is the exit mode's
     # call, not the posture's -- see below.
     Posture.COMMUNICATE: COMPLETE,
@@ -96,10 +116,11 @@ _POSTURE_TO_DIRECTIVE = {
 # 🔴 WHERE THIS EXECUTOR IS KNOWINGLY WRONG, stated before it ships.
 #
 # `extend` at this branch injects the CRITIQUE as the next round's observation.
-# That is right for NARROW (aimed at named claims) and defensible for VALIDATE.
-# It is wrong for EXPLORE -- a gathering round gets a remediation prompt -- and
-# it is wrong for ALTERNATIVES, which wants a reframe prompt that does not
-# exist in v1 at all.
+# That is defensible for VALIDATE -- a fix round wants the critique. It is
+# wrong for EXPLORE, where a GATHERING round receives a remediation prompt.
+#
+# (This block used to also name NARROW and ALTERNATIVES. It no longer does,
+# because after the runaway neither extends at all -- see the corrected map.)
 #
 # This is the SAME defect the chat seat reported in v1's pre-round extend, and
 # I am reproducing it rather than fixing it, deliberately: fixing it here would
@@ -112,9 +133,24 @@ _POSTURE_TO_DIRECTIVE = {
 PROMPT_MISMATCH = {
     Posture.EXPLORE: "gathering round receives the remediation prompt (v1 has "
                      "no separate extend-to-gather prompt at this branch)",
-    Posture.ALTERNATIVES: "reframe round receives the remediation prompt; v1 "
-                          "has no alternatives prompt at all",
 }
+
+# 🔴 AND WHERE IT IS KNOWINGLY LOSSY, which is a different failure.
+#
+# ALTERNATIVES now ships rather than extends -- correct, it is a wrap-up. But
+# v1 has NO alternatives prompt, so the routes it decided to offer are never
+# generated and never rendered. The posture is chosen and its output does not
+# exist.
+#
+# That is the worst shape in this program's catalogue: an instruction whose
+# output nothing reads. It is recorded on the row so the comparison cannot
+# quietly credit v2 with an answer the person never saw. It is ALSO the
+# concrete thing step 3 has to buy -- an alternatives prompt is the first
+# per-module arm with a reason already measured for it.
+ALTERNATIVES_NOT_RENDERED = (
+    "v2 chose ALTERNATIVES; v1 has no alternatives prompt, so the routes were "
+    "decided and never generated -- the person saw a normal answer"
+)
 
 
 @dataclass(frozen=True)
@@ -135,7 +171,26 @@ class Action:
         return self.directive == EXTEND
 
 
-def decide(decision: Decision, exit: ExitMode | None = None) -> Action:
+# ── THE CEILING ─────────────────────────────────────────────────────────────
+#
+# v1's `max_it` GROWS BY ONE on every extend. There is no natural stop: an
+# executor that can say `extend` can say it forever, and on 2026-09-11 mine did
+# -- 98 rounds on one turn, 420s, against a 31s promise.
+#
+# The corrected posture map removes the cause. This removes the CLASS. A
+# decision module that can spend without limit is not bounded by the promise,
+# and my own charter says bound, never choose. The bound must live where the
+# decision is made, not in the thing being decided about -- react_loop cannot
+# stop me, because I am the one telling it to continue.
+#
+# 6 is not a tuned number. It is above the highest round count observed in
+# 1,367 v1 turns (4) and far below a runaway, and it exists to make the failure
+# mode impossible rather than unlikely. It is a [GUESS] and is labelled one.
+MAX_V2_EXTENSIONS = 6   # [GUESS] -- a fuse, not a target
+
+
+def decide(decision: Decision, exit: ExitMode | None = None,
+           extensions_used: int = 0) -> Action:
     """Posture -> the action v1's loop already knows how to take.
 
     `exit` splits COMMUNICATE, and only COMMUNICATE:
@@ -186,6 +241,22 @@ def decide(decision: Decision, exit: ExitMode | None = None) -> Action:
     # disagreement inside my own module and it is recorded, not resolved
     # silently.
     contradiction = ""
+
+    # The fuse, checked BEFORE the exit mode so it holds even when the exit
+    # mode is wrong -- which is exactly the case that produced the runaway:
+    # select() counted every open gap and returned NARROW, exit_mode() counted
+    # only MATERIAL gaps and returned COMPLETE, and nothing stopped the loop.
+    # Two populations in one module (see POPULATION_MISMATCH).
+    if directive == EXTEND and extensions_used >= MAX_V2_EXTENSIONS:
+        return Action(
+            directive=FINALIZE, posture=posture,
+            because=(f"{decision.because} [CEILING: {extensions_used} extensions "
+                     f"already spent, max {MAX_V2_EXTENSIONS} -- stopped by the "
+                     f"fuse, not by the decision]"),
+            exit_mode=exit, overran=decision.overran,
+            gap_targeted=decision.gap_targeted,
+        )
+
     if exit in (ExitMode.BUDGET, ExitMode.ERROR, ExitMode.CAPABILITY):
         if directive == EXTEND:
             contradiction = (f" [posture {posture.value} wanted another round; "
@@ -201,5 +272,33 @@ def decide(decision: Decision, exit: ExitMode | None = None) -> Action:
         exit_mode=exit,
         overran=decision.overran,
         gap_targeted=decision.gap_targeted,
-        prompt_mismatch=PROMPT_MISMATCH.get(posture) if directive == EXTEND else None,
+        prompt_mismatch=(PROMPT_MISMATCH.get(posture) if directive == EXTEND
+                         else (ALTERNATIVES_NOT_RENDERED
+                               if posture is Posture.ALTERNATIVES else None)),
     )
+
+
+# ── FILED, NOT FIXED HERE ───────────────────────────────────────────────────
+#
+# select() and exit_mode() count DIFFERENT POPULATIONS of the same gap list:
+#
+#   select()     `if state.open_gaps:`          -- EVERY open gap
+#   exit_mode()  material = [g for g in ... if importance >= floor]
+#                                               -- only gaps above the floor
+#
+# So a turn with only below-floor gaps gets NARROW ("gaps open") from one and
+# COMPLETE ("nothing material") from the other, about the same state, in the
+# same module, on the same round. That is what let the runaway run: the fuse
+# now catches it, but the disagreement is still there and it is a decision-core
+# defect, not a wiring one.
+#
+# It is NOT fixed in this change, deliberately. The right fix chooses which
+# population is correct -- and that choice changes what every recorded exit
+# mode has meant since the shadow started, so it is its own change with its own
+# re-derivation, not a line edited while stopping a runaway. Written down here
+# because an objection you agree with and do not act on is worse than one you
+# argue with, and the least I can do is make it impossible to rediscover.
+POPULATION_MISMATCH = (
+    "select() counts all open_gaps; exit_mode() counts only gaps at or above "
+    "min_importance. Same state, same round, two answers. Filed 2026-09-11."
+)

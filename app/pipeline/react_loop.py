@@ -5604,13 +5604,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 # row still records what v1 would have done.
                                 # An arm that erases its counterfactual cannot
                                 # be compared with anything.
-                                if getattr(ctx, "orchestrator_version", "v1") == "v2":
+                                _v2_arm = getattr(ctx, "orchestrator_version", "MISSING")
+                                logger.info("[v2.exec] gate cid=%s round=%s arm=%s ctx_id=%s",
+                                            (ctx.correlation_id or "")[:8], rn, _v2_arm, id(ctx))
+                                if _v2_arm == "v2":
                                     from app.pipeline.v2 import executor as _v2x
                                     from app.pipeline.v2 import posture as _v2p
 
                                     _v2_dec = _v2p.select(_v2_state)
-                                    _v2_act = _v2x.decide(_v2_dec,
-                                                          _v2p.exit_mode(_v2_state))
+                                    # _pp_extension_rounds_used is v1's own
+                                    # counter, incremented on every extend a
+                                    # few lines below. Passing it is what makes
+                                    # the fuse real -- a ceiling the caller
+                                    # never supplies is a constant 0, and the
+                                    # guard would be decorative.
+                                    _v2_act = _v2x.decide(
+                                        _v2_dec, _v2p.exit_mode(_v2_state),
+                                        extensions_used=_pp_extension_rounds_used,
+                                    )
                                     logger.info(
                                         "[v2.exec] cid=%s round=%s v1=%s -> v2=%s "
                                         "posture=%s%s",
