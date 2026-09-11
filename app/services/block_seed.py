@@ -247,13 +247,9 @@ def build_plan(*, strict: bool = True) -> tuple[list[tuple[BlockSpec, str]], dic
 
 
 # ── DB write (idempotent). Executed only post-053; guarded so import is safe. ──
-_UPSERT_BLOCK = """
-INSERT INTO prompt_blocks
-  (block_key, version, block_kind, role, template_body, condition, is_authority,
-   directives, owner, validated_at, validated_by, active, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11,true,'block_seed')
-ON CONFLICT (block_key, version) DO NOTHING
-"""
+# Block inserts go through app.services.prompt_block_publish.
+# publish_block_version() now (Governor seat, 2026-09-10) -- no
+# block-insert SQL lives in this file anymore.
 _UPSERT_COMPOSITION = """
 INSERT INTO prompt_compositions
   (module_key, variant_id, version, status, active, composition_hash,
@@ -271,14 +267,46 @@ ON CONFLICT (composition_id, position) DO NOTHING
 
 async def seed(conn) -> dict:
     """Idempotent seed against a live 053 schema. Coherence is checked before any
-    write (build_plan raises otherwise). Returns a per-module summary."""
+    write (build_plan raises otherwise). Returns a per-module summary.
+
+    Governor seat, 2026-09-10: flagged as a third independent writer to
+    prompt_blocks, alongside react_block_seed.py and admin_prompts.
+    create_block_version — both of which already route through
+    publish_block_version() for the same reason this one now does:
+    migration 066 (token_counts) landed in neither of the OTHER two
+    originally either, until each was found and fixed. Confirmed live
+    this isn't hypothetical: 5 of this file's 7 block_keys (forced_json,
+    hipaa_context, module.enricher.answer/.blended/.factual) are STILL at
+    the v1 this seed wrote, with no token_counts, actively serving live
+    compositions today (the other 2 have since moved on entirely via the
+    Studio UI path). auto_validate=False + explicit validated_at/
+    validated_by passthrough matters MORE here than in react_block_seed.py
+    -- this file's authority blocks (hipaa_context, forced_json) carry a
+    real historical validation date (_VALIDATED_AT = "2026-07-26", the v2
+    gate sign-off), not react's always-None. Stamping now() here would
+    have fabricated a re-validation that never happened.
+    """
+    from app.services.prompt_block_publish import publish_block_version
+
     resolved, plan = build_plan()
     for spec, body in resolved:
         blk = _to_block(spec, body)
-        await conn.execute(
-            _UPSERT_BLOCK, blk.block_key, blk.version, blk.block_kind, blk.role,
-            blk.template_body, blk.condition, blk.is_authority, list(blk.directives),
-            blk.owner, _ts(blk.validated_at), blk.owner if blk.validated_at else None,
+        await publish_block_version(
+            conn,
+            block_key=blk.block_key,
+            template_body=blk.template_body,
+            block_kind=blk.block_kind,
+            role=blk.role,
+            condition=blk.condition,
+            is_authority=blk.is_authority,
+            directives=list(blk.directives),
+            owner=blk.owner,
+            created_by="block_seed",
+            activate=True,
+            version=blk.version,
+            auto_validate=False,
+            validated_at=_ts(blk.validated_at),
+            validated_by=(blk.owner if blk.validated_at else None),
         )
     out = {}
     for module_key, info in plan.items():

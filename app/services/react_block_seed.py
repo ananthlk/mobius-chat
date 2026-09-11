@@ -307,10 +307,10 @@ async def seed(conn) -> dict:
     at an unchanged version also no-op; a composition whose `version` in
     COMPOSITIONS is NEWER than what's active deactivates the old version
     and activates the new one, atomically, in the caller's transaction."""
-    # Governor seat, 2026-09-10: this used to run its own INSERT
-    # (_UPSERT_BLOCK below, now unused -- kept only as a comment of
-    # record) -- a second writer to prompt_blocks independent of
-    # admin_prompts.create_block_version, and migration 066 (token_counts)
+    # Governor seat, 2026-09-10: this used to run its own INSERT (the
+    # _UPSERT_BLOCK constant that lived below, now removed) -- a second
+    # writer to prompt_blocks independent of admin_prompts.
+    # create_block_version, and migration 066 (token_counts)
     # landed in only one of them. "The next feature added to one path is
     # the next thing the other forgets." Both now call
     # publish_block_version() -- one writer, not two that happen to agree
