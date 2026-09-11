@@ -207,7 +207,12 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         gaps = tuple(
             Gap(gap_id=gap_id_for(canon[t]), text=t,
                 opened_round=opened_at.get(canon[t], opened_at.get(t, round_index)),
-                attempted_by=tuple(attempts_by_text.get(t, ())))
+                attempted_by=tuple(attempts_by_text.get(t, ())),
+                # RECORDED, never absorbed silently. The id survived a
+                # rewording; the fact that it had to is the signal.
+                reworded_from=("" if canon[t] == t else canon[t]),
+                reworded_similarity=(1.0 if canon[t] == t
+                                     else jaccard(canon[t], t)))
             for t in open_texts
         )
         remaining = max(0.0, promise_latency_s - elapsed_s)

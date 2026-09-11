@@ -175,6 +175,24 @@ class Gap:
     opened_round: int
     importance: str = "normal"
     attempted_by: tuple[Attempt, ...] = ()
+    # ── ID PROVENANCE, so drift is countable rather than silent ────────────
+    # The gap TEXT is LLM-generated, so a content-addressed id is only as
+    # stable as the model's wording. A model change, a temperature change or a
+    # prompt edit can reword the same sub-question and mint a "new" gap.
+    #
+    # Ananth, 2026-09-11: "the determinism of S{} is something we need to
+    # preserve... after each round and output we may want to map it back to a
+    # deterministic set given llm/model changes. This is something for us to
+    # track."
+    #
+    # `reworded_from` is set when this gap INHERITED its id from an earlier,
+    # differently-worded text. Absorbing the rewording silently would hide
+    # exactly the drift rate we need to watch: a rising rate means the wording
+    # is unstable and the ids are being held together by a 0.70 threshold
+    # rather than by the model saying the same thing twice.
+    reworded_from: str = ""
+    # Word-level overlap with the text whose id it took. 1.0 means identical.
+    reworded_similarity: float = 0.0
 
     def age(self, current_round: int) -> int:
         return max(0, current_round - self.opened_round)
@@ -783,6 +801,12 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
                 ],
                 # WHY this gap was passed over, when it was.
                 "stuck": stuck(g, state.round_index),
+                # Empty unless this gap INHERITED its id from an earlier,
+                # differently-worded text. A rising rate here means the model's
+                # wording is drifting and the ids are being held together by a
+                # threshold rather than by the model repeating itself.
+                "reworded_from": g.reworded_from,
+                "reworded_similarity": round(g.reworded_similarity, 3),
             }
             for g in state.open_gaps
         ],

@@ -183,3 +183,48 @@ def test_state_from_ctx_ids_are_CONTENT_addressed_not_positional():
     assert first[A] == flipped[A], "reordering renamed a gap — ids are positional"
     assert first[B] == flipped[B]
     assert first[A] != first[B]
+
+
+def test_a_rewording_is_RECORDED_not_absorbed_silently():
+    """Ananth, 2026-09-11: "the determinism of S{} is something we need to
+    preserve... map it back to a deterministic set given llm/model changes.
+    This is something for us to track."
+
+    The gap TEXT is LLM-generated, so a content-addressed id is only as stable
+    as the model's wording. Absorbing a rewording silently hides exactly the
+    drift rate that needs watching: a rising rate means the ids are being held
+    together by a 0.70 threshold rather than by the model saying the same thing
+    twice. Silent absorption would look identical to a stable model.
+    """
+    import app.pipeline.v2.shadow as S
+    A = "fax number for LTC waiver appeals coordinator at Sunshine"
+    B = "fax number for the LTC waiver appeals coordinator"
+
+    class Ctx:
+        message = "q"
+        react_trace_rounds = [
+            {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [A], "gaps_closed": [], "running_answer": ""}},
+            {"round": 2, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [B], "gaps_closed": [], "running_answer": ""}},
+        ]
+    g = S.state_from_ctx(Ctx(), round_index=2, elapsed_s=1.0,
+                         promise_latency_s=31.0, round_cost_s=0.0,
+                         acting_cost_s=0.0).open_gaps[0]
+    assert g.reworded_from == A, "the drift was absorbed with no trace"
+    assert 0.0 < g.reworded_similarity < 1.0
+
+    # a gap whose wording did NOT drift records nothing — so a nonzero count
+    # always means real drift, never bookkeeping
+    class Stable(Ctx):
+        react_trace_rounds = [
+            {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [A], "gaps_closed": [], "running_answer": ""}},
+            {"round": 2, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [A], "gaps_closed": [], "running_answer": ""}},
+        ]
+    g2 = S.state_from_ctx(Stable(), round_index=2, elapsed_s=1.0,
+                          promise_latency_s=31.0, round_cost_s=0.0,
+                          acting_cost_s=0.0).open_gaps[0]
+    assert g2.reworded_from == ""
+    assert g2.reworded_similarity == 1.0
