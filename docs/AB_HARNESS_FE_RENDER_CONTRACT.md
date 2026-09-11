@@ -95,8 +95,15 @@ Notes that are load-bearing, not stylistic:
   a count alone can't distinguish "closed the same gap it opened" from "closed a different one".
 
 **Sources are named and confirmed (Governor 2f6b912 / 05bfdc5, 2026-09-10) — both §0/§4 hard deps resolved:**
-- `answer_envelope` ← **`GET /chat/response/{correlation_id}`.`assistant_envelope`**, the verbatim object the live
-  turn produced ({version, blocks}). No pre-render, no markdown, no reconstruction — box 1 runs the bubble's code.
+- `answer_envelope` ← **a snapshot taken from `/chat/response/{cid}`.`assistant_envelope` at capture time, stored
+  on `ab_run_questions.answer_envelope`** (Governor 3d51285). Still the verbatim `{version, blocks}` object the live
+  turn produced — box 1 runs the bubble's code — but served from a DURABLE copy, not the live URL.
+  **Why not the live URL:** `/chat/response/{cid}` has a Redis TTL, and on expiry it does not 404 — it returns
+  `{status:"processing"}` *forever*. A run re-opened next month would render "still working" where the truth is
+  "this is gone" — a plausible value in the direction that looks fine, the exact `crawlable=None`-conflates-
+  unreachable-with-no-opinion / null-must-render-"—" defect family. Ananth's "this will exist potentially forever"
+  is a hard requirement; a comparison you can't re-open isn't infrastructure. The endpoint asserts byte-identity
+  against what `/chat/response` returned *at capture time*, so §0 fidelity is unchanged — only the source is durable.
 - `decision_trace` ← **`turn_rounds`** (migration 068, dev-applied, idempotent). Column map: `round_n`←`round_index`,
   `posture`←`posture`, `directive`←`directive`, `rationale`←`rationale`, `gap_targeted`←`gap_targeted`,
   `gaps_opened/closed`←JSONB of same name. v2's rows also carry the shadow half: `v1_directive`, `v1_reason`,
@@ -148,6 +155,11 @@ so the near-production comparison is the resting state and the machine detail is
 - **A per-comparison "expand all / collapse all"** toggle in the experiment header, and the last choice is
   remembered (localStorage, per the standard try/catch-guarded pattern) so a reviewer working through 20 questions
   isn't re-collapsing on every one.
+- **🔴 Everything an expand reveals comes from the snapshot, never a live fetch (Governor, permanence).** The
+  trace, sources, plan, terms — all of it reads from the stored comparison payload. If "see the full version"
+  reached back to a live endpoint for anything, it inherits the TTL expiry above, and it's the *expanded* view
+  that breaks — the one someone opens precisely when they're looking hard at something. So no on-expand network
+  call: expand is a pure show/hide over data already in hand.
 
 **Divergences = a filtered view of `v2.decision_trace`, keyed on the STORED `verdict` (Governor's condition,
 load-bearing):** the strip is `v2.decision_trace.filter(r => r.verdict !== "agree")` — no separate array. Each
