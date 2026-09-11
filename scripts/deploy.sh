@@ -236,6 +236,16 @@ SET_ENV_VARS=(
     "CHAT_DB_POOL_MAX=${CHAT_DB_POOL_MAX:-}"
     "MOBIUS_POST_RUN_ADJUDICATE_EVERY_N=${MOBIUS_POST_RUN_ADJUDICATE_EVERY_N:-}"
     "MOBIUS_MCP_AUTOREGISTER=${MOBIUS_MCP_AUTOREGISTER:-}"
+    # Orchestrator v2 R0 shadow (governor seat, 2026-09-11). "1" makes v2
+    # compute its posture beside v1's directive and emit both; v1 still
+    # DECIDES and v2 is never applied. Empty-default = off.
+    #
+    # This array is an ALLOWLIST, not a passthrough: a var absent from it
+    # never reaches the container regardless of the deploy shell's
+    # environment. Shipping the hook without this line would have deployed a
+    # shadow that is permanently, silently off -- and "the flag was set" and
+    # "the flag reached the process" are different facts.
+    "MOBIUS_V2_SHADOW=${MOBIUS_V2_SHADOW:-}"
     # Cache-assist (2026-04-23). Empty-default so unset vars don't
     # break the csv; see deploy/dev.env for rationale on each.
     "CACHE_ASSIST_ENABLED=${CACHE_ASSIST_ENABLED:-}"
