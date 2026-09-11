@@ -15,7 +15,6 @@ max(active version) picks the previous one, never rewriting history.
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -163,105 +162,40 @@ class NewBlockVersionRequest(BaseModel):
 @router.post("/admin/api/prompts/blocks/{block_key}/versions")
 async def create_block_version(block_key: str, body: NewBlockVersionRequest) -> dict[str, Any]:
     """Append-only: always inserts version = max(existing)+1 (or 1 for a
-    brand-new block_key). Never rewrites an existing row."""
+    brand-new block_key). Never rewrites an existing row.
+
+    Governor seat, 2026-09-10: this used to duplicate react_block_seed.py's
+    seed()'s insert logic -- two independent writers to prompt_blocks, and
+    migration 066 (token_counts) landed in only one of them. "The next
+    feature added to one path is the next thing the other forgets." Both
+    now call publish_block_version() -- one writer, not two that happen to
+    agree today.
+    """
     _gate()
     if body.block_kind not in ("static", "conditional", "derived", "per_turn"):
         raise HTTPException(status_code=400, detail="invalid block_kind")
     if body.role not in ("system", "user"):
         raise HTTPException(status_code=400, detail="invalid role")
 
-    # Token counts (migration 066, Governor seat's estimate() correction):
-    # compute BEFORE the transaction -- this is a network call, and holding
-    # a DB connection/transaction open across it would be a needless stall
-    # under load. Only static/conditional blocks get a stored count --
-    # derived/per_turn (e.g. react.tool_manifest's "{{ tool_manifest_text }}"
-    # placeholder) carry no real content of their own to count; the runtime-
-    # variable part is priced by whoever renders it (Tool Manifest, for the
-    # manifest text). Best-effort: a failed/unavailable tokenizer leaves the
-    # key absent, never blocks publishing a block.
-    token_counts: dict[str, int] = {}
-    if body.block_kind in ("static", "conditional"):
-        from app.services.prompt_token_counting import compute_token_counts
-        token_counts = compute_token_counts(body.template_body)
+    from app.services.prompt_block_publish import publish_block_version
 
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Governor seat, 2026-09-10: the backfill that seeded token_counts
-            # surfaced react.critical_rules growing 1402->3093 tokens (2.2x)
-            # across 6 versions, monotonically, with nothing ever removed —
-            # found only because someone happened to look at the history
-            # after the fact. "create_block_version already computes the
-            # count before the transaction, so it can also compare against
-            # the previous active version and surface the delta... that
-            # turns accretion into a decision someone makes rather than one
-            # that happens." Fetch the CURRENT active row's counts (the one
-            # this new version will supersede) inside the same transaction
-            # so the comparison is against the exact version being replaced,
-            # not a stale read from before this call started.
-            prev_row = await conn.fetchrow(
-                """
-                SELECT version, token_counts FROM prompt_blocks
-                WHERE block_key = $1 AND active = true
-                ORDER BY version DESC LIMIT 1
-                """,
-                block_key,
+            result = await publish_block_version(
+                conn,
+                block_key=block_key,
+                template_body=body.template_body,
+                block_kind=body.block_kind,
+                role=body.role,
+                condition=body.condition,
+                is_authority=body.is_authority,
+                directives=body.directives,
+                owner=body.owner,
+                created_by=body.created_by,
+                activate=body.activate,
             )
-            next_ver = await conn.fetchval(
-                "SELECT COALESCE(MAX(version), 0) + 1 FROM prompt_blocks WHERE block_key = $1",
-                block_key,
-            )
-            validated_at = datetime.now(timezone.utc) if (body.activate or body.is_authority) else None
-            validated_by = body.created_by if validated_at else None
-            row = await conn.fetchrow(
-                """
-                INSERT INTO prompt_blocks
-                  (block_key, version, block_kind, role, template_body, condition,
-                   is_authority, directives, owner, validated_at, validated_by, active, created_by,
-                   token_counts)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
-                RETURNING id, block_key, version, active, token_counts
-                """,
-                block_key, next_ver, body.block_kind, body.role, body.template_body,
-                body.condition, body.is_authority, body.directives, body.owner,
-                validated_at, validated_by, body.activate, body.created_by,
-                json.dumps(token_counts),
-            )
-
-    # Delta vs the version being superseded, per tokenizer. Only meaningful
-    # when both sides have a count for the same tokenizer (an absent key on
-    # either side means "unknown," not "zero" -- never fabricate a delta
-    # from a missing count).
-    token_delta: dict[str, dict[str, float]] = {}
-    prev_counts: dict[str, int] = {}
-    if prev_row is not None:
-        raw_prev = prev_row["token_counts"]
-        prev_counts = json.loads(raw_prev) if isinstance(raw_prev, str) else (raw_prev or {})
-        for tokenizer, new_count in token_counts.items():
-            old_count = prev_counts.get(tokenizer)
-            if old_count is None:
-                continue
-            delta = new_count - old_count
-            pct = round(100.0 * delta / old_count, 1) if old_count else None
-            token_delta[tokenizer] = {"from": old_count, "to": new_count, "delta": delta, "pct": pct}
-
-    if token_delta:
-        # WARNING, not INFO, when growth is the story -- this is the exact
-        # "someone should see this number" signal the delta exists for.
-        grew = any(d["delta"] > 0 for d in token_delta.values())
-        log_fn = logger.warning if grew else logger.info
-        log_fn(
-            "[admin-prompts] new block version block_key=%s version=%s (was %s) "
-            "activate=%s token_counts=%s delta=%s by=%s",
-            block_key, next_ver, prev_row["version"], body.activate, token_counts, token_delta, body.created_by,
-        )
-    else:
-        logger.info("[admin-prompts] new block version block_key=%s version=%s activate=%s token_counts=%s by=%s",
-                    block_key, next_ver, body.activate, token_counts, body.created_by)
-
-    out = dict(row)
-    out["token_delta"] = token_delta
-    return out
+    return result
 
 
 class SetVersionActiveRequest(BaseModel):

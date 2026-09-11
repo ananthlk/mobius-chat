@@ -270,13 +270,9 @@ def build_plan() -> tuple[list[BlockSpec], dict[str, dict]]:
     return specs, plan
 
 
-_UPSERT_BLOCK = """
-INSERT INTO prompt_blocks
-  (block_key, version, block_kind, role, template_body, condition, is_authority,
-   directives, owner, validated_at, validated_by, active, created_by, token_counts)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11,true,'react_block_seed',$12::jsonb)
-ON CONFLICT (block_key, version) DO NOTHING
-"""
+# Block inserts go through app.services.prompt_block_publish.
+# publish_block_version() now (Governor seat, 2026-09-10) -- no
+# block-insert SQL lives in this file anymore.
 # Includes prompt_address (mig 054) — block_seed.py's _UPSERT_COMPOSITION
 # predates 054 and doesn't set it; react's compositions need it (phase
 # addressing, decoupled from module_key/the bandit arm).
@@ -311,36 +307,38 @@ async def seed(conn) -> dict:
     at an unchanged version also no-op; a composition whose `version` in
     COMPOSITIONS is NEWER than what's active deactivates the old version
     and activates the new one, atomically, in the caller's transaction."""
-    # Migration 066 (Governor seat's estimate() correction): populate
-    # token_counts here too, matching admin_prompts.create_block_version's
-    # publish path -- found while adding v8's citation via this seed file
-    # that this INSERT predated 066 and would have silently left every
-    # future seeded block at the default '{}', a second, inconsistent way
-    # to publish a block where only one of the two computed a count.
-    import json as _json
-    from app.services.prompt_token_counting import compute_token_counts
+    # Governor seat, 2026-09-10: this used to run its own INSERT
+    # (_UPSERT_BLOCK below, now unused -- kept only as a comment of
+    # record) -- a second writer to prompt_blocks independent of
+    # admin_prompts.create_block_version, and migration 066 (token_counts)
+    # landed in only one of them. "The next feature added to one path is
+    # the next thing the other forgets." Both now call
+    # publish_block_version() -- one writer, not two that happen to agree
+    # today. version=blk.version + the shared function's own existence
+    # check reproduces this loop's original idempotent/safe-to-rerun
+    # behavior (skip re-publishing AND skip the token-count network call
+    # for a (block_key, version) already in the DB).
+    from app.services.prompt_block_publish import publish_block_version
 
     specs, plan = build_plan()
     for spec in specs:
         blk = _to_block(spec)
-        # Skip the network call entirely for a (block_key, version) that's
-        # already in the DB -- seed() is meant to be safe to re-run, and
-        # ON CONFLICT DO NOTHING makes the INSERT itself a no-op for those,
-        # but computing a fresh token count first would still cost a real
-        # API call on every rerun for every already-seeded block.
-        already_present = await conn.fetchval(
-            "SELECT 1 FROM prompt_blocks WHERE block_key = $1 AND version = $2",
-            blk.block_key, blk.version,
-        )
-        token_counts = (
-            compute_token_counts(blk.template_body)
-            if not already_present and blk.block_kind in ("static", "conditional") else {}
-        )
-        await conn.execute(
-            _UPSERT_BLOCK, blk.block_key, blk.version, blk.block_kind, blk.role,
-            blk.template_body, blk.condition, blk.is_authority, list(blk.directives),
-            blk.owner, _ts(blk.validated_at), blk.owner if blk.validated_at else None,
-            _json.dumps(token_counts),
+        await publish_block_version(
+            conn,
+            block_key=blk.block_key,
+            template_body=blk.template_body,
+            block_kind=blk.block_kind,
+            role=blk.role,
+            condition=blk.condition,
+            is_authority=blk.is_authority,
+            directives=list(blk.directives),
+            owner=blk.owner,
+            created_by="react_block_seed",
+            activate=True,
+            version=blk.version,
+            auto_validate=False,
+            validated_at=_ts(blk.validated_at),
+            validated_by=(blk.owner if blk.validated_at else None),
         )
     out = {}
     for module_key, info in plan.items():
