@@ -158,7 +158,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         gaps_opened, gaps_closed, v1_directive, v1_reason,
                         v1_maps_to, shadow_verdict, tool_called, tools_offered,
                         overran, round_duration_s, applied_directive,
-                        v2_applied, prompt_mismatch, decision_inputs
+                        v2_applied, prompt_mismatch, decision_inputs, framing_inputs
                    from turn_rounds where correlation_id=:c
                   order by round_index""", {"c": correlation_id})
     out = []
@@ -199,6 +199,10 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         # select() that fired, every gating predicate. Without
                         # it the trace shows a verdict nobody can argue with.
                         "decision_inputs": r["decision_inputs"],
+                        # What the governor would decide once round N's gaps
+                        # exist — the same round, one moment later, before its
+                        # tool runs. Null until the framing hook has data.
+                        "framing_inputs": r["framing_inputs"],
                         # ...and the two mismatches are NOT the same event,
                         # which the single prose field could not tell anyone:
                         #

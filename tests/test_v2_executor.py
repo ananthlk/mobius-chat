@@ -419,3 +419,72 @@ def test_every_select_branch_is_named():
         kws = {k.arg for k in getattr(r.value, "keywords", [])}
         assert "branch" in kws, ast.unparse(r)[:90]
     assert P.BRANCH_SKIPS_BUDGET
+
+
+def _framing_block():
+    """The framing hook's source, sliced to its OWN end rather than to a magic
+    character count. A fixed 3200-char window stopped inside the comment and
+    silently tested nothing — an assertion over an empty region passes."""
+    src = _react_src()
+    i = src.index("FRAMING DECISION POINT")
+    j = src.index('logger.warning("[v2.frame] hook failed', i)
+    block = src[i:j]
+    assert len(block) > 800, "the slice collapsed — the hook moved or was renamed"
+    # COMMENTS STRIPPED. Twice in this one test the assertion matched my own
+    # prose: first `_v2f_inputs` on "inputs =", then the word "break" inside
+    # the comment explaining why there is no break. That is the sixth time in
+    # this program a test has read prose and called it a program, and the
+    # general fix — not the sixth special case — is to stop handing it prose.
+    import re as _re
+    code = "\n".join(_re.sub(r"#.*$", "", ln) for ln in block.splitlines())
+    assert "_v2fp.select(" in code, "the slice lost the hook body"
+    return code
+
+
+def test_the_framing_hook_records_and_does_NOT_act():
+    """The first instant round N's gaps exist — and BEFORE round N's tool runs.
+
+    Every other governor hook is blind to them: the pre-round hook fires before
+    the model has spoken, and round N's enrichment is written at :5316. That is
+    why the LLM seat's round-1 decomposition changed 17 of 20 branch sequences
+    not at all — nine gaps produced correctly, and the governor's round-1
+    decision already made before they existed.
+
+    OBSERVATION ONLY. Acting here means refusing a tool call the model has
+    already chosen — a far larger behaviour change than substituting a
+    directive, and it has earned no evidence yet.
+    """
+    block = _framing_block()
+    assert "_v2fp.select(" in block and "_v2fp.explain(" in block, "records nothing"
+    # It must not reassign the loop's control variables. Word-bounded: a plain
+    # substring test matched my own local `_v2f_inputs` on "inputs =" — the
+    # same prose-for-program error this program has now made five times, in a
+    # new dress. `(?<![\w])` is what separates the loop's `inputs` from a
+    # variable that merely ends in it.
+    import re
+    for control in ("_pp_directive", "max_it", "tool", "inputs", "is_complete"):
+        assert not re.search(rf"(?<![\w])(?<!\.){control}\s*(?:=|\+=)(?!=)", block), \
+            f"the framing hook assigns {control!r} — it acts"
+    for stmt in ("continue", "return", "break"):
+        assert not re.search(rf"(?<![\w]){stmt}(?![\w])", block), \
+            f"the framing hook does {stmt!r} — it acts"
+
+
+def test_framing_never_overwrites_the_pre_round_decision():
+    """Both on one row, deliberately: the DIFFERENCE between what the governor
+    decided before the model spoke and what it would decide once the gaps exist
+    IS the value of moving the hook, and it cannot be read if one replaces the
+    other."""
+    block = _framing_block()
+    assert '_v2f_row["v2_framing_inputs"]' in block
+    assert '"v2_decision_inputs"' not in block, "the framing hook clobbers the pre-round row"
+    ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
+    assert '"framing": json.dumps(r.get("v2_framing_inputs")' in ledg
+    api = pathlib.Path("app/api/ab_harness.py").read_text()
+    assert '"framing_inputs": r["framing_inputs"]' in api
+
+
+def test_the_framing_hook_shares_the_other_hooks_clock():
+    """A third clock would make the three rows incomparable — the whole point
+    is to diff two decisions about the same moment."""
+    assert "_pp_time_mod.monotonic() - _pp_turn_start" in _framing_block()

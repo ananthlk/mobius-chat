@@ -177,3 +177,17 @@ ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS prompt_mismatch   TEXT;
 -- JSONB and not columns: the shape follows the decision core, which is still
 -- moving. Columns would freeze it and every change would be a migration.
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS decision_inputs JSONB;
+
+-- ── framing_inputs: the decision the governor COULD have made ──────────────
+-- decision_inputs is what the governor decided BEFORE the model spoke.
+-- framing_inputs is what it would decide in the first instant round N's gaps
+-- exist -- written at react_loop.py:5316, before round N's tool runs.
+--
+-- Both, on one row, deliberately. The DIFFERENCE between them is the entire
+-- value of moving the hook, and it cannot be read if one overwrites the other.
+-- react.response_shape v5 produces nine gaps on a 3x3 question with
+-- opened_round=1, and the governor's round-1 decision had already been made
+-- before the model emitted them -- so v5 changed 17 of 20 branch sequences not
+-- at all. No prompt change could have fixed that; the hook was in the wrong
+-- place, and this column is how we find out whether the right place is better.
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS framing_inputs JSONB;

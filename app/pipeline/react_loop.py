@@ -5325,6 +5325,71 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 } if (thought or _evidence_review) else None,
             })
 
+            # ── FRAMING DECISION POINT (governor seat, 2026-09-11) ──────────
+            #
+            # THE FIRST INSTANT round N's gaps exist, and it is BEFORE round
+            # N's tool runs (tool_results.append for this round is ~770 lines
+            # below). Every other governor hook is blind to them: the pre-round
+            # hook at :4747 fires before the model has spoken, and round N's
+            # enrichment is written HERE, so a round-N decision made up there
+            # sees through round N-1 only.
+            #
+            # That is why the LLM seat's round-1 decomposition changed nothing:
+            # react.response_shape v5 correctly produces nine gaps on a 3x3
+            # question, opened_round=1 -- and the governor's round-1 decision
+            # had already been made before the model emitted them. No prompt
+            # change could have fixed that; the hook was in the wrong place.
+            #
+            # OBSERVATION ONLY. It records what it WOULD decide and changes
+            # nothing, because acting here would mean refusing a tool call the
+            # model has already chosen -- a far larger behaviour change than
+            # substituting a directive, and it has earned no evidence yet. The
+            # R0 discipline has caught every defect today by watching first.
+            if os.environ.get("MOBIUS_V2_SHADOW", "").strip() == "1":
+                try:
+                    from app.pipeline.v2 import posture as _v2fp
+                    from app.pipeline.v2 import shadow as _v2f
+
+                    _v2f_state = _v2f.state_from_ctx(
+                        ctx, round_index=rn,
+                        # The SAME clock the other two hooks use --
+                        # _pp_turn_start, set at 4558. A third clock
+                        # would make the three rows incomparable.
+                        elapsed_s=(_pp_time_mod.monotonic() - _pp_turn_start),
+                        promise_latency_s=_v2f.promise_seconds(ctx, _pp_contract),
+                        round_cost_s=0.0, acting_cost_s=0.0,
+                    )
+                    if _v2f_state is not None:
+                        _v2f_dec = _v2fp.select(_v2f_state)
+                        _v2f_inputs = _v2fp.explain(_v2f_state, _v2f_dec)
+                        logger.info(
+                            "[v2.frame] cid=%s round=%s gaps=%d branch=%s posture=%s",
+                            (ctx.correlation_id or "")[:8], rn,
+                            len(_v2f_inputs.get("open_gaps") or []),
+                            _v2f_dec.branch, _v2f_dec.posture.value,
+                        )
+                        # Onto the SAME accumulated row for this round, under
+                        # its own key -- the pre-round decision is not
+                        # overwritten. The row then carries both: what the
+                        # governor decided before the model spoke, and what it
+                        # would decide now that it has. The difference between
+                        # them IS the value of moving the hook, and it cannot
+                        # be read if one replaces the other.
+                        # next(), not a for/break. The break was breaking the
+                        # ROW SEARCH, not react's round loop -- but a hook whose
+                        # whole contract is "affects no control flow" should not
+                        # contain a control-flow keyword at all. My own gate
+                        # flagged it and the right answer was to remove the
+                        # ambiguity from the code, not the suspicion from the
+                        # test.
+                        _v2f_row = next(
+                            (r for r in (getattr(ctx, "v2_shadow_rounds", None) or [])
+                             if int(r.get("round") or 0) == rn), None)
+                        if _v2f_row is not None:
+                            _v2f_row["v2_framing_inputs"] = _v2f_inputs
+                except Exception as _v2f_exc:  # pragma: no cover
+                    logger.warning("[v2.frame] hook failed: %s", _v2f_exc)
+
         # Task mode: no tool calls ever. If the LLM tried to call a tool
         # despite the task-mode system prompt, finalize immediately.
         # We cannot rely on setting is_complete=True + tool=None because the
