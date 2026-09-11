@@ -712,3 +712,55 @@ def verdicts(run_id: str) -> dict:
             "reading rather than for any exit criterion"
         ),
     }
+
+
+def register_chat_fork(question: str, mode: str, arms: dict[str, str],
+                       thread_arm: str) -> str:
+    """Give a chat-surface fork a permalink into the two-column page.
+
+    The kebab fork happens in /chat and produces two correlation_ids. The page
+    that renders a comparison is keyed on run_id + question_id, so without this
+    a forked chat turn would have no way to be LOOKED at -- and I would have
+    had to build a second two-column renderer inside the chat bubble, which is
+    exactly what I told the FE seat not to do: a comparison rendered
+    differently from the product is measuring the renderer.
+
+    The run is marked `source: "chat_fork"` and carries `thread_arm`, because a
+    chat fork is NOT the same object as a lab-bench run: one of its arms was
+    served to a person and is in their thread. A reader who cannot tell those
+    apart will eventually quote a chat fork as if nobody had been served.
+    """
+    run_id = f"ab-{uuid.uuid4().hex[:10]}"
+    qset = {"set_id": "chat_fork", "source": "chat_fork", "mode": mode,
+            "thread_arm": thread_arm,
+            "questions": [{"id": "q01", "q": question, "shape": "chat_fork"}]}
+    ids = sorted(arms)
+    _x("""INSERT INTO ab_runs (run_id, set_id, arm_a_id, arm_a_label, arm_b_id,
+                               arm_b_label, held_constant, varied, created_by,
+                               question_set)
+          VALUES (:r,'chat_fork',:aid,:alab,:bid,:blab,
+                  CAST(:h AS JSONB),CAST(:v AS JSONB),'chat_kebab',
+                  CAST(:qs AS JSONB))""",
+       {"r": run_id,
+        "aid": ids[0], "alab": f"{ids[0]}{' — served in the thread' if ids[0] == thread_arm else ' — shadow'}",
+        "bid": ids[1] if len(ids) > 1 else "",
+        "blab": (f"{ids[1]}{' — served in the thread' if ids[1] == thread_arm else ' — shadow'}"
+                 if len(ids) > 1 else ""),
+        "h": json.dumps(["question", f"mode:{mode}", "input", "tool manifest",
+                         "prompt blocks", "model roster", "publish path",
+                         "renderer", "corpus + cache + load (simultaneous)",
+                         "wall-clock time"]),
+        "v": json.dumps(["the orchestrator decision",
+                         "LLM sampling — simultaneity removes the confound, "
+                         "not the variance",
+                         "thread memory — the shadow arm answers cold, the "
+                         "served arm has the conversation"]),
+        "qs": json.dumps(qset)})
+    for arm, cid in arms.items():
+        _x("""INSERT INTO ab_run_questions (run_id, question_id, arm_id,
+                                            correlation_id, status)
+              VALUES (:r,'q01',:a,:c,'running')
+              ON CONFLICT (run_id, question_id, arm_id) DO UPDATE SET
+                  correlation_id = EXCLUDED.correlation_id, status='running'""",
+           {"r": run_id, "a": arm, "c": cid})
+    return f"/ab?run={run_id}&q=q01"

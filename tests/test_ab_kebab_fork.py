@@ -51,8 +51,14 @@ def test_a_failed_fork_degrades_to_a_normal_turn_and_returns_NO_comparison():
     src = _chat_src()
     i = src.index("A/B FORK, the kebab toggle")
     block = src[i:src.index("return ChatResponse(", i)]
-    assert "comparison = None" in block.split("except Exception")[1], \
-        "a failed fork leaves a partial comparison in the response"
+    # Target the OUTER handler by its own log line. A first version split on
+    # "except Exception" and took [1] — which broke the moment an inner
+    # try/except was added for the permalink, and would have broken silently
+    # in the other direction: if the outer handler were REMOVED, [1] would
+    # have found the inner one and passed.
+    i = block.index('logger.warning("[v2.ab] fork failed')
+    assert "comparison = None" in block[i:], \
+        "the outer handler leaves a partial comparison in the response"
 
 
 def test_the_shadow_turn_does_not_reuse_the_threads_promise():
@@ -89,3 +95,45 @@ def test_ab_fork_is_gated_and_doubles_the_turn_in_the_docstring():
     body = ast.unparse(cls)
     assert "DOUBLES" in body or "doubles" in body
     assert 'os.environ.get("MOBIUS_V2_AB_FORK"' in src
+
+
+def test_a_chat_fork_is_MARKED_as_one_and_names_the_served_arm():
+    """A chat fork is NOT the same object as a lab-bench run: one of its arms
+    was served to a person and is in their thread. A reader who cannot tell
+    those apart will eventually quote a chat fork as though nobody was served
+    — and the harness banner says, in every render, "Nobody was served."
+    """
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "register_chat_fork")
+    src = ast.unparse(fn)
+    assert "'chat_fork'" in src or '"chat_fork"' in src
+    assert "thread_arm" in src, "the run does not record which arm was served"
+    assert "served in the thread" in src, "the arm labels do not say which was served"
+    # the asymmetry a reader will otherwise mistake for v1 forgetting
+    assert "answers cold" in src
+
+
+def test_view_registration_failure_does_not_lose_the_second_arm():
+    """A missing permalink is a missing link. A raised exception would have
+    cost the whole comparison — the expensive half of a turn the user
+    deliberately paid double for."""
+    src = _chat_src()
+    i = src.index("Register the pair as an ad-hoc harness run")
+    block = src[i:i + 1400]
+    assert "try:" in block and "except Exception" in block
+    assert "view registration failed" in block
+
+
+def test_the_chat_fork_does_not_build_a_second_renderer():
+    """The two-column page is keyed on run_id + question_id, so a chat fork
+    registers a run rather than growing a second two-column renderer inside
+    the bubble. A comparison rendered differently from the product measures
+    the renderer — which is what I told the FE seat, and it applies to me."""
+    src = _chat_src()
+    i = src.index("A/B FORK, the kebab toggle")
+    block = src[i:src.index("return ChatResponse(", i)]
+    assert 'comparison["view"]' in block
+    for renderer_ish in ("innerHTML", "render_blocks", "build_assistant_envelope"):
+        assert renderer_ish not in block, f"the fork path renders ({renderer_ish})"

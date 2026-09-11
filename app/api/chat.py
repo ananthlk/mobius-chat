@@ -528,6 +528,25 @@ def post_chat(
                 comparison[_arm] = _shadow_cid
                 comparison["shadow"][_arm] = {"correlation_id": _shadow_cid,
                                               "thread_id": _shadow_thread}
+            # Register the pair as an ad-hoc harness run so the EXISTING,
+            # verified two-column page can render it. The alternative was a
+            # second renderer inside the chat bubble -- which is precisely what
+            # I told the FE seat not to build, because a comparison rendered
+            # differently from the product is measuring the renderer.
+            #
+            # Failure here must not fail the fork: the comparison still works,
+            # it just has no permalink. A missing `view` is a missing link; a
+            # raised exception would have cost the whole second arm.
+            try:
+                from app.api.ab_harness import register_chat_fork as _reg
+                comparison["view"] = _reg(
+                    body.message or "", payload.get("chat_mode") or "copilot",
+                    {a: comparison[a] for a in ("v1", "v2") if a in comparison},
+                    _thread_arm,
+                )
+            except Exception as _vexc:
+                logger.warning("[v2.ab] view registration failed cid=%s: %s",
+                               correlation_id[:8], _vexc)
             logger.info("[v2.ab] forked cid=%s thread_arm=%s shadows=%s",
                         correlation_id[:8], _thread_arm,
                         {k: v[:8] for k, v in comparison.items()
