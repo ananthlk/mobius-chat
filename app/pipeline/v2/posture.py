@@ -27,30 +27,42 @@ REPEAT_JACCARD = 0.70         # [GUESS] 24.5% of consecutive rag pairs exceed it
 TREND_WINDOW = 2              # rounds compared to classify direction
 
 
-# ── measured round costs ─────────────────────────────────────────────────────
+# ── bootstrap round costs ────────────────────────────────────────────────────
 #
-# Replaces a hardcoded 10.3s that priced every round identically. Measured over
-# 60 days of production rounds, from elapsed_s deltas in thinking_log:
+# THESE ARE PRIORS, NOT PREDICTIONS. Their only job is to let v2 run at all.
+# The A/B is the judge.
 #
-#   (no tool) mid round      n=1173   p50 11.7   p90 32.9   <- the MOST expensive
-#   search_corpus            n=  33        11.4       25.0
-#   (no tool) FINAL round    n=1301        10.0       27.5
-#   web_scrape               n= 120         9.7       27.3
-#   rag                      n= 876         9.2       26.4   <- CHEAPER than no tool
-#   fetch_document           n= 325         8.9       20.8
-#   appeals_get_playbook     n=  47         3.5       11.8
+# Every number below describes V1: v1's tool selection, v1's 14,271-token
+# manifest, v1's undifferentiated prompt, v1's round structure. v2 changes all
+# four, so measuring v1 more precisely does not make these more predictive --
+# it makes them a more precise description of the thing being replaced.
+# turn_rounds overwrites each one with a real per-posture measurement as soon as
+# v2 executes, and at that point these should be deleted, not refined.
 #
-# THE FINDING THAT MATTERS: a round that calls rag is CHEAPER than a round that
-# calls nothing. The dominant cost is the reasoning call, not the tool -- so the
-# lever is round COUNT, not tool choice, and a better tool wins by removing a
-# round rather than by being fast.
+# Measured 60d from thinking_log elapsed_s deltas, attributing each interval to
+# the round that RAN it (elapsed_s is stamped at round START, so duration(n) =
+# elapsed(n+1) - elapsed(n)):
 #
-# 🔴 PROVENANCE: these are PROXIES. They are measured v1 round KINDS mapped onto
-# postures, not measurements of postures -- postures do not exist in production
-# yet, so no per-posture number can exist. turn_rounds replaces every one of
-# these with a real measurement once v2 runs, and until then a cost here is a
-# defensible estimate and not a fact. Do not quote them as per-posture costs.
-
+#   healthcare_query      n=  45   p50 23.0   p90 35.4
+#   search_corpus         n=  31        13.7       25.7
+#   (no tool call)        n=1367        12.7       30.5
+#   rag                   n=1691        10.4       31.0
+#   web_scrape            n= 138         8.5       18.9
+#   fetch_document        n= 362         7.8       18.1
+#   appeals_get_playbook  n=  72         3.5        5.6
+#   service_line_limits   n=  31         2.2        2.7
+#
+# CORRECTION 2026-09-11: an earlier version of this table was built on an
+# off-by-one -- it attributed each interval to the NEXT round's tool, so "rag
+# = 9.2s" actually measured the round that DECIDED to call rag. Ananth caught
+# it by asking whether the cost of rag had been included or only react saying
+# "call rag". The claim it produced -- "a rag round is cheaper than a round
+# calling nothing" -- was an artifact and is withdrawn.
+#
+# WHAT SURVIVES, and is the load-bearing fact: the spread across tools is ~10x
+# (23.0s to 2.2s). EXPLORE has no single cost -- it depends entirely on which
+# tool the shortlist offers, which is Tool Manifest's estimate() and not a
+# constant anyone can type here.
 
 class Posture(str, Enum):
     FRAME = "frame"
@@ -120,22 +132,25 @@ class Attempt:
 # check whether the proxy still fits when a posture's behaviour changes.
 _ROUND_COST: dict[str, RoundCost] = {
     # reasoning about the question, no tool call
-    Posture.FRAME.value:        RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    Posture.FRAME.value:        RoundCost(11.7, 32.9, "BOOTSTRAP v1 no-tool round n=1367"),
     # the tool-calling round; rag is the dominant case at 876 of 1,481 tool rounds
-    Posture.EXPLORE.value:      RoundCost(9.2, 26.4, "PROXY v1 rag round n=876"),
+    Posture.EXPLORE.value:      RoundCost(10.4, 31.0, "BOOTSTRAP v1 rag round n=1691 — real cost is per-tool, 2.2s..23.0s"),
     # scoping, no tool call
-    Posture.NARROW.value:       RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    Posture.NARROW.value:       RoundCost(11.7, 32.9, "BOOTSTRAP v1 no-tool round n=1367"),
     # generating routes, no tool call -- same shape as NARROW
-    Posture.ALTERNATIVES.value: RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    Posture.ALTERNATIVES.value: RoundCost(11.7, 32.9, "BOOTSTRAP v1 no-tool round n=1367"),
     # the critic, measured directly on llm_calls
-    Posture.VALIDATE.value:     RoundCost(9.6, 16.9, "MEASURED integrator_critic n=135"),
+    Posture.VALIDATE.value:     RoundCost(9.6, 16.9, "MEASURED integrator_critic n=135 (v1, unchanged by v2)"),
     # the final synthesis round
-    Posture.COMMUNICATE.value:  RoundCost(10.0, 27.5, "PROXY v1 (no tool) FINAL round n=1301"),
+    Posture.COMMUNICATE.value:  RoundCost(10.0, 27.5, "BOOTSTRAP v1 no-tool round n=1367"),
 }
 
 
 def round_cost(posture: "Posture | str") -> RoundCost:
     """Cost of running one round in this posture.
+
+    BOOTSTRAP values. See the table header: these describe v1 and exist only to
+    let v2 run until turn_rounds measures v2. Do not tune them.
 
     Raises on an unknown posture rather than defaulting. A default would price a
     new posture at someone else's number and never say so -- the silent-default

@@ -521,7 +521,7 @@ def test_every_posture_has_a_measured_cost_with_a_stated_basis():
         rc = round_cost(p)
         assert rc.p50_s > 0 and rc.p90_s >= rc.p50_s, (p, rc)
         assert rc.basis, f"{p} has a cost with no stated basis"
-        assert rc.basis.startswith(("PROXY", "MEASURED")), rc.basis
+        assert rc.basis.startswith(("BOOTSTRAP", "MEASURED")), rc.basis
     assert set(_ROUND_COST) == {p.value for p in Posture}
 
 
@@ -533,12 +533,14 @@ def test_unknown_posture_raises_rather_than_defaulting():
         round_cost("teleport")
 
 
-def test_the_costs_encode_the_finding_that_a_tool_round_is_cheaper():
-    """Measured: a rag round is 9.2s p50 while a no-tool mid round is 11.7s. The
-    dominant cost is the reasoning call, not the tool. If this ever inverts, the
-    budget model's central assumption has changed and should be re-derived."""
-    from app.pipeline.v2.posture import round_cost
-    assert round_cost(Posture.EXPLORE).p50_s < round_cost(Posture.NARROW).p50_s
+def test_bootstrap_costs_are_labelled_as_v1_priors_not_v2_predictions():
+    """The claim these once encoded -- "a rag round is cheaper than a no-tool
+    round" -- was an off-by-one artifact and is withdrawn. What this asserts now
+    is only that nobody has quietly re-labelled a v1 prior as a measurement of
+    v2."""
+    from app.pipeline.v2.posture import _ROUND_COST
+    v1_priors = [k for k, v in _ROUND_COST.items() if v.basis.startswith("BOOTSTRAP")]
+    assert len(v1_priors) >= 4, "postures silently promoted from prior to measurement"
 
 
 def test_spendable_falls_back_to_the_measured_table():
