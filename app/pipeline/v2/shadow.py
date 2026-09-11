@@ -219,6 +219,10 @@ def emit(correlation_id: str, comparison: dict | None) -> None:
     if not comparison:
         return
     try:
+        # Accumulate for the settle-time batch write. The stream is a VIEW; the
+        # row is truth. A shadow whose only record is a log line violates the
+        # emit contract it was built under.
+        pass
         verdict = ("AGREE" if comparison["agrees"]
                    else "UNMAPPED" if comparison["unmapped"] else "DIVERGE")
         logger.info(

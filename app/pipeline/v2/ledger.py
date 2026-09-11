@@ -15,6 +15,7 @@ turn.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -100,3 +101,67 @@ def load_open(thread_id: str) -> tuple[Gap, ...]:
             )
         )
     return tuple(out)
+
+
+# ── round records ────────────────────────────────────────────────────────────
+
+def write_rounds(correlation_id: str, rows: list[dict]) -> None:
+    """Persist the round records for one turn. Called ONCE, at settle.
+
+    NOT per round: a write on the round path adds latency to production for an
+    observer's benefit, and this module's whole posture is that an observer must
+    not affect the thing it observes. Rows accumulate on ctx during the turn and
+    land together here.
+
+    Never raises into the caller. But it logs a failure with the id -- a missing
+    row must be traceable to a logged cause rather than reading like a turn that
+    simply had no rounds, which is the shape this program has found twelve times.
+    """
+    if not rows:
+        return
+    try:
+        from app.db_client import db_execute
+
+        for r in rows:
+            res = db_execute(
+                """
+                INSERT INTO turn_rounds (
+                    correlation_id, round_index, orchestrator_version,
+                    posture, directive, gap_targeted, rationale,
+                    v1_directive, v1_reason, v1_maps_to, shadow_verdict,
+                    gaps_opened, gaps_closed
+                ) VALUES (
+                    :cid, :rn, :ver, :posture, :directive, :gap, :rationale,
+                    :v1d, :v1r, :v1m, :verdict,
+                    CAST(:opened AS JSONB), CAST(:closed AS JSONB)
+                )
+                ON CONFLICT (correlation_id, round_index, orchestrator_version)
+                DO NOTHING
+                """,
+                _DB,
+                params={
+                    "cid": correlation_id,
+                    "rn": int(r.get("round") or 0),
+                    "ver": r.get("orchestrator_version") or "v1",
+                    "posture": r.get("v2_posture"),
+                    "directive": r.get("v2_directive"),
+                    "gap": r.get("v2_gap_targeted"),
+                    "rationale": r.get("v2_because"),
+                    "v1d": r.get("v1_directive"),
+                    "v1r": r.get("v1_reason"),
+                    "v1m": r.get("v1_maps_to"),
+                    "verdict": r.get("verdict"),
+                    # json.dumps, not the list: db_execute JSON-serialises its
+                    # params for the db-agent transport, and a raw list would
+                    # arrive as a Postgres array literal, not JSONB. The
+                    # datetime lesson from the attestation, one type over.
+                    "opened": json.dumps(r.get("gaps_opened") or []),
+                    "closed": json.dumps(r.get("gaps_closed") or []),
+                },
+            )
+            if isinstance(res, dict) and res.get("error"):
+                logger.warning("[v2.ledger] round write failed cid=%s r%s: %s",
+                               str(correlation_id)[:8], r.get("round"), res.get("error"))
+    except Exception as exc:
+        logger.warning("[v2.ledger] write_rounds raised cid=%s: %s",
+                       str(correlation_id)[:8], exc)

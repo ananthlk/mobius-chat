@@ -1,0 +1,30 @@
+{
+  "set_id": "ab-v1",
+  "created": "2026-09-11",
+  "created_by": "governor seat",
+  "mode": "copilot",
+  "provenance": "PULLED FROM PRODUCTION chat_turns, 90d window. Machine-generated follow-ups were EXCLUDED (any question containing 'previous search left unresolved' / 'Earlier searches surfaced' / 'Quote the sentence that states') -- those were written BY the system, and a sample you generated yourself passes every provenance check.",
+  "not_a_golden_set": "These are real INPUTS with no known-correct OUTPUTS. They fix what both arms are asked; they do not grade the answers. The judge is the human.",
+  "questions": [
+    {"id":"q01","shape":"lookup","q":"what are the timely filing deadlines for sunshine health?"},
+    {"id":"q02","shape":"lookup","q":"When is prior authorization required for outpatient therapy with Sunshine Health?"},
+    {"id":"q03","shape":"lookup","q":"What is the notification timeframe for non-emergent inpatient admissions?"},
+    {"id":"q04","shape":"lookup","q":"What are the steps to submit a corrected claim to Sunshine Health?"},
+    {"id":"q05","shape":"lookup","q":"What are the EPSDT benefit requirements for Florida Medicaid?"},
+    {"id":"q06","shape":"lookup-hard","q":"what is the fax number for the LTC waiver appeals coordinator at Sunshine Health"},
+    {"id":"q07","shape":"lookup-hard","q":"How much does Medicaid pay for a psychiatric evaluation?"},
+    {"id":"q08","shape":"comparison","q":"Compare the timely filing deadlines for Sunshine Health and Aetna as a table"},
+    {"id":"q09","shape":"comparison","q":"Compare timely filing deadlines for Sunshine Health, Humana, and Aetna as a table."},
+    {"id":"q10","shape":"multi-part","q":"tell me the care management philosophy for sunshine health? do they allow providers to participate? do they pay for it? what are the requirements for providers to participate?"},
+    {"id":"q11","shape":"multi-round","q":"For Florida Medicaid Community Behavioral Health, procedure code H2019 with modifier HR is family therapy with the client present. What is the unit definition and the maximum number of units allowed per recipient?"},
+    {"id":"q12","shape":"multi-round","q":"How does Florida Medicaid determine payment for an inpatient psychiatric admission, and what grouping system assigns the admission to a payment category?"},
+    {"id":"q13","shape":"multi-round","q":"How many units of H2019 with modifier HR can we bill per year?"},
+    {"id":"q14","shape":"multi-round","q":"For Florida Medicaid, compare prior authorization requirements, claim filing deadlines, and appeal timeframes for behavioral health services across Aetna, Molina, and United Healthcare."},
+    {"id":"q15","shape":"procedural","q":"how to appeal carc 197"},
+    {"id":"q16","shape":"procedural","q":"I have a COB denial from Sunshine Health what should i do"},
+    {"id":"q17","shape":"procedural","q":"What do I do to develop an appeal for a COB denial?"},
+    {"id":"q18","shape":"tool-shaped","q":"is there a tool that can help me file an appeal"},
+    {"id":"q19","shape":"typo-tolerance","q":"what is the timiley filing deadline for subshine health"},
+    {"id":"q20","shape":"underspecified","q":"I want to know if i need approval for in home ventilators"}
+  ]
+}

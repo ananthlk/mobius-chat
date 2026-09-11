@@ -5541,9 +5541,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                                          # cost does not exist yet
                                     acting_cost_s=10.3,
                                 )
-                                _v2s.emit(ctx.correlation_id,
-                                          _v2s.compare(_pp_directive, _v2_state,
-                                                       v1_reason=_pp_reason))
+                                _v2_cmp = _v2s.compare(_pp_directive, _v2_state,
+                                                       v1_reason=_pp_reason)
+                                _v2s.emit(ctx.correlation_id, _v2_cmp)
+                                # Accumulate; the batch lands once at settle.
+                                # A write on the round path would add latency to
+                                # production for an observer's benefit.
+                                if _v2_cmp:
+                                    if not hasattr(ctx, "v2_shadow_rounds"):
+                                        ctx.v2_shadow_rounds = []
+                                    ctx.v2_shadow_rounds.append(_v2_cmp)
                             except Exception as _v2_exc:  # pragma: no cover
                                 logger.warning("[v2.shadow] hook failed: %s", _v2_exc)
 

@@ -1050,6 +1050,17 @@ def run_pipeline(
             )
             if _att is not None:
                 _write_attestation(_att)
+            # v2 round records, batched, in the SAME finally as the attestation
+            # (governor seat). Written once per turn, never per round. Guarded
+            # for the same reason the attestation write is: telemetry must never
+            # fail a turn.
+            try:
+                _v2_rows = getattr(ctx, "v2_shadow_rounds", None)
+                if _v2_rows:
+                    from app.pipeline.v2.ledger import write_rounds as _v2_wr
+                    _v2_wr(ctx.correlation_id, _v2_rows)
+            except Exception:
+                logger.exception("[v2] round-record write failed")
         except Exception:
             logger.exception("[promise] attestation close failed cid=%s",
                              correlation_id[:8])
