@@ -4732,6 +4732,37 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _pp_pre_directive, rn, max_it, _pp_elapsed_s, _pp_pre_reason,
             )
 
+            # ── R0 SHADOW, PRE-ROUND (governor seat) ───────────────────────
+            # THIS is the every-round site. The post-round hook below only
+            # fires on the round where react proposes completion AND the
+            # groundedness path runs -- measured: it produced a comparison on
+            # roughly half the turns sampled, and none at all on some. A shadow
+            # with partial, unexplained coverage cannot support "over 200
+            # turns" because the denominator is unknown.
+            #
+            # Chat seat's finding makes the mapping safe here: _pp_pre_state
+            # hardcodes proposes_complete=False and the ":197" extend sits
+            # inside `if state.proposes_complete`, so every PRE-round extend is
+            # necessarily the ":209" path -- still gathering.
+            if os.environ.get("MOBIUS_V2_SHADOW", "").strip() == "1":
+                try:
+                    from app.pipeline.v2 import shadow as _v2sp
+
+                    _v2ps = _v2sp.state_from_ctx(
+                        ctx, round_index=rn, elapsed_s=_pp_elapsed_s,
+                        promise_latency_s=float(_pp_contract.soft_target_s),
+                        round_cost_s=10.3, acting_cost_s=10.3,
+                    )
+                    _v2pc = _v2sp.compare(_pp_pre_directive, _v2ps,
+                                          v1_reason=_pp_pre_reason)
+                    _v2sp.emit(ctx.correlation_id, _v2pc)
+                    if _v2pc:
+                        if not hasattr(ctx, "v2_shadow_rounds"):
+                            ctx.v2_shadow_rounds = []
+                        ctx.v2_shadow_rounds.append(_v2pc)
+                except Exception as _v2pe:  # pragma: no cover
+                    logger.warning("[v2.shadow] pre-round hook failed: %s", _v2pe)
+
         # Round headline: prefer the governor's real per-round reasoning
         # (directive + reason) over the static positional label
         # (_react_round_headline — "Scoping"/"Grounding"/etc, which is keyed
