@@ -441,33 +441,27 @@ def _framing_block():
     return code
 
 
-def test_the_framing_hook_records_and_does_NOT_act():
-    """The first instant round N's gaps exist — and BEFORE round N's tool runs.
+def test_the_framing_hook_acts_ONLY_through_the_gated_stop():
+    """CONTRACT CHANGED 2026-09-11 — the hook was observation-only and now
+    decides. This test was `..._does_NOT_act` and is rewritten rather than
+    deleted, because a gate quietly removed when its subject changes is how a
+    rule stops existing without anyone deciding to remove it.
 
-    Every other governor hook is blind to them: the pre-round hook fires before
-    the model has spoken, and round N's enrichment is written at :5316. That is
-    why the LLM seat's round-1 decomposition changed 17 of 20 branch sequences
-    not at all — nine gaps produced correctly, and the governor's round-1
-    decision already made before they existed.
-
-    OBSERVATION ONLY. Acting here means refusing a tool call the model has
-    already chosen — a far larger behaviour change than substituting a
-    directive, and it has earned no evidence yet.
+    The new contract: the hook's ONLY effect is _finalize_response()+return,
+    inside the three-constraint gate. It still may not touch the loop's other
+    control variables — no max_it, no directive substitution, no continue.
     """
     block = _framing_block()
     assert "_v2fp.select(" in block and "_v2fp.explain(" in block, "records nothing"
-    # It must not reassign the loop's control variables. Word-bounded: a plain
-    # substring test matched my own local `_v2f_inputs` on "inputs =" — the
-    # same prose-for-program error this program has now made five times, in a
-    # new dress. `(?<![\w])` is what separates the loop's `inputs` from a
-    # variable that merely ends in it.
     import re
+    # the ONE sanctioned effect
+    assert "_finalize_response(" in block and "return" in block
+    # ...and nothing else that steers the loop
     for control in ("_pp_directive", "max_it", "tool", "inputs", "is_complete"):
         assert not re.search(rf"(?<![\w])(?<!\.){control}\s*(?:=|\+=)(?!=)", block), \
-            f"the framing hook assigns {control!r} — it acts"
-    for stmt in ("continue", "return", "break"):
-        assert not re.search(rf"(?<![\w]){stmt}(?![\w])", block), \
-            f"the framing hook does {stmt!r} — it acts"
+            f"the framing hook assigns {control!r}"
+    assert not re.search(r"(?<![\w])continue(?![\w])", block), \
+        "the framing hook continues the loop"
 
 
 def test_framing_never_overwrites_the_pre_round_decision():
@@ -517,3 +511,61 @@ def test_absent_json_is_SQL_NULL_not_a_jsonb_null():
     assert captured.get("inputs") is None, captured.get("inputs")
     assert captured.get("framing") is None, captured.get("framing")
     assert captured.get("inputs") != _json.dumps(None)
+
+
+def test_framing_stop_is_gated_on_all_three_constraints():
+    """Graduated to DECIDING. Three constraints, each earned today:
+
+    1. Never on round 1 — stopping before any tool returned answers from zero
+       evidence, and this afternoon's budget bug made the machine say NARROW
+       at round 1 on every turn. Live then, it would have ended every turn
+       before it started.
+    2. Only the routed v2 arm.
+    3. Revertible without a deploy — an env var, ~90 seconds.
+    """
+    block = _framing_block()
+    assert 'os.environ.get("MOBIUS_V2_FRAME_DECIDES"' in block
+    assert 'getattr(ctx, "orchestrator_version", "v1") == "v2"' in block
+    assert "rn > 1" in block, "the round-1 floor is gone"
+
+
+def test_framing_stop_uses_the_SAME_inverse_map_as_the_executor():
+    """One posture -> directive table, not a second. A second would disagree
+    with the first exactly where the decision is most interesting."""
+    block = _framing_block()
+    assert "_v2fx.decide(" in block
+    assert "_v2f_act.continues" in block
+    # and it carries the fuse
+    assert "extensions_used=_pp_extension_rounds_used" in block
+
+
+def test_framing_stop_never_finalises_an_empty_answer():
+    """Finalising an empty answer turns a governor decision into a blank
+    screen — worse than the round it is trying to save. The governor decides
+    WHEN to stop; it never decides WHAT to say."""
+    block = _framing_block()
+    i = block.index("if not _v2f_act.continues:")
+    tail = block[i:]
+    assert "if _v2f_answer:" in tail, "no empty-answer guard"
+    assert tail.index("if _v2f_answer:") < tail.index("_finalize_response("), \
+        "the guard is after the finalise — it cannot guard anything"
+    assert "_running_answer or thought" in tail, \
+        "the answer is not the model's own running answer"
+
+
+def test_a_governor_stop_is_RECORDED_on_the_row():
+    """Without it the row is indistinguishable from a turn that simply ran out
+    of rounds — the could-not-check-vs-checked-false shape, and this time it
+    would hide the only behaviour change v2 makes outside its one branch."""
+    block = _framing_block()
+    assert '_v2f_row["v2_framing_stopped"] = True' in block
+    assert '_v2f_row["v2_framing_suppressed_tool"] = tool' in block
+
+
+def test_the_frame_decides_flag_is_in_the_deploy_allowlist():
+    """SET_ENV_VARS is an allowlist, not a passthrough — a var absent from it
+    is simply not in the container, silently. That defect made the shadow flag
+    a no-op on its first deploy, and it would make the revert lever fail open
+    here: the hook would keep deciding with no way to turn it off short of a
+    redeploy."""
+    assert "MOBIUS_V2_FRAME_DECIDES=" in pathlib.Path("scripts/deploy.sh").read_text()

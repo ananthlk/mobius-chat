@@ -250,6 +250,10 @@ SET_ENV_VARS=(
     # from this list is simply not in the container, silently. MOBIUS_V2_PCT
     # is the A/B split: 0 (default) = every turn on v1.
     "MOBIUS_V2_PCT=${MOBIUS_V2_PCT:-}"
+    # Graduates the framing hook from observing to DECIDING. Revertible
+    # without a deploy: `gcloud run services update --update-env-vars
+    # MOBIUS_V2_FRAME_DECIDES=` takes ~90s. Empty default = observe only.
+    "MOBIUS_V2_FRAME_DECIDES=${MOBIUS_V2_FRAME_DECIDES:-}"
     # Cache-assist (2026-04-23). Empty-default so unset vars don't
     # break the csv; see deploy/dev.env for rationale on each.
     "CACHE_ASSIST_ENABLED=${CACHE_ASSIST_ENABLED:-}"

@@ -5387,6 +5387,89 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                              if int(r.get("round") or 0) == rn), None)
                         if _v2f_row is not None:
                             _v2f_row["v2_framing_inputs"] = _v2f_inputs
+                        # ── GRADUATED 2026-09-11: the framing hook DECIDES ──
+                        #
+                        # Ananth: "yeah graduate, we can always revert."
+                        #
+                        # The case, from q20: the governor said NARROW twice
+                        # and nothing read it -- the executor only has
+                        # authority at the "model proposes done" branch, so a
+                        # turn that had already decided it could not answer
+                        # spent another 12s and a web_scrape and still said
+                        # "I was unable to find any information."
+                        #
+                        # THREE CONSTRAINTS, each earned today:
+                        #
+                        # 1. NEVER ON ROUND 1. Stopping before any tool has
+                        #    returned answers from zero evidence. The budget
+                        #    bug fixed this afternoon made the machine say
+                        #    NARROW at round 1 on every turn -- had this been
+                        #    live then, it would have ended every turn before
+                        #    it started. A decision point with teeth is only as
+                        #    good as the arithmetic behind it, and that
+                        #    arithmetic has been wrong twice today.
+                        #
+                        # 2. Only EXPLORE and VALIDATE continue; the wrap-up
+                        #    postures stop. Same table the executor uses --
+                        #    one inverse map, not a second.
+                        #
+                        # 3. Revertible without a deploy: MOBIUS_V2_FRAME_DECIDES
+                        #    is an env var, so turning it off is ~90 seconds.
+                        #
+                        # The MECHANISM is task-mode's, 60 lines below, not one
+                        # I invented: _finalize_response() then return. Its own
+                        # comment records why `is_complete=True, tool=None` does
+                        # NOT stop this loop -- the empty-answer path falls
+                        # through and round 2 fires anyway.
+                        #
+                        # The answer we finalise with is the model's OWN
+                        # running_answer -- "the best answer you can build from
+                        # kept evidence so far". Not a governor-written string:
+                        # the governor decides WHEN to stop, never WHAT to say.
+                        _v2f_decides = (
+                            os.environ.get("MOBIUS_V2_FRAME_DECIDES", "").strip() == "1"
+                            and getattr(ctx, "orchestrator_version", "v1") == "v2"
+                            and rn > 1
+                        )
+                        if _v2f_decides:
+                            from app.pipeline.v2 import executor as _v2fx
+                            _v2f_act = _v2fx.decide(
+                                _v2f_dec, _v2fp.exit_mode(_v2f_state),
+                                extensions_used=_pp_extension_rounds_used,
+                            )
+                            if not _v2f_act.continues:
+                                _v2f_answer = (_running_answer or thought or "").strip()
+                                logger.info(
+                                    "[v2.frame] STOP cid=%s round=%s posture=%s "
+                                    "exit=%s suppressed_tool=%s answer_len=%d",
+                                    (ctx.correlation_id or "")[:8], rn,
+                                    _v2f_act.posture.value,
+                                    getattr(_v2f_act.exit_mode, "value", None),
+                                    tool, len(_v2f_answer),
+                                )
+                                if _v2f_row is not None:
+                                    # The turn ended HERE, by decision. Without
+                                    # this the row is indistinguishable from a
+                                    # turn that simply ran out of rounds.
+                                    _v2f_row["v2_framing_stopped"] = True
+                                    _v2f_row["v2_framing_suppressed_tool"] = tool
+                                ctx.v2_framing_stopped = True
+                                if _v2f_answer:
+                                    _finalize_response(
+                                        ctx, _v2f_answer, all_sources,
+                                        final_signal, last_tool, emitter,
+                                    )
+                                    return
+                                # NOTHING TO SAY YET -> do not stop. Finalising
+                                # an empty answer would turn a governor decision
+                                # into a blank screen, which is worse than the
+                                # round it is trying to save.
+                                logger.info(
+                                    "[v2.frame] stop DECLINED cid=%s round=%s: "
+                                    "no running answer to finalise with",
+                                    (ctx.correlation_id or "")[:8], rn,
+                                )
+                                ctx.v2_framing_stopped = False
                 except Exception as _v2f_exc:  # pragma: no cover
                     logger.warning("[v2.frame] hook failed: %s", _v2f_exc)
 
