@@ -12028,6 +12028,15 @@ function run(): void {
       _pendingMentions = [];
     }
     let activeCorrelationId = "";
+    // The A/B comparison block arrives on the POST /chat RESPONSE. By the time
+    // the render site runs, `data` is the STREAM result several .then() hops
+    // later — a different object that has never carried `comparison`, so
+    // `data.comparison` was always undefined and the shadow block never
+    // rendered. Hoisted into the closure for the same reason
+    // activeCorrelationId is, and for want of exactly this the second block
+    // was missing all evening while three unrelated server defects were found
+    // and fixed underneath it.
+    let activeComparison: AbComparison | null = null;
     const _chatAuthHeaders = await auth.getAuthHeader?.() ?? {};
     fetch(API_BASE + "/chat", {
       method: "POST",
@@ -12038,6 +12047,7 @@ function run(): void {
       .then((data) => {
         if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
         activeCorrelationId = data.correlation_id ?? "";
+        activeComparison = (data as { comparison?: AbComparison }).comparison ?? null;
         if ((data.correlation_id || "").trim()) {
           onRequestCorrelationId();
         }
@@ -12808,8 +12818,8 @@ function run(): void {
         // 13. A/B compare (ab_fork): the served answer above IS the thread's arm. Append the
         //     SHADOW arm's answer below it — clearly not-served, on a fresh thread. Never
         //     rewrites history (no promotion). Absent `comparison` = a normal turn.
-        if (data.comparison && data.status === "completed") {
-          turnWrap.appendChild(renderAbShadowComparison(data.comparison, selectedMode));
+        if (activeComparison && data.status === "completed") {
+          turnWrap.appendChild(renderAbShadowComparison(activeComparison, selectedMode));
         }
 
         loadSidebarHistory();

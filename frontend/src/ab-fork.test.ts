@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { pickShadowArm, looksLikeCid, type AbComparison } from "./ab-fork";
 
 // The REAL payload Governor ships (2026-09-11), copied from a live forked turn. The bug this
@@ -72,5 +74,35 @@ describe("pickShadowArm — reads structure from named fields, not a value's typ
     expect(looksLikeCid("has space")).toBe(false);
     expect(looksLikeCid("")).toBe(false);
     expect(looksLikeCid(undefined)).toBe(false);
+  });
+});
+
+describe("the comparison must survive the .then() chain", () => {
+  // THE bug that hid the second block all evening.
+  //
+  // `comparison` arrives on the POST /chat RESPONSE. The render site runs
+  // several .then() hops later, where `data` is the STREAM result — a
+  // different object that has never carried it. `data.comparison` was
+  // therefore always undefined, and the block never rendered while three
+  // unrelated SERVER defects were found and fixed underneath it.
+  it("reads the comparison from the POST response, not the stream result", () => {
+    const src = readFileSync(join(__dirname, "app.ts"), "utf8");
+    // hoisted into the closure, like activeCorrelationId
+    expect(src).toContain("let activeComparison: AbComparison | null = null;");
+    expect(src).toContain("activeComparison = (data as { comparison?: AbComparison }).comparison");
+    // and the render site must use the hoisted value
+    expect(src).toContain("if (activeComparison && data.status === \"completed\")");
+    // the stream result must NOT be read for it again
+    expect(src).not.toContain("data.comparison &&");
+  });
+
+  it("the stream payload genuinely does not carry comparison", () => {
+    // Guards the premise: if the server ever DID put `comparison` on the
+    // completed payload, the closure hoist would be unnecessary and this
+    // test should be revisited rather than silently kept.
+    const src = readFileSync(join(__dirname, "app.ts"), "utf8");
+    const iface = src.slice(src.indexOf("interface ChatResponsePayload"),
+                            src.indexOf("interface ChatResponsePayload") + 1400);
+    expect(iface).not.toContain("comparison");
   });
 });
