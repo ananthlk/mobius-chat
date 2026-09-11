@@ -113,8 +113,43 @@ def classify_permanent_failure(exc_str: str) -> str | None:
     a short reason string, or None if this doesn't look permanent (also
     None for 429s — those are rate limits, already handled by
     tpd_tracker's retry-after tracking, and they DO resolve on their own).
+
+    Chat Master's follow-up (2026-09-11) on the classifier's own
+    fragility: matching Perplexity's "insufficient_quota" only worked
+    because that string happens to appear verbatim inside the raw JSON
+    body ({"error": {"type": "insufficient_quota", ...}}) that gets
+    embedded in the exception text — a blind substring scan across the
+    WHOLE message, not a deliberate read of the field it actually lives
+    in. "If Perplexity rewords insufficient_quota to quota_exceeded, your
+    classifier silently stops matching... a quiet regression from what
+    you just built, and nothing would report it." (The fall-through IS
+    already loud — see llm_manager.py's "unrecognized failure shape"
+    WARNING — but a *renamed* structured field would still silently
+    demote a 502-with-reason down to a 500-with-detail, which is strictly
+    better than the old bare 500 but a real loss from what this function
+    is supposed to catch.)
+
+    Fix: try the STRUCTURED signal first — pull any `"type": "..."` or
+    `"code": "..."`/`"code": N` field out of the raw text via regex (every
+    provider observed so far embeds one) and match ITS VALUE against the
+    phrase set, not the surrounding prose. A provider's error `type`/
+    `code` is a value they version deliberately; free-text `message`
+    wording is versioned silently and can change without notice. Falls
+    back to the original whole-string substring scan when no structured
+    field is found or it doesn't match anything known (e.g. Anthropic's
+    `type` is always the generic "invalid_request_error" — the specific
+    signal is ONLY in `message` there, so prose matching stays the
+    necessary fallback, not a redundant safety net for every provider).
     """
     s = (exc_str or "").lower()
+
+    for field_re in (r'"type"\s*:\s*"([^"]+)"', r'"code"\s*:\s*"?([a-z0-9_.\-]+)"?'):
+        for m in re.finditer(field_re, s):
+            value = m.group(1)
+            for phrase in _PERMANENT_ERROR_PHRASES:
+                if phrase == value or phrase in value:
+                    return phrase
+
     for phrase in _PERMANENT_ERROR_PHRASES:
         if phrase in s:
             return phrase

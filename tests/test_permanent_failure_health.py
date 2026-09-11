@@ -38,13 +38,19 @@ class TestClassifyPermanentFailure:
         # follow-up on the Anthropic outage): a DIFFERENT permanent-failure
         # shape than the auth/billing phrases — no 401/403, no "credit"/"key"
         # wording, just a 404 the model itself is gone/inaccessible.
+        #
+        # 2026-09-11 (Chat Master's fragility follow-up): the structured
+        # "code" field is now matched FIRST, ahead of the prose substring —
+        # "model_not_found" is a value Groq versions deliberately, the
+        # surrounding message text is not. Prose match is still the
+        # fallback for providers with no useful structured field (Anthropic).
         exc = (
             'Groq API error 404: {"error": {"message": "The model '
             '`llama-3.3-70b-versatile` does not exist or you do not have '
             'access to it.", "type": "invalid_request_error", '
             '"code": "model_not_found"}}'
         )
-        assert classify_permanent_failure(exc) == "does not exist or you do not have access to it"
+        assert classify_permanent_failure(exc) == "model_not_found"
 
     def test_rate_limit_429_is_not_permanent(self):
         # 429s are transient and already handled by tpd_tracker's
@@ -56,6 +62,51 @@ class TestClassifyPermanentFailure:
 
     def test_empty_string(self):
         assert classify_permanent_failure("") is None
+
+    def test_structured_field_survives_reworded_prose(self):
+        # Chat Master's fragility follow-up (2026-09-11): the classifier
+        # must not depend on prose wording staying the same. If a provider
+        # rewords its message text but keeps its structured "type"/"code"
+        # value stable, classification must still succeed.
+        exc = (
+            'Perplexity API error 401: {"error": {"message": '
+            '"Your account has run out of allotted requests for this '
+            'billing period.", "type": "insufficient_quota", "code": 401}}'
+        )
+        # None of the known phrases appear as prose here ("run out of
+        # allotted requests" is not "credit balance is too low" or any
+        # other literal phrase) -- only the structured type field matches.
+        assert classify_permanent_failure(exc) == "insufficient_quota"
+
+    def test_reworded_structured_field_on_a_non_401_403_status_is_a_real_gap(self):
+        # The genuine silent-gap case, named explicitly because Chat
+        # Master's warning was about SILENCE: a renamed type value on a
+        # status code with no other fallback (unlike 401/403, which the
+        # bare-status-code check still catches on its own) correctly
+        # returns None -- a real gap to notice and add a phrase for, not
+        # a false match. This is exactly why the fall-through is loud
+        # elsewhere (llm_manager.py's "unrecognized failure shape"
+        # WARNING fires whenever this function returns None for a
+        # non-timeout failure) rather than assumed complete.
+        exc = (
+            'Perplexity API error 400: {"error": {"message": '
+            '"You exceeded your current quota, please check your plan.", '
+            '"type": "quota_exceeded", "code": 400}}'
+        )
+        assert classify_permanent_failure(exc) is None
+
+    def test_renamed_field_on_401_still_caught_by_bare_status_fallback(self):
+        # A renamed type value on a 401/403, unlike the case above, is
+        # NOT a silent gap -- the pre-existing bare-status-code fallback
+        # still classifies it (as "http_401", not the specific reason),
+        # which is a real safety net this improvement doesn't need to
+        # duplicate.
+        exc = (
+            'Perplexity API error 401: {"error": {"message": '
+            '"You exceeded your current quota, please check your plan.", '
+            '"type": "quota_exceeded", "code": 401}}'
+        )
+        assert classify_permanent_failure(exc) == "http_401"
 
 
 class TestLiveHealthPermanentReason:
