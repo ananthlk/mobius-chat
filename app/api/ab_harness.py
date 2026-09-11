@@ -764,3 +764,43 @@ def register_chat_fork(question: str, mode: str, arms: dict[str, str],
                   correlation_id = EXCLUDED.correlation_id, status='running'""",
            {"r": run_id, "a": arm, "c": cid})
     return f"/ab?run={run_id}&q=q01"
+
+
+def capture_if_harness_arm(correlation_id: str) -> None:
+    """Freeze this turn's envelope if it is an arm of a harness run.
+
+    A chat-surface fork REGISTERS its run (so the comparison has a permalink)
+    and nothing ever captured it -- both arms sat at status='running' forever
+    and the permalink rendered two empty columns. The /ab/ask path only worked
+    because the driving script called capture explicitly; the kebab has no
+    script.
+
+    Called from the settle block, where the turn already knows it has
+    finished. Never raises: a capture failure must not touch the turn that
+    produced it, and the envelope is still reachable from /chat/response until
+    its TTL expires.
+    """
+    try:
+        rows = _q("""select run_id, question_id, arm_id from ab_run_questions
+                      where correlation_id = :c and answer_envelope is null""",
+                  {"c": correlation_id})
+        if not rows:
+            return
+        from app.api.chat import get_chat_response
+        payload = get_chat_response(correlation_id)
+        if (payload or {}).get("status") != "completed":
+            return
+        env = payload.get("assistant_envelope")
+        for r in rows:
+            _x("""UPDATE ab_run_questions
+                     SET answer_envelope = CAST(:e AS JSONB),
+                         envelope_captured_at = now(),
+                         status = 'captured'
+                   WHERE run_id=:r AND question_id=:q AND arm_id=:a""",
+               {"e": json.dumps(env), "r": r["run_id"],
+                "q": r["question_id"], "a": r["arm_id"]})
+        logger.info("[ab] captured envelope cid=%s run=%s arm=%s",
+                    correlation_id[:8], rows[0]["run_id"], rows[0]["arm_id"])
+    except Exception as exc:
+        logger.warning("[ab] harness capture failed cid=%s: %s",
+                       correlation_id[:8], exc)

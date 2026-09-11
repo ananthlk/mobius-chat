@@ -248,3 +248,40 @@ def test_a_missing_shadow_lane_cannot_stop_the_worker_starting():
     i = w.index("A/B SHADOW CONSUMER")
     block = w[i:i + 1400]
     assert "except Exception" in block and "served turns" in block
+
+
+def test_a_forked_turn_captures_ITSELF_at_settle():
+    """The kebab fork registers a run so the comparison has a permalink, and
+    nothing captured it — both arms sat at status='running' forever and the
+    page rendered two empty columns.
+
+    /ab/ask only worked because its driving script called capture explicitly.
+    A person clicking a toggle has no script. The write path had no caller,
+    which is the defect this program has now found fourteen times.
+    """
+    import ast
+    h = pathlib.Path("app/api/ab_harness.py").read_text()
+    assert "def capture_if_harness_arm" in h
+    tree = ast.parse(h)
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "capture_if_harness_arm")
+    src = ast.unparse(fn)
+    assert "answer_envelope is null" in src, "it would re-capture an already-frozen arm"
+    assert "get_chat_response" in src, "it does not read the real envelope"
+    assert "'captured'" in src or '"captured"' in src
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    assert "capture_if_harness_arm(correlation_id)" in orch, "the hook has no caller"
+
+
+def test_capture_failure_cannot_touch_the_turn_that_produced_it():
+    """Telemetry must never fail a turn — and the envelope is still reachable
+    from /chat/response until its TTL expires, so a failed capture costs a
+    permalink, not an answer."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "capture_if_harness_arm")
+    assert any(isinstance(n, ast.Try) for n in ast.walk(fn)), "unguarded"
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    i = orch.index("capture_if_harness_arm(correlation_id)")
+    assert "except Exception" in orch[i:i + 300], "the call site is unguarded"

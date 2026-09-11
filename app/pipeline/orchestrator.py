@@ -1145,6 +1145,17 @@ def run_pipeline(
                     _v2_wr(ctx.correlation_id, _v2_rows)
             except Exception:
                 logger.exception("[v2] round-record write failed")
+            # Freeze this turn's envelope if it is an arm of a harness run.
+            # The kebab fork registers its run so the comparison has a
+            # permalink, and nothing captured it -- both arms sat at
+            # status='running' forever and the page rendered two empty
+            # columns. /ab/ask only worked because its driving script called
+            # capture explicitly; a person clicking a toggle has no script.
+            try:
+                from app.api.ab_harness import capture_if_harness_arm
+                capture_if_harness_arm(correlation_id)
+            except Exception:
+                logger.exception("[ab] capture hook failed")
         except Exception:
             logger.exception("[promise] attestation close failed cid=%s",
                              correlation_id[:8])
