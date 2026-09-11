@@ -15,6 +15,7 @@ max(active version) picks the previous one, never rewriting history.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -168,6 +169,21 @@ async def create_block_version(block_key: str, body: NewBlockVersionRequest) -> 
         raise HTTPException(status_code=400, detail="invalid block_kind")
     if body.role not in ("system", "user"):
         raise HTTPException(status_code=400, detail="invalid role")
+
+    # Token counts (migration 066, Governor seat's estimate() correction):
+    # compute BEFORE the transaction -- this is a network call, and holding
+    # a DB connection/transaction open across it would be a needless stall
+    # under load. Only static/conditional blocks get a stored count --
+    # derived/per_turn (e.g. react.tool_manifest's "{{ tool_manifest_text }}"
+    # placeholder) carry no real content of their own to count; the runtime-
+    # variable part is priced by whoever renders it (Tool Manifest, for the
+    # manifest text). Best-effort: a failed/unavailable tokenizer leaves the
+    # key absent, never blocks publishing a block.
+    token_counts: dict[str, int] = {}
+    if body.block_kind in ("static", "conditional"):
+        from app.services.prompt_token_counting import compute_token_counts
+        token_counts = compute_token_counts(body.template_body)
+
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -181,16 +197,18 @@ async def create_block_version(block_key: str, body: NewBlockVersionRequest) -> 
                 """
                 INSERT INTO prompt_blocks
                   (block_key, version, block_kind, role, template_body, condition,
-                   is_authority, directives, owner, validated_at, validated_by, active, created_by)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-                RETURNING id, block_key, version, active
+                   is_authority, directives, owner, validated_at, validated_by, active, created_by,
+                   token_counts)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
+                RETURNING id, block_key, version, active, token_counts
                 """,
                 block_key, next_ver, body.block_kind, body.role, body.template_body,
                 body.condition, body.is_authority, body.directives, body.owner,
                 validated_at, validated_by, body.activate, body.created_by,
+                json.dumps(token_counts),
             )
-    logger.info("[admin-prompts] new block version block_key=%s version=%s activate=%s by=%s",
-                block_key, next_ver, body.activate, body.created_by)
+    logger.info("[admin-prompts] new block version block_key=%s version=%s activate=%s token_counts=%s by=%s",
+                block_key, next_ver, body.activate, token_counts, body.created_by)
     return dict(row)
 
 
