@@ -132,3 +132,26 @@ CREATE INDEX IF NOT EXISTS turn_rounds_tool_called_idx
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS round_duration_s DOUBLE PRECISION;
 ALTER TABLE turn_rounds DROP COLUMN IF EXISTS delivered_latency_s;
 ALTER TABLE turn_rounds DROP COLUMN IF EXISTS delivered_cost_c;
+
+-- ── STEP 2: what v2 ACTUALLY RAN, vs what it would have chosen ─────────────
+-- `directive` above is the posture machine's own vocabulary (DISCOVER /
+-- CLOSE) and is NULL for NARROW and COMMUNICATE. It is NOT the thing the loop
+-- executed. Without these three, a v2 turn's row records the arm and the
+-- posture and says nothing about what the substitution did -- decided and
+-- discarded, the third time in this program and the second in my own module.
+--
+--   applied_directive  v1's vocabulary: extend | finalize | complete. THE
+--                      substitution. NULL on a v1 turn, which is a real
+--                      distinction: v1 turns have no applied v2 directive.
+--   v2_applied         TRUE only if the substitution actually took effect. A
+--                      v2 turn whose hook raised has already fallen back to
+--                      v1's directive; counting it as v2 would file it in the
+--                      wrong population.
+--   prompt_mismatch    the KNOWN-WRONG prompt, declared per round: EXPLORE and
+--                      ALTERNATIVES receive v1's remediation prompt because v1
+--                      has no other extend prompt at this branch. Carried so
+--                      the comparison can separate "v2 chose badly" from "v2
+--                      chose well and got the wrong prompt for it".
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS applied_directive TEXT;
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS v2_applied        BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS prompt_mismatch   TEXT;

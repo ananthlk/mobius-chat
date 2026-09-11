@@ -246,3 +246,24 @@ def test_the_default_split_is_zero():
     assert 'os.environ.get("MOBIUS_V2_PCT", "0")' in orch
     from app.pipeline.v2.routing import assign
     assert all(assign(f"cid-{i}", 0) == "v1" for i in range(200))
+
+
+def test_the_substitution_is_WRITTEN_and_READ_not_decided_and_discarded():
+    """Three fields were set on the comparison row and written nowhere — the
+    third instance in this program and the second in my own module (`overran`
+    was the first). A decision that leaves no row is indistinguishable from
+    one that was never made.
+
+    Producer, write, reader — all three, or it is the same defect.
+    """
+    react = _react_src()
+    ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
+    api = pathlib.Path("app/api/ab_harness.py").read_text()
+    for producer, column, reader in (
+        ('"v2_directive_applied"', "applied_directive", '"applied_directive"'),
+        ('"v2_applied"', "v2_applied", '"v2_applied"'),
+        ('"v2_prompt_mismatch"', "prompt_mismatch", '"prompt_mismatch"'),
+    ):
+        assert producer in react, f"no producer for {column}"
+        assert column in ledg, f"{column} not written"
+        assert reader in api, f"no reader for {column}"

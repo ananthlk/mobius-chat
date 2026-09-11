@@ -157,7 +157,8 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
     rows = _q("""select round_index, posture, directive, gap_targeted, rationale,
                         gaps_opened, gaps_closed, v1_directive, v1_reason,
                         v1_maps_to, shadow_verdict, tool_called, tools_offered,
-                        overran, round_duration_s
+                        overran, round_duration_s, applied_directive,
+                        v2_applied, prompt_mismatch
                    from turn_rounds where correlation_id=:c
                   order by round_index""", {"c": correlation_id})
     out = []
@@ -180,6 +181,13 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         "v1_directive": r["v1_directive"], "v1_reason": r["v1_reason"],
                         "v1_maps_to": r["v1_maps_to"],
                         "verdict": r["shadow_verdict"],
+                        # What the executor RAN, distinct from the posture it
+                        # would have chosen: on a routed turn the exit mode may
+                        # have overridden the posture, and that override is the
+                        # interesting row.
+                        "applied_directive": r["applied_directive"],
+                        "v2_applied": bool(r["v2_applied"]),
+                        "prompt_mismatch": r["prompt_mismatch"],
                         "tool_called": r["tool_called"],
                         "round_duration_s": r["round_duration_s"],
                         "overran": bool(r["overran"])})
