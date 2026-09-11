@@ -291,6 +291,39 @@ def test_resolve_composition_row_mapping(_=None):
     assert assembled.blocks_used[0] == ("app_ctx", 2)     # manifest carries resolved version
 
 
+def test_resolve_composition_picks_max_version_among_multiple_active():
+    """Governor seat, 2026-09-10: multiple simultaneously-active rows for one
+    block_key is the DESIGNED rollback mechanism (admin_prompts.py's
+    create_block_version is append-only and never deactivates the prior
+    version; set_block_version_active's own docstring: "deactivating the
+    current version makes the resolver fall back to the next-highest active
+    version automatically" — a rollback CHAIN, not a data-hygiene bug).
+    Confirmed live in prod data: prompt_blocks has 6 simultaneously-active
+    rows for react.critical_rules today. This locks in the resolver's half
+    of that contract — MAX(version) among active wins — with more than one
+    old active version in play, not just one active + one inactive."""
+    from app.services.prompt_manager import _blocks_from_rows
+
+    def row(bk, v, active, **kw):
+        base = dict(block_key=bk, version=v, block_kind="static", role="system",
+                    template_body=f"{bk} v{v}.", condition=None, is_authority=False,
+                    directives=[], owner="platform", validated_at=None, active=active)
+        base.update(kw); return base
+
+    members = [{"position": 1, "block_key": "critical_rules", "pinned_version": None}]
+    # A realistic rollback chain: v1, v3, v6 all still flagged active (v2/v4/v5
+    # were superseded and never explicitly deactivated) — the resolver must
+    # pick v6, not the highest-active-that-happens-to-be-scanned-first.
+    block_rows = [
+        row("critical_rules", 1, True),
+        row("critical_rules", 3, True),
+        row("critical_rules", 6, True),
+    ]
+    ordered, blocks = _blocks_from_rows(members, block_rows)
+    assert blocks["critical_rules"].version == 6
+    assert blocks["critical_rules"].template_body == "critical_rules v6."
+
+
 def test_resolve_composition_missing_active_version_raises():
     from app.services.prompt_manager import _blocks_from_rows
     from app.services.llm_manager_errors import PromptNotFoundError
