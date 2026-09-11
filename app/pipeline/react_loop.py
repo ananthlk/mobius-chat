@@ -5522,6 +5522,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         # that tracks turn quality — content is unaffected either way.
                         ctx.product_promise_directive = _pp_directive
 
+                        # ── R0 SHADOW (governor seat, 2026-09-11) ──────────
+                        # v2 computes its posture beside v1's directive. v1
+                        # DECIDES; v2 is observed and never applied. Wrapped
+                        # because an observer that can break the thing it
+                        # observes is not an observer -- same posture as the
+                        # attestation write. Off unless MOBIUS_V2_SHADOW=1.
+                        if os.environ.get("MOBIUS_V2_SHADOW", "").strip() == "1":
+                            try:
+                                from app.pipeline.v2 import shadow as _v2s
+
+                                _v2_state = _v2s.state_from_ctx(
+                                    ctx,
+                                    round_index=rn,
+                                    elapsed_s=_pp_elapsed_s,
+                                    promise_latency_s=float(_pp_contract.soft_target_s),
+                                    round_cost_s=10.3,   # agentic p50; per-posture
+                                                         # cost does not exist yet
+                                    acting_cost_s=10.3,
+                                )
+                                _v2s.emit(ctx.correlation_id,
+                                          _v2s.compare(_pp_directive, _v2_state))
+                            except Exception as _v2_exc:  # pragma: no cover
+                                logger.warning("[v2.shadow] hook failed: %s", _v2_exc)
+
                         if _pp_directive == "extend":
                             _pp_extension_rounds_used += 1
                             max_it += 1

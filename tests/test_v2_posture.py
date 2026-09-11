@@ -266,3 +266,52 @@ def test_banner_names_the_arm_first():
 
 def test_every_decision_emit_carries_the_version():
     assert decision_line(V2, 3, "closing G3").startswith("v2 · round 3")
+
+
+# ── R0 shadow ───────────────────────────────────────────────────────────────
+
+from app.pipeline.v2.shadow import DIRECTIVE_TO_POSTURE, compare, emit
+
+
+def test_shadow_never_raises_on_a_broken_state():
+    """An observer that can break the thing it observes is not an observer."""
+    assert compare("search", None) is None          # garbage state
+    emit("cid", None)                                # must not raise
+    emit("cid", {"agrees": True})                    # missing keys, must not raise
+
+
+def test_shadow_reports_agreement_when_v1_and_v2_line_up():
+    st = _state(open_gaps=(_gap(),))                 # v2 -> EXPLORE/CLOSE
+    c = compare("search", st)
+    assert c["v2_posture"] == "explore"
+    assert c["agrees"] is True
+    assert c["unmapped"] is False
+
+
+def test_shadow_reports_divergence_rather_than_hiding_it():
+    st = _state(open_gaps=(_gap(),))                 # v2 -> EXPLORE
+    c = compare("finalize", st)                      # v1 -> COMMUNICATE
+    assert c["agrees"] is False
+    assert c["v1_maps_to"] == "communicate"
+
+
+def test_unmapped_is_distinct_from_disagreement():
+    """v1 saying something the mapping does not cover is a finding ABOUT THE
+    MAPPING -- not evidence that v2 is wrong."""
+    c = compare("some_new_directive", _state(open_gaps=(_gap(),)))
+    assert c["unmapped"] is True
+    assert c["agrees"] is False
+
+
+def test_v1s_answer_is_not_fed_into_v2s_decision():
+    """If it were, agreement would be guaranteed and the comparison would be
+    green by construction."""
+    st = _state(open_gaps=(_gap(),))
+    assert compare("search", st)["v2_posture"] == compare("finalize", st)["v2_posture"]
+
+
+def test_every_v1_directive_is_mapped():
+    """The v1 vocabulary, read from governor.py: search, extend, consolidate,
+    finalize, complete. An unmapped one would silently inflate UNMAPPED."""
+    assert set(DIRECTIVE_TO_POSTURE) == {
+        "search", "extend", "consolidate", "finalize", "complete"}
