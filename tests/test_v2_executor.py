@@ -569,3 +569,31 @@ def test_the_frame_decides_flag_is_in_the_deploy_allowlist():
     here: the hook would keep deciding with no way to turn it off short of a
     redeploy."""
     assert "MOBIUS_V2_FRAME_DECIDES=" in pathlib.Path("scripts/deploy.sh").read_text()
+
+
+def test_the_v2_flags_have_a_home_ON_DISK_not_in_a_shell():
+    """INCIDENT 2026-09-11, reported by the Chat FE seat.
+
+    deploy.sh builds SET_ENV_VARS as "MOBIUS_V2_PCT=${MOBIUS_V2_PCT:-}" — read
+    from whatever shell runs the deploy. I wrote those lines knowing the array
+    is an ALLOWLIST, commented on it three times, and still made the VALUES
+    depend on my own shell history.
+
+    Consequence: every agent who deployed mobius-chat reset v2 to empty without
+    touching anything of mine. Chat FE deployed 3x and v2 routing, the SHADOW,
+    and the fork were silently off from their first deploy — discovered only
+    because their /fork call started returning 409.
+
+    A default that exists only in one person's shell is not a default. deploy.sh
+    sources dev.env with `set -a` BEFORE building the array, so a value here is
+    the default and an exported value still overrides it for a one-off.
+    """
+    env = pathlib.Path("deploy/dev.env").read_text()
+    for var in ("MOBIUS_V2_SHADOW", "MOBIUS_V2_PCT", "MOBIUS_V2_FRAME_DECIDES",
+                "MOBIUS_V2_AB_FORK", "MOBIUS_SELF_URL"):
+        assert f"\n{var}=" in env, f"{var} has no on-disk default — a bare deploy erases it"
+    sh = pathlib.Path("scripts/deploy.sh").read_text()
+    # ...and the file must still be sourced BEFORE the array is built, or the
+    # defaults are read after the values they are meant to supply.
+    assert sh.index('source "${ENV_FILE}"') < sh.index("SET_ENV_VARS=("), \
+        "dev.env is sourced after SET_ENV_VARS is built — the defaults cannot apply"
