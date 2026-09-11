@@ -15,7 +15,7 @@ these decides anything in production.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 
@@ -192,6 +192,32 @@ class Budget:
     band_drawn_s: float = 0.0    # how much of it this turn has already spent
 
 
+# The root gap. Ananth, 2026-09-11: "the question is the gap."
+#
+# Before any evidence exists, the USER'S QUESTION is the open gap -- it is
+# exactly the thing not yet closed. Treating an empty gap list as "nothing worth
+# spending on" was wrong for the same reason FRAME was wrong: a condition true
+# for a reason unrelated to the decision. Empty means NOTHING HAS BEEN NAMED,
+# not NOTHING IS NEEDED.
+#
+# Measured: production round 1 carries avg 0.46 gaps, because react only names a
+# gap once evidence shows something missing. The question itself is never
+# emitted as one -- it is implicit, and implicit is what the machine could not
+# see.
+ROOT_GAP_ID = "G0"
+
+
+def seed_root_gap(question: str, *, round_index: int = 1) -> Gap:
+    """The question, as the gap it is. Nothing attempted against it yet."""
+    return Gap(
+        gap_id=ROOT_GAP_ID,
+        text=(question or "").strip() or "the user's question",
+        opened_round=round_index,
+        importance="high",     # it is the whole turn
+        attempted_by=(),
+    )
+
+
 @dataclass(frozen=True)
 class RoundState:
     """Everything the machine is allowed to look at."""
@@ -206,6 +232,8 @@ class RoundState:
     errored: bool = False
     quality_uncertain: bool = False
     min_importance: str = "normal"
+    # Seeded from the question when the ledger is empty -- see seed_root_gap.
+    question: str = ""
 
 
 _IMPORTANCE_ORDER = {"low": 0, "normal": 1, "high": 2}
@@ -468,6 +496,14 @@ def select(state: RoundState) -> Decision:
             "gaps increasing: still discovering, closure is 25.4% here",
             directive=Directive.DISCOVER,
         )
+
+    # "The question is the gap." An empty ledger is an UNNAMED gap, not an
+    # absent one -- so the root gap stands in until react names something
+    # specific. Without this the machine said COMMUNICATE on round 1 before it
+    # had looked at anything: 50 of 87 divergences in the 2026-09-11 sample.
+    if not state.open_gaps and state.question:
+        root = seed_root_gap(state.question, round_index=state.round_index)
+        state = replace(state, open_gaps=(root,))
 
     gap = worth_spending(state)
     overran = False

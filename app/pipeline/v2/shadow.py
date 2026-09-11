@@ -161,6 +161,7 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         )
         remaining = max(0.0, promise_latency_s - elapsed_s)
         return RoundState(
+            question=str(getattr(ctx, "message", "") or ""),
             round_index=round_index,
             open_gaps=gaps,
             gaps_open_history=tuple(history),

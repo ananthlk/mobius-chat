@@ -672,3 +672,39 @@ def test_overran_survives_the_whole_chain_decision_to_row():
     assert c["v2_overran"] is True                            # 2. carried
     src = inspect.getsource(_ledger.write_rounds)
     assert "overran" in src and "v2_overran" in src           # 3. written
+
+
+# ── the question is the gap ─────────────────────────────────────────────────
+
+def test_round_one_explores_because_the_question_is_the_gap():
+    """An empty ledger means nothing has been NAMED, not that nothing is needed.
+    Before this, v2 said COMMUNICATE on round 1 before looking at anything --
+    50 of 87 divergences."""
+    d = select(_state(round_index=1, open_gaps=(), gaps_open_history=(0,),
+                      question="what is the timely filing deadline?"))
+    assert d.posture is Posture.EXPLORE
+    assert d.gap_targeted == "G0"
+
+
+def test_the_root_gap_is_not_invented_when_gaps_already_exist():
+    """react has named something specific; the root gap must not displace it."""
+    d = select(_state(round_index=3, open_gaps=(_gap("G7"),),
+                      gaps_open_history=(1, 1), question="a question"))
+    assert d.gap_targeted == "G7"
+
+
+def test_no_question_means_no_root_gap():
+    """MUTATION-CHECKED: the seed must depend on there BEING a question, not fire
+    unconditionally -- otherwise it manufactures work on a turn with nothing to
+    do and COMMUNICATE becomes unreachable."""
+    d = select(_state(round_index=1, open_gaps=(), gaps_open_history=(0,), question=""))
+    assert d.posture is Posture.COMMUNICATE
+
+
+def test_the_root_gap_carries_the_question_text_and_high_importance():
+    from app.pipeline.v2.posture import ROOT_GAP_ID, seed_root_gap
+    g = seed_root_gap("  how do i appeal a carc 24 denial?  ")
+    assert g.gap_id == ROOT_GAP_ID
+    assert g.text == "how do i appeal a carc 24 denial?"
+    assert g.importance == "high"      # it is the whole turn
+    assert g.attempted_by == ()
