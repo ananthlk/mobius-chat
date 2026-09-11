@@ -185,6 +185,11 @@ class Budget:
     remaining_s: float
     remaining_c: float
     cost_coverage: float = 1.0   # 686/1236 on react_1 today
+    # The promise's band (13±5, 31±8, 95±25). NOT merely a reporting tolerance:
+    # it is the sanctioned overrun -- budget you may draw on WITH JUSTIFICATION
+    # and a record, when you are close and converging.
+    band_s: float = 0.0
+    band_drawn_s: float = 0.0    # how much of it this turn has already spent
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,67 @@ def stuck(gap: Gap, current_round: int) -> bool:
     )
 
 
+def converging(state: RoundState) -> bool:
+    """Is there EVIDENCE the next round closes it -- not a feeling that it will.
+
+    Ananth: "would you relax a constraint like cost or latency when you are this
+    close to a final answer, and you have a good feeling that one more round
+    will close it."
+
+    The tension is real. The answer cannot be "a good feeling", because
+    self-reported confidence is the one signal produced by the thing being
+    judged, and this seat has refused to let it authorise spend all week. So
+    convergence has to be evidential:
+
+      * few gaps open (a wide-open turn is not one round from done)
+      * the gap count is NOT rising  (measured: rising -> 25.4% closure vs ~41%)
+      * something CAME BACK on the last attempt -- the payload check, never the
+        tool's own success flag
+
+    All three, because each alone has a failure mode: one gap can be one that
+    has resisted four rounds; a flat count can be a stalled turn; and a payload
+    can be irrelevant.
+    """
+    if not state.open_gaps or len(state.open_gaps) > 2:
+        return False
+    if trend(state.gaps_open_history) is Trend.INCREASING:
+        return False
+    return any(
+        a.returned_payload
+        for g in state.open_gaps for a in g.attempted_by
+    )
+
+
+def may_overrun(state: RoundState) -> tuple[bool, str]:
+    """May this turn spend INTO the band? Returns (allowed, why).
+
+    THE PROMISE IS NOT EDITED. It stays frozen and the attestation still records
+    delivered vs promised, so a turn that draws on the band shows as kept=False,
+    in_band=True -- which is the honest shape: we exceeded what we promised, we
+    stayed inside what we said the tolerance was, and we said why.
+
+    Relaxing is asymmetric and the asymmetry is the point:
+      * COST is invisible to the user. Relaxing it costs money, not trust.
+      * LATENCY is what the user is sitting through. Relaxing it spends the
+        thing the promise was about.
+    So cost relaxes on convergence alone; latency additionally requires the
+    overrun to be BOUNDED by the band and not already drawn.
+    """
+    if not converging(state):
+        return False, "not converging: no evidence one more round closes it"
+    need = round_cost(Posture.EXPLORE).p50_s
+    left_in_band = max(0.0, state.budget.band_s - state.budget.band_drawn_s)
+    if state.budget.remaining_s + left_in_band < need:
+        return False, (
+            f"even the band cannot fund it: need {need:.1f}s, "
+            f"have {state.budget.remaining_s:.1f}s + {left_in_band:.1f}s band"
+        )
+    return True, (
+        f"converging with {len(state.open_gaps)} gap(s) open and evidence "
+        f"returning; drawing {need:.1f}s from a {left_in_band:.1f}s band"
+    )
+
+
 def cost_of(posture: Posture, state: RoundState) -> float:
     """What buying this posture costs, in seconds. Prefers the measured table
     over whatever the caller guessed."""
@@ -296,9 +362,9 @@ def spendable(state: RoundState) -> bool:
     return state.budget.remaining_s >= (buy + act)
 
 
-def worth_spending(state: RoundState) -> Gap | None:
+def worth_spending(state: RoundState, *, allow_overrun: bool = False) -> Gap | None:
     floor = _IMPORTANCE_ORDER.get(state.min_importance, 1)
-    if not spendable(state):
+    if not spendable(state) and not allow_overrun:
         return None
     for gap in state.open_gaps:
         if _IMPORTANCE_ORDER.get(gap.importance, 1) < floor:
@@ -359,6 +425,11 @@ class Decision:
     directive: Directive | None = None
     gap_targeted: str | None = None
     prior_queries: tuple[str, ...] = field(default_factory=tuple)
+    # True when this round is funded from the band rather than from the
+    # promise. Recorded on turn_rounds so a breach can be told apart from a
+    # DELIBERATE, evidenced overrun -- those look identical in a latency number
+    # and are opposite facts about the governor.
+    overran: bool = False
 
 
 def select(state: RoundState) -> Decision:
@@ -399,6 +470,24 @@ def select(state: RoundState) -> Decision:
         )
 
     gap = worth_spending(state)
+    overran = False
+    if gap is None and state.open_gaps:
+        # Out of promise budget. Ananth's question: would you relax a
+        # constraint when you are this close and one more round would close it?
+        # Yes -- but only on EVIDENCE of convergence, only into the band, and
+        # only on the record. Never on a feeling.
+        allowed, why = may_overrun(state)
+        if allowed:
+            gap = worth_spending(state, allow_overrun=True)
+            if gap is not None:
+                return Decision(
+                    Posture.EXPLORE,
+                    f"OVERRUN: closing {gap.gap_id} — {why}",
+                    directive=Directive.CLOSE,
+                    gap_targeted=gap.gap_id,
+                    prior_queries=tuple(a.query for a in gap.attempted_by if a.query),
+                    overran=True,
+                )
     if gap is not None:
         return Decision(
             Posture.EXPLORE,

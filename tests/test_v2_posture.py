@@ -13,8 +13,8 @@ import pytest
 
 from app.pipeline.v2.posture import (
     Attempt, Budget, Decision, Directive, ExitMode, Gap, Posture, RoundState,
-    Trend, alternatives_worth_it, complied, distinct_levers, exit_mode, jaccard,
-    offers_continuation,
+    Trend, alternatives_worth_it, complied, converging, distinct_levers, exit_mode,
+    jaccard, may_overrun, offers_continuation,
     select, spendable, stuck, trend, validate_worth_it, worth_spending,
 )
 
@@ -577,3 +577,82 @@ def test_spendable_falls_back_to_the_measured_table():
                        budget=Budget(remaining_s=5.0, remaining_c=10.0),
                        next_round_cost_s=0.0, acting_cost_s=0.0, validate_cost_s=9.6)
     assert spendable(broke) is False   # 9.2 + 10.0 > 5.0, from the table
+
+
+# ── the overrun: relaxing a constraint when close and converging ────────────
+
+def _converging_gap():
+    """One gap, something came back on the last attempt."""
+    return _gap(opened=2, attempts=[
+        Attempt(2, tool="rag", query="unit definition", returned_payload=False),
+        Attempt(3, tool="rag", query="H2019 HR units per recipient", returned_payload=True),
+    ])
+
+
+def _broke(band=8.0, drawn=0.0):
+    return Budget(remaining_s=4.0, remaining_c=5.0, band_s=band, band_drawn_s=drawn)
+
+
+def test_overrun_fires_when_close_and_converging():
+    """The whole point: out of promise budget, one gap, evidence returning ->
+    buy the round from the band and SAY so."""
+    st = _state(round_index=4, open_gaps=(_converging_gap(),),
+                gaps_open_history=(2, 1), budget=_broke())
+    assert spendable(st) is False           # promise budget is gone
+    d = select(st)
+    assert d.overran is True
+    assert d.directive is Directive.CLOSE
+    assert d.because.startswith("OVERRUN:")
+
+
+def test_overrun_refuses_on_a_feeling_with_no_evidence():
+    """MUTATION-CHECKED: nothing came back, so there is no evidence the next
+    round closes it. Self-reported confidence must never authorise spend -- it
+    is the one signal produced by the thing being judged."""
+    nothing_back = _gap(opened=2, attempts=[
+        Attempt(2, tool="rag", returned_payload=False),
+        Attempt(3, tool="rag", returned_payload=False)])
+    st = _state(round_index=4, open_gaps=(nothing_back,),
+                gaps_open_history=(1, 1), budget=_broke())
+    ok, why = may_overrun(st)
+    assert ok is False and "not converging" in why
+    assert select(st).overran is False
+
+
+def test_overrun_refuses_when_gaps_are_still_RISING():
+    """Rising gaps means discovery, not convergence -- measured at 25.4% closure
+    versus ~41% flat. A turn still finding new holes is not one round from done."""
+    st = _state(round_index=4, open_gaps=(_converging_gap(),),
+                gaps_open_history=(1, 2), budget=_broke())
+    ok, why = may_overrun(st)
+    assert ok is False and "not converging" in why
+
+
+def test_overrun_refuses_when_the_turn_is_wide_open():
+    g1, g2, g3 = _converging_gap(), _gap("G2"), _gap("G3")
+    st = _state(round_index=4, open_gaps=(g1, g2, g3),
+                gaps_open_history=(3, 3), budget=_broke())
+    assert may_overrun(st)[0] is False
+
+
+def test_overrun_is_BOUNDED_by_the_band_and_by_what_is_already_drawn():
+    """The band is a budget, not a licence. Once drawn, it is gone."""
+    st_ok = _state(round_index=4, open_gaps=(_converging_gap(),),
+                   gaps_open_history=(2, 1), budget=_broke(band=20.0, drawn=0.0))
+    assert may_overrun(st_ok)[0] is True
+    st_spent = _state(round_index=4, open_gaps=(_converging_gap(),),
+                      gaps_open_history=(2, 1), budget=_broke(band=20.0, drawn=19.0))
+    ok, why = may_overrun(st_spent)
+    assert ok is False and "band cannot fund it" in why
+
+
+def test_the_promise_itself_is_never_edited_by_an_overrun():
+    """An overrun draws on the BAND. The promise stays frozen, so the
+    attestation still records kept=False / in_band=True -- we exceeded what we
+    promised, stayed inside the stated tolerance, and said why. A governor that
+    could edit the promise would resolve every breach by moving the target."""
+    st = _state(round_index=4, open_gaps=(_converging_gap(),),
+                gaps_open_history=(2, 1), budget=_broke())
+    before = st.budget.remaining_s
+    select(st)
+    assert st.budget.remaining_s == before      # frozen: nothing was mutated
