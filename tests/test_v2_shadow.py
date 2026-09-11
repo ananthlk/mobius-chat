@@ -67,5 +67,26 @@ def test_react_loop_no_longer_passes_the_soft_target():
     src = pathlib.Path("app/pipeline/react_loop.py").read_text()
     i = src.index("_v2_state = _v2s.state_from_ctx")
     block = src[i:i + 1600]
-    assert "promise_latency_s=_v2_promise_s(ctx" in block
+    assert "promise_latency_s=_v2s.promise_seconds(ctx" in block
     assert "soft_target_s)" not in block
+
+
+def test_NO_call_site_passes_the_soft_target():
+    """There are TWO state_from_ctx call sites — pre-round and post-round — and
+    fixing one left the other reading soft_target_s. The fix then verified
+    clean on the round that reaches the executor and changed nothing on every
+    round before it.
+
+    Asserted over ALL call sites, so a third one cannot reintroduce it."""
+    import ast, pathlib
+    tree = ast.parse(pathlib.Path("app/pipeline/react_loop.py").read_text())
+    sites = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "state_from_ctx"]
+    assert len(sites) >= 2, f"expected both hooks, found {len(sites)}"
+    for call in sites:
+        kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+        src = kw.get("promise_latency_s", "")
+        assert "soft_target" not in src, f"call site still passes: {src}"
+        assert "promise_seconds" in src, f"call site does not use the promise: {src}"

@@ -4750,7 +4750,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
                     _v2ps = _v2sp.state_from_ctx(
                         ctx, round_index=rn, elapsed_s=_pp_elapsed_s,
-                        promise_latency_s=float(_pp_contract.soft_target_s),
+                        # THE PROMISE. This is the SECOND call site and it kept
+                        # the soft target after the post-round one was fixed --
+                        # so the fix verified clean on the round that reaches
+                        # the executor and changed nothing on every round
+                        # before it. Two call sites, one corrected: the budget
+                        # still read 12.0s on round 1 of the very turn used to
+                        # confirm the fix.
+                        promise_latency_s=_v2sp.promise_seconds(ctx, _pp_contract),
                         round_cost_s=0.0, acting_cost_s=0.0,
                     )
                     _v2pc = _v2sp.compare(_pp_pre_directive, _v2ps,
@@ -5563,7 +5570,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             _v2_applied = False
                             try:
                                 from app.pipeline.v2 import shadow as _v2s
-                                _v2_promise_s = _v2s.promise_seconds
 
                                 _v2_state = _v2s.state_from_ctx(
                                     ctx,
@@ -5587,7 +5593,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     # A soft target is a NUDGE; a promise is a
                                     # CONTRACT. Wiring one to the other is the
                                     # same class as cost_usd holding cents.
-                                    promise_latency_s=_v2_promise_s(ctx, _pp_contract),
+                                    promise_latency_s=_v2s.promise_seconds(ctx, _pp_contract),
                                     round_cost_s=0.0,   # 0 => use the measured
                                     acting_cost_s=0.0,  # per-posture table
                                 )
