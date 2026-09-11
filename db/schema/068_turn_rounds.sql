@@ -155,3 +155,25 @@ ALTER TABLE turn_rounds DROP COLUMN IF EXISTS delivered_cost_c;
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS applied_directive TEXT;
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS v2_applied        BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS prompt_mismatch   TEXT;
+
+-- ── decision_inputs: THE THINKING, PERSISTED ───────────────────────────────
+-- Ananth, 2026-09-11: "there is no way in the AI world for anyone to
+-- understand what the model is doing, and the thinking is really the only way."
+--
+-- The row previously carried `rationale` -- one sentence, a CONCLUSION. Worse:
+-- it asserted "gaps open but none worth buying" while this table's own
+-- gaps_opened column read [], because compare() never emitted it. A conclusion
+-- with no inputs cannot be argued with, and a decision you cannot argue with
+-- cannot be tuned.
+--
+-- What lands here, per round: every open gap with its age, levers spent and
+-- per-attempt payload check; the gap-count history and trend; the budget
+-- arithmetic INCLUDING the shortfall when it refused to spend; which branch of
+-- select() fired; and every predicate that gated the choice. Produced by
+-- posture.explain(), which CALLS the same predicates select() called rather
+-- than recomputing them -- a second implementation would be a second author of
+-- the decision it claims to report.
+--
+-- JSONB and not columns: the shape follows the decision core, which is still
+-- moving. Columns would freeze it and every change would be a migration.
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS decision_inputs JSONB;

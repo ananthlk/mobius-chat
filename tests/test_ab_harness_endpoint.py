@@ -235,19 +235,22 @@ def test_mismatch_kind_separates_the_two_mismatches():
          "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
          "shadow_verdict": "diverge", "applied_directive": "extend",
          "v2_applied": True, "prompt_mismatch": "gathering round receives...",
-         "tool_called": None, "round_duration_s": None, "overran": False},
+         "tool_called": None, "round_duration_s": None, "overran": False,
+         "decision_inputs": None},
         {"round_index": 2, "posture": "alternatives", "directive": None,
          "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
          "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
          "shadow_verdict": "diverge", "applied_directive": "complete",
          "v2_applied": True, "prompt_mismatch": "routes decided, never generated",
-         "tool_called": None, "round_duration_s": None, "overran": False},
+         "tool_called": None, "round_duration_s": None, "overran": False,
+         "decision_inputs": None},
         {"round_index": 3, "posture": "communicate", "directive": None,
          "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
          "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
          "shadow_verdict": "agree", "applied_directive": "complete",
          "v2_applied": True, "prompt_mismatch": None,
-         "tool_called": None, "round_duration_s": None, "overran": False},
+         "tool_called": None, "round_duration_s": None, "overran": False,
+         "decision_inputs": None},
     ]
     orig = H._q
     H._q = lambda sql, p=None: rows
@@ -272,7 +275,8 @@ def test_v1_rows_carry_no_v2_only_fields():
              "v1_maps_to": None, "shadow_verdict": None,
              "applied_directive": None, "v2_applied": False,
              "prompt_mismatch": None, "tool_called": "rag",
-             "round_duration_s": 6.0, "overran": False}]
+             "round_duration_s": 6.0, "overran": False,
+             "decision_inputs": None}]
     orig = H._q
     H._q = lambda sql, p=None: rows
     try:

@@ -367,3 +367,55 @@ def test_the_second_hook_of_a_round_is_MERGED_not_dropped():
     assert "DO UPDATE SET" in sql
     assert "applied_directive = COALESCE(EXCLUDED.applied_directive" in sql
     assert "v2_applied        = turn_rounds.v2_applied OR EXCLUDED.v2_applied" in sql
+
+
+def test_the_decision_inputs_are_emitted_written_and_read():
+    """Ananth, 2026-09-11: "there is no way in the AI world for anyone to
+    understand what the model is doing, and the thinking is really the only
+    way."
+
+    The row carried `rationale` — one sentence, a CONCLUSION — and asserted
+    "gaps open but none worth buying" while its own gaps_opened column read []
+    because compare() never emitted it. All three ends, or it is the same
+    defect the other four were.
+    """
+    shadow = pathlib.Path("app/pipeline/v2/shadow.py").read_text()
+    ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
+    api = pathlib.Path("app/api/ab_harness.py").read_text()
+    assert '"v2_decision_inputs": explain(state, d)' in shadow, "no producer"
+    assert '"inputs": json.dumps(r.get("v2_decision_inputs")' in ledg, "not written"
+    assert '"decision_inputs": r["decision_inputs"]' in api, "no reader"
+    # and the two the ledger had been reading from nobody
+    assert '"gaps_opened": [g.gap_id for g in state.open_gaps]' in shadow
+
+
+def test_explain_calls_the_predicates_rather_than_reimplementing_them():
+    """A second implementation of the decision's own logic would be a second
+    AUTHOR of the decision it claims to report — and it would drift first
+    exactly where the decision is most interesting."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/pipeline/v2/posture.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "explain")
+    called = {n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    for predicate in ("spendable", "worth_spending", "converging", "may_overrun",
+                      "alternatives_worth_it", "validate_worth_it", "trend",
+                      "exit_mode", "stuck", "distinct_levers"):
+        assert predicate in called, f"explain() does not call {predicate}"
+
+
+def test_every_select_branch_is_named():
+    """The same posture comes out of different branches for opposite reasons.
+    A row saying only "explore" cannot be argued with, and a decision you
+    cannot argue with cannot be tuned."""
+    import ast
+    from app.pipeline.v2 import posture as P
+    tree = ast.parse(pathlib.Path("app/pipeline/v2/posture.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "select")
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    for r in returns:
+        kws = {k.arg for k in getattr(r.value, "keywords", [])}
+        assert "branch" in kws, ast.unparse(r)[:90]
+    assert P.BRANCH_SKIPS_BUDGET

@@ -158,7 +158,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         gaps_opened, gaps_closed, v1_directive, v1_reason,
                         v1_maps_to, shadow_verdict, tool_called, tools_offered,
                         overran, round_duration_s, applied_directive,
-                        v2_applied, prompt_mismatch
+                        v2_applied, prompt_mismatch, decision_inputs
                    from turn_rounds where correlation_id=:c
                   order by round_index""", {"c": correlation_id})
     out = []
@@ -193,6 +193,12 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         # "v2 chose ___" slot from this string prints a
                         # paragraph where a word belongs.
                         "prompt_mismatch": r["prompt_mismatch"],
+                        # THE THINKING. Every input the decision was made from
+                        # — open gaps with age/levers/payload checks, the
+                        # budget arithmetic and its shortfall, the branch of
+                        # select() that fired, every gating predicate. Without
+                        # it the trace shows a verdict nobody can argue with.
+                        "decision_inputs": r["decision_inputs"],
                         # ...and the two mismatches are NOT the same event,
                         # which the single prose field could not tell anyone:
                         #

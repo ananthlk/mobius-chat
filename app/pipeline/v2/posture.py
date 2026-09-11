@@ -458,12 +458,18 @@ class Decision:
     # DELIBERATE, evidenced overrun -- those look identical in a latency number
     # and are opposite facts about the governor.
     overran: bool = False
+    # WHICH BRANCH of select() produced this. Not decoration: the same posture
+    # comes out of different branches for opposite reasons, and a row that says
+    # only "explore" cannot be argued with. Ananth, 2026-09-11: "I want to know
+    # the rationale for why v2 made the decision it did."
+    branch: str = ""
 
 
 def select(state: RoundState) -> Decision:
     """One posture per round. Skipping is what the tier IS."""
     if state.errored:
-        return Decision(Posture.COMMUNICATE, "errored: one exit for every path")
+        return Decision(Posture.COMMUNICATE, "errored: one exit for every path",
+                        branch="errored")
 
     # FRAME IS DELIBERATELY UNREACHABLE. Removed 2026-09-11.
     #
@@ -495,6 +501,11 @@ def select(state: RoundState) -> Decision:
             Posture.EXPLORE,
             "gaps increasing: still discovering, closure is 25.4% here",
             directive=Directive.DISCOVER,
+            # 🔴 THIS BRANCH DOES NOT CHECK spendable(). It returns "buy
+            # another round" before the budget is consulted -- the same shape
+            # as the runaway. It is named here so every row it produces says
+            # so; see BRANCH_SKIPS_BUDGET.
+            branch="trend_increasing",
         )
 
     # "The question is the gap." An empty ledger is an UNNAMED gap, not an
@@ -523,6 +534,7 @@ def select(state: RoundState) -> Decision:
                     gap_targeted=gap.gap_id,
                     prior_queries=tuple(a.query for a in gap.attempted_by if a.query),
                     overran=True,
+                    branch="overrun_into_band",
                 )
     if gap is not None:
         return Decision(
@@ -532,6 +544,7 @@ def select(state: RoundState) -> Decision:
             directive=Directive.CLOSE,
             gap_targeted=gap.gap_id,
             prior_queries=tuple(a.query for a in gap.attempted_by if a.query),
+            branch="gap_affordable",
         )
 
     if state.open_gaps:
@@ -560,16 +573,20 @@ def select(state: RoundState) -> Decision:
                 Posture.ALTERNATIVES,
                 f"{_stuck_count(state)} gap(s) unreachable: offer a route rather "
                 f"than a shortfall",
+                branch="gaps_unreachable",
             )
         return Decision(
             Posture.NARROW,
             "gaps open but none worth buying: scope and name what is left",
+            branch="nothing_worth_buying",
         )
 
     if validate_worth_it(state):
-        return Decision(Posture.VALIDATE, "quality uncertain and a fix round is affordable")
+        return Decision(Posture.VALIDATE, "quality uncertain and a fix round is affordable",
+                        branch="validate_affordable")
 
-    return Decision(Posture.COMMUNICATE, "no gap worth spending on")
+    return Decision(Posture.COMMUNICATE, "no gap worth spending on",
+                    branch="no_gap_worth_spending")
 
 
 def exit_mode(state: RoundState) -> ExitMode:
@@ -609,3 +626,107 @@ def offers_continuation(mode: ExitMode) -> bool:
     saying nothing.
     """
     return mode in (ExitMode.BUDGET, ExitMode.ERROR)
+
+
+def explain(state: "RoundState", decision: "Decision") -> dict:
+    """THE DECISION, SHOWN — every input and every intermediate, not a verdict.
+
+    Ananth, 2026-09-11, after seeing a round row that said only "gaps open but
+    none worth buying":
+
+        "I can make determinations without the question, the answer, the state
+        at that point... round by round what was discovered or not. That is the
+        only way to tweak v2. I want to know the RATIONALE for why v2 made the
+        decision it did. This is the emit that will lead us to understand."
+
+    He is right, and the row was worse than thin: `rationale` asserted "gaps
+    open" while the row's own `gaps_opened` column was `[]`, because compare()
+    never emitted it. A conclusion with no inputs cannot be argued with, and a
+    decision you cannot argue with cannot be tuned.
+
+    PURE, and it recomputes NOTHING it does not have to: every field here is
+    either read off the state or produced by calling the same predicate select()
+    called. If this disagreed with select(), it would be a second author of the
+    decision -- so it calls, never reimplements.
+    """
+    buy = state.next_round_cost_s or round_cost(Posture.EXPLORE).p50_s
+    act = state.acting_cost_s or round_cost(Posture.COMMUNICATE).p50_s
+    can_spend = spendable(state)
+    gap = worth_spending(state)
+    over_ok, over_why = may_overrun(state)
+
+    return {
+        # ── what was true when the decision was made ────────────────────────
+        "round": state.round_index,
+        "open_gaps": [
+            {
+                "id": g.gap_id,
+                "text": (g.text or "")[:160],
+                "opened_round": g.opened_round,
+                "age_rounds": g.age(state.round_index),
+                "levers_spent": distinct_levers(g),
+                "attempts": [
+                    {"round": a.round_index, "tool": a.tool,
+                     "query": (a.query or "")[:80],
+                     # THE payload check, never the tool's own success flag --
+                     # a tool can succeed and return nothing.
+                     "returned_payload": a.returned_payload}
+                    for a in g.attempted_by
+                ],
+                # WHY this gap was passed over, when it was.
+                "stuck": stuck(g, state.round_index),
+            }
+            for g in state.open_gaps
+        ],
+        "gaps_open_history": list(state.gaps_open_history),
+        "trend": trend(state.gaps_open_history).value,
+
+        # ── the arithmetic that actually decided it ─────────────────────────
+        "budget": {
+            "remaining_s": round(state.budget.remaining_s, 2),
+            "next_round_costs_s": round(buy, 2),
+            "acting_costs_s": round(act, 2),
+            "needs_s": round(buy + act, 2),
+            # Reserve the cost of ACTING, not just of looking: buying the last
+            # round to DISCOVER a problem leaves nothing to fix it with.
+            "spendable": can_spend,
+            "shortfall_s": (None if can_spend
+                            else round((buy + act) - state.budget.remaining_s, 2)),
+        },
+
+        # ── the branch taken, named ─────────────────────────────────────────
+        "worth_spending": (gap.gap_id if gap else None),
+        "converging": converging(state),
+        "may_overrun": {"allowed": over_ok, "why": over_why},
+        "alternatives_worth_it": alternatives_worth_it(state),
+        "validate_worth_it": validate_worth_it(state),
+        "stuck_gaps": _stuck_count(state),
+        "exit_mode": exit_mode(state).value,
+
+        # ── and only then, the conclusion ───────────────────────────────────
+        "branch": decision.branch,
+        "posture": decision.posture.value,
+        "because": decision.because,
+        "gap_targeted": decision.gap_targeted,
+        "overran": decision.overran,
+    }
+
+
+# 🔴 FILED 2026-09-11, surfaced by explain() on its first run.
+#
+# The `trend_increasing` branch returns EXPLORE -- "buy another round" -- BEFORE
+# spendable() is consulted. Every other spending branch reserves the cost of
+# ACTING as well as looking; this one reserves nothing. It is the same shape as
+# the executor runaway, one level up: a branch that can spend without an
+# affordability check.
+#
+# Observed live on q12 of run ab-c311023248: posture=explore, worth_spending=
+# null, budget shortfall 12.4s, and the EXIT MODE had to override it to
+# finalize. The override worked -- which is exactly why this was invisible
+# until the inputs were emitted.
+#
+# NOT fixed here. Moving it changes what every shadow row since 2026-09-11 has
+# meant, so it needs its own re-derivation against the recorded inputs -- which
+# is now possible for the first time, because those inputs are persisted.
+BRANCH_SKIPS_BUDGET = ("trend_increasing returns EXPLORE before spendable() is "
+                       "checked; every other spending branch reserves buy+act")

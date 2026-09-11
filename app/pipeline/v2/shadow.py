@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 
 from app.pipeline.v2.posture import (
+    explain,
     Attempt, Budget, Decision, Gap, Posture, RoundState, select,
 )
 
@@ -202,10 +203,30 @@ def compare(v1_directive: str | None, state: RoundState,
         "v2_posture": d.posture.value,
         "v2_directive": d.directive.value if d.directive else None,
         "v2_because": d.because,
+        # THE THINKING, PERSISTED. Ananth, 2026-09-11: "there is no way in the
+        # AI world for anyone to understand what the model is doing, and the
+        # thinking is really the only way."
+        #
+        # Every input and every intermediate the decision was made from, not a
+        # verdict: open gaps with their age, levers and per-attempt payload
+        # checks; the budget arithmetic including the shortfall; which branch
+        # of select() fired; and the predicates that were true. explain() CALLS
+        # the same predicates select() called rather than reimplementing them,
+        # so it cannot become a second author of the decision it reports.
+        "v2_decision_inputs": explain(state, d),
         # A deliberate, evidenced draw on the band -- not a miss. Carried so the
         # record can tell the two apart; they are identical in a latency number.
         "v2_overran": bool(getattr(d, "overran", False)),
         "v2_gap_targeted": d.gap_targeted,
+        # The ledger has read these two since 068 and compare() never wrote
+        # them, so every row landed with [] while its own rationale said "gaps
+        # open" -- a row contradicting itself. Fifth consumer-with-no-producer
+        # found today, and the first one in a field I had already shipped to
+        # another seat as evidence.
+        "gaps_opened": [g.gap_id for g in state.open_gaps],
+        "gaps_closed": [],   # HONESTLY EMPTY: R0 has no close signal wired.
+                             # Not a zero -- a declared absence. Closing it is
+                             # the gap ledger's job and it is not built yet.
         # THE verdict, authored HERE and nowhere else. An earlier version
         # returned only the two booleans and let emit() derive the string as a
         # local -- so the persisted column read a key that never existed and

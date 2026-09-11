@@ -138,14 +138,15 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     v1_directive, v1_reason, v1_maps_to, shadow_verdict,
                     gaps_opened, gaps_closed, overran,
                     tools_offered, tool_called, round_duration_s,
-                    applied_directive, v2_applied, prompt_mismatch,
+                    applied_directive, v2_applied, prompt_mismatch, decision_inputs,
                     declared_latency_ms, declared_version
                 ) VALUES (
                     :cid, :rn, :ver, :posture, :directive, :gap, :rationale,
                     :v1d, :v1r, :v1m, :verdict,
                     CAST(:opened AS JSONB), CAST(:closed AS JSONB), :overran,
                     CAST(:offered AS JSONB), :tool_called, :dur_s,
-                    :applied, :v2_applied, :mismatch, :decl_ms, :decl_ver
+                    :applied, :v2_applied, :mismatch, CAST(:inputs AS JSONB),
+                    :decl_ms, :decl_ver
                 )
                 ON CONFLICT (correlation_id, round_index, orchestrator_version)
                 DO UPDATE SET
@@ -175,6 +176,7 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     round_duration_s  = COALESCE(EXCLUDED.round_duration_s, turn_rounds.round_duration_s),
                     applied_directive = COALESCE(EXCLUDED.applied_directive, turn_rounds.applied_directive),
                     prompt_mismatch   = COALESCE(EXCLUDED.prompt_mismatch, turn_rounds.prompt_mismatch),
+                    decision_inputs   = COALESCE(EXCLUDED.decision_inputs, turn_rounds.decision_inputs),
                     -- booleans: OR, never overwrite. A round that overran or
                     -- was executed by v2 cannot become one that wasn't.
                     overran           = turn_rounds.overran OR EXCLUDED.overran,
@@ -216,6 +218,11 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     "applied": r.get("v2_directive_applied"),
                     "v2_applied": bool(r.get("v2_applied")),
                     "mismatch": r.get("v2_prompt_mismatch"),
+                    # The decision's INPUTS, not its verdict. json.dumps for
+                    # the same reason gaps_opened needs it: db_execute
+                    # JSON-serialises params for the transport, and a raw dict
+                    # would arrive as a Postgres composite, not JSONB.
+                    "inputs": json.dumps(r.get("v2_decision_inputs") or None),
                     "decl_ms": r.get("declared_latency_ms"),
                     "decl_ver": r.get("declared_version"),
                 },
