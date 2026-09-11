@@ -1056,6 +1056,15 @@ def run_pipeline(
             # fail a turn.
             try:
                 _v2_rows = getattr(ctx, "v2_shadow_rounds", None)
+                # Log unconditionally, including the empty case. A flush that
+                # writes nothing and says nothing is indistinguishable from a
+                # flush that never ran -- which is exactly the ambiguity that
+                # cost a debugging cycle here on 2026-09-11. An absent row must
+                # be traceable to a logged cause.
+                logger.info(
+                    "[v2] round-record flush cid=%s rows=%d ctx_id=%s",
+                    str(correlation_id)[:8], len(_v2_rows or []), id(ctx),
+                )
                 if _v2_rows:
                     from app.pipeline.v2.ledger import write_rounds as _v2_wr
                     _v2_wr(ctx.correlation_id, _v2_rows)

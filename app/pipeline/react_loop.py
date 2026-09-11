@@ -5551,6 +5551,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     if not hasattr(ctx, "v2_shadow_rounds"):
                                         ctx.v2_shadow_rounds = []
                                     ctx.v2_shadow_rounds.append(_v2_cmp)
+                                    logger.info(
+                                        "[v2] accumulated round=%s total=%d ctx_id=%s",
+                                        rn, len(ctx.v2_shadow_rounds), id(ctx),
+                                    )
                             except Exception as _v2_exc:  # pragma: no cover
                                 logger.warning("[v2.shadow] hook failed: %s", _v2_exc)
 
