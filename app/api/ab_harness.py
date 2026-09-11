@@ -229,7 +229,21 @@ def get_comparison(run_id: str, qid: str) -> dict:
             "decision_trace": _trace(cid, a["arm_id"]) if cid else [],
             "delivered": {
                 "latency_ms": int(delivered_s * 1000) if delivered_s is not None else None,
-                "cost_usd": att.get("delivered_cost_c"),
+                # CENTS, and the name says so. Chat FE found this reading
+                # `cost_usd` off a column whose `_c` suffix means cents: a
+                # $0.012 turn would have rendered as "1.2", 100x off, and it is
+                # NULL on every row today so nothing would have looked wrong
+                # until the first real value.
+                #
+                # RENAMED rather than converted. Every cost in this system is
+                # cents -- promised_cost_c, delivered_cost_c, Budget.remaining_c,
+                # RoundCost -- so a single USD field here would be the only
+                # place a unit changes, and the next reader would have to know
+                # which side of that boundary they were on. One unit, named
+                # where it is read. Third name-that-lies defect today, after
+                # delivered_latency_s (a start time) and shadow_verdict
+                # (two questions in one enum).
+                "cost_cents": att.get("delivered_cost_c"),
                 "exit_mode": att.get("outcome"),
                 "rounds": len(_trace(cid, a["arm_id"])) if cid else None,
             },

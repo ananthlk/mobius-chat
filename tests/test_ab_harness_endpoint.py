@@ -5,6 +5,7 @@ shape and a silent change to it breaks a page in another seat's repo.
 """
 
 import inspect
+import pathlib
 
 from app.api import ab_harness as ab
 
@@ -186,3 +187,25 @@ def test_round_duration_is_written_AND_read():
         for stmt in re.findall(r"[^\"]*turn_rounds[^\"]*", src):
             assert "delivered_cost_c" not in stmt, (f, stmt[:80])
             assert "delivered_latency_s" not in stmt, (f, stmt[:80])
+
+
+def test_no_field_in_the_payload_claims_a_unit_it_does_not_carry():
+    """Chat FE, 2026-09-11: `cost_usd` was reading `delivered_cost_c` — a
+    CENTS column. Null on every row, so a $0.012 turn would have rendered as
+    "1.2" the first time a real value landed and nothing before that would
+    have looked wrong.
+
+    Asserted as a PROPERTY over the source, not as a check for that one field:
+    a `_usd` name may never take its value from a `_c` column, in either
+    direction. The next mismatched pair fails here rather than shipping.
+    """
+    import re
+    src = pathlib.Path("app/api/ab_harness.py").read_text()
+    sql_free = "\n".join(ln for ln in src.splitlines()
+                         if not ln.strip().startswith("#"))
+    for m in re.finditer(r'"(\w+)":\s*\w+\.get\("(\w+)"\)', sql_free):
+        field, column = m.group(1), m.group(2)
+        if field.endswith("_usd"):
+            assert not column.endswith("_c"), f"{field} <- {column}: cents as USD"
+        if field.endswith("_cents"):
+            assert column.endswith("_c") or "cent" in column, f"{field} <- {column}"
