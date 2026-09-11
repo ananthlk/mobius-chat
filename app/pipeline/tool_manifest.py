@@ -193,10 +193,10 @@ search_uploaded_document(upload_id optional, query)
         is still being indexed — I'll answer your question automatically
         as soon as it's ready, no need to ask again."
         Do NOT retry with the same query.
-  This tool does NOT search the curated corpus — use search_corpus for that.
+  This tool does NOT search the curated corpus — use rag for that.
   Chunks returned are scoped to the one document, no tag filters. Use this
-  tool BEFORE search_corpus when the user's question is self-referential
-  to an upload; otherwise prefer search_corpus.
+  tool BEFORE rag when the user's question is self-referential
+  to an upload; otherwise prefer rag.
   Returns: matched chunks with page citations from the uploaded document."""
 
 _REFUSE_BLOCK = """\
@@ -205,7 +205,7 @@ refuse(reason)
   Use for: any question about a specific patient (PHI),
     any clinical treatment recommendation.
   "Is member 12345 eligible?" → refuse (PHI)
-  "What are eligibility rules?" → search_corpus (not PHI)"""
+  "What are eligibility rules?" → rag (not PHI)"""
 
 # Registry skills, in the order the legacy manifest listed them so the
 # planner prompt byte-diff stays minimal across the refactor.
@@ -334,7 +334,7 @@ ingest_url(url)
     url — the canonical URL to fetch + index. PDFs and HTML pages both
           work; the inlet is auto-detected.
   Returns: {document_id, status, sections}. After this returns ok,
-    immediately call search_corpus with the original question — the
+    immediately call rag with the original question — the
     new doc is now available to retrieve."""
 
 

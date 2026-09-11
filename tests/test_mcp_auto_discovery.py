@@ -215,7 +215,14 @@ def test_manifest_still_renders_curated_builtins(adapter_cleanup):
     # search_corpus declares itself as a "search_corpus:" Can/Cannot block
     # now, not a "(query)" signature. Match the declaration form, not a
     # bare name — bare names also match prose cross-references.
-    assert "search_corpus:" in manifest
+    assert "rag" in manifest
+    assert "search_corpus:" not in manifest, (
+        "inverted 2026-09-11: this asserted the RETIRED alias was still "
+        "taught. The block it fingerprinted is deliberately empty "
+        "(_SEARCH_CORPUS_BLOCK = \"\"), so it had stopped testing that the "
+        "tool is offered and only tested that the string survived in prose. "
+        "A fingerprint that outlived the thing it fingerprinted."
+    )
     assert "healthcare_query" in manifest
     assert "refuse(reason)" in manifest
     assert "google_search" in manifest

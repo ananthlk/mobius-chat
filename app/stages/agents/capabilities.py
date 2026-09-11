@@ -78,9 +78,15 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
             "Find <specific thing> in the manual I attached",
         ],
         "requires": "At least one instant_rag upload on this thread; document_id is auto-resolved when only one upload exists",
-        "cannot_answer": "Anything not contained in the uploaded document — use search_corpus or google_search for those",
+        "cannot_answer": "Anything not contained in the uploaded document — use rag for those",
     },
-    "search_corpus": {
+    # 🔴 KEYED ON THE PROMOTED NAME, NOT THE RETIRED ALIAS.
+    # Back-compat belongs in the DISPATCHER, never in the prompt: the alias
+    # at react_loop:1401 protects a model that emits the old name; the alias
+    # in the TEACHING manufactures the very calls that dispatcher exists to
+    # tolerate. Chat seat measured the cost — 5 live `search_corpus`
+    # emissions against 277 `rag`, from a model obeying this prose.
+    "rag": {
         "can_answer": ["Policy lookup, appeals, PA, eligibility, claims, enrollment, credentialing process"],
     },
     "transform_previous_answer": {
@@ -90,8 +96,11 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
             "Transformation verbs on prior content (convert/rewrite/shorten/lengthen/format-as)",
         ],
         "requires": "A prior assistant turn in this thread (read from ctx.last_turns); first-turn invocations return a clarifying message",
-        "cannot_answer": "Fresh substantive questions — even if topically related, those need search_corpus / curator / google_search retrieval",
+        "cannot_answer": "Fresh substantive questions — even if topically related, those need rag retrieval",
     },
+    # google_search is a SEPARATE retired-name question from search_corpus and
+    # is deliberately untouched here: its SkillSpec is still live and its own
+    # description still teaches the old ordering. Needs its own pass.
     "google_search": {"can_answer": ["Web search when corpus misses or user asks"]},
     "web_scrape": {
         "can_answer": [

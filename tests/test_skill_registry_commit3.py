@@ -225,7 +225,14 @@ class TestComputedToolManifest:
         # DECLARATION form each one actually uses rather than a bare name —
         # a bare "search_corpus" would also match the many prose
         # cross-references in other tools' blocks and stop proving anything.
-        assert "search_corpus:" in TOOL_MANIFEST
+        assert "rag" in TOOL_MANIFEST
+        assert "search_corpus:" not in TOOL_MANIFEST, (
+            "inverted 2026-09-11: this asserted the RETIRED alias was still "
+            "taught. The block it fingerprinted is deliberately empty "
+            "(_SEARCH_CORPUS_BLOCK = \"\"), so it had stopped testing that the "
+            "tool is offered and only tested that the string survived in prose. "
+            "A fingerprint that outlived the thing it fingerprinted."
+        )
         assert "healthcare_npi_lookup(question)" in TOOL_MANIFEST
         assert "search_uploaded_document(" in TOOL_MANIFEST
         assert "refuse(reason)" in TOOL_MANIFEST

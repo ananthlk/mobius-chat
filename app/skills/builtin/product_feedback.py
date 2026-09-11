@@ -356,7 +356,7 @@ register(
             "If the message ALSO asks a genuine question, still capture the feedback (you can "
             "answer the question in the same turn — praise is not a reason to skip logging it).\n"
             "Do NOT use for a PURE data/policy question with no opinion (e.g. 'what's the timely "
-            "filing limit for Aetna') — that's search_corpus. Never rate clinical content.\n"
+            "filing limit for Aetna') — that's rag. Never rate clinical content.\n"
             "After recording, the skill returns a playback receipt that invites edits. If the "
             "user then corrects or adds to feedback they just gave ('actually it's a bug', "
             "'also it happens on mobile'), call again with update=true (+ category and/or "

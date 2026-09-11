@@ -20,7 +20,13 @@ def test_tool_manifest_renders_cleanly():
     """TOOL_MANIFEST is a non-empty string with expected remaining tools."""
     assert isinstance(TOOL_MANIFEST, str)
     assert len(TOOL_MANIFEST.strip()) > 100
-    assert "search_corpus" in TOOL_MANIFEST
+    assert "rag" in TOOL_MANIFEST
+    assert "search_corpus" not in TOOL_MANIFEST, (
+        "The prompt must not TEACH the retired alias. The dispatcher keeps it "
+        "(react_loop:1401) so an in-flight model calling it still works; teaching "
+        "it is what produced 5 live search_corpus emissions against 277 rag. "
+        "Back-compat belongs in the dispatcher, never in the prompt."
+    )
     assert "google_search" in TOOL_MANIFEST
     assert "web_scrape" in TOOL_MANIFEST
     assert "document_upload_skill" in TOOL_MANIFEST
