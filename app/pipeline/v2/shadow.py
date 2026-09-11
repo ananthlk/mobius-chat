@@ -186,7 +186,8 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             round_index=round_index,
             open_gaps=gaps,
             gaps_open_history=tuple(history),
-            budget=Budget(remaining_s=remaining, remaining_c=0.0),
+            budget=Budget(remaining_s=remaining, remaining_c=0.0,
+                          band_s=band_seconds(promise_latency_s)),
             next_round_cost_s=round_cost_s,
             acting_cost_s=acting_cost_s,
             validate_cost_s=9.6,
@@ -351,3 +352,22 @@ def promise_seconds(ctx, contract) -> float:
     logger.info("[v2] no promise on ctx; budget falls back to %.1fs",
                 _NO_PROMISE_FALLBACK_S)
     return _NO_PROMISE_FALLBACK_S
+
+
+# The promise's BAND — the stated tolerance, per tier. 13±5 · 31±8 · 95±25.
+#
+# Budget.band_s defaulted to 0.0 and state_from_ctx never set it, so
+# may_overrun's band arm was inert: a turn genuinely out of promise time could
+# never overrun even when converging, and the one that DID overrun drew on
+# unreserved promise time while its message said "from a 0.0s band".
+#
+# Keyed on the PROMISED SECONDS rather than on the tier name, because the tier
+# name is resolved in three places and the promised value is already on the
+# frozen promise. An unrecognised promise gets NO band -- a synthesised
+# tolerance is the same defect as a synthesised promise.
+_BAND_BY_PROMISE_S = {13.0: 5.0, 31.0: 8.0, 95.0: 25.0}
+
+
+def band_seconds(promise_s: float) -> float:
+    """The stated tolerance for this promise, or 0.0 when we do not have one."""
+    return _BAND_BY_PROMISE_S.get(round(float(promise_s), 3), 0.0)

@@ -830,3 +830,37 @@ def test_alternatives_never_announces_zero_unreachable_gaps():
     assert d.posture is Posture.ALTERNATIVES, d.posture
     assert "0 gap(s)" not in d.because, d.because
     assert explain(st, d)["unreachable_gaps"] >= 1
+
+
+def test_the_overrun_names_where_the_money_actually_came_from():
+    """It read "drawing 10.4s from a 0.0s band" on q09/ab-82c6105465 — a round
+    funded from 17.6s of UNRESERVED PROMISE TIME. spendable() had refused only
+    because it also reserves the cost of ACTING on what the round finds, and an
+    overrun deliberately does not.
+
+    A reason that names the wrong source is a reason you cannot audit."""
+    from dataclasses import replace
+    from app.pipeline.v2.posture import (
+        Attempt, Budget, Gap, RoundState, may_overrun)
+    g = Gap(gap_id="S1", text="a", opened_round=1,
+            attempted_by=(Attempt(round_index=2, tool="rag", query="q",
+                                  returned_payload=True),))
+    st = RoundState(
+        round_index=3, open_gaps=(g,), gaps_open_history=(2, 1),
+        budget=Budget(remaining_s=17.56, remaining_c=0.0, band_s=8.0),
+        next_round_cost_s=10.4, acting_cost_s=10.0, validate_cost_s=9.6,
+        question="q")
+    ok, why = may_overrun(st)
+    assert ok
+    assert "unreserved promise time" in why, why
+    assert "0.0s band" not in why
+    # and when the promise really is spent, it must name the BAND
+    # 4.0s of promise left + an 8.0s band funds a 10.4s round; 2.0 + 8.0 does
+    # NOT, and the machine correctly refuses that one — checked both ways so
+    # this test cannot pass by picking a friendly number.
+    partly = replace(st, budget=Budget(remaining_s=4.0, remaining_c=0.0, band_s=8.0))
+    ok2, why2 = may_overrun(partly)
+    assert ok2 and "of the 8.0s band" in why2, why2
+    spent = replace(st, budget=Budget(remaining_s=2.0, remaining_c=0.0, band_s=8.0))
+    ok3, why3 = may_overrun(spent)
+    assert not ok3 and "even the band cannot fund it" in why3, why3

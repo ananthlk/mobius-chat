@@ -90,3 +90,17 @@ def test_NO_call_site_passes_the_soft_target():
         src = kw.get("promise_latency_s", "")
         assert "soft_target" not in src, f"call site still passes: {src}"
         assert "promise_seconds" in src, f"call site does not use the promise: {src}"
+
+
+def test_the_band_is_wired_from_the_promise():
+    """Budget.band_s defaulted to 0.0 and state_from_ctx never set it, so
+    may_overrun's band arm was inert — a turn genuinely out of promise time
+    could never overrun even when converging, and the one that DID overrun drew
+    on unreserved promise time while reporting "from a 0.0s band"."""
+    from app.pipeline.v2.shadow import band_seconds
+    assert band_seconds(13.0) == 5.0
+    assert band_seconds(31.0) == 8.0
+    assert band_seconds(95.0) == 25.0
+    # an unrecognised promise gets NO band — a synthesised tolerance is the
+    # same defect as a synthesised promise
+    assert band_seconds(42.0) == 0.0

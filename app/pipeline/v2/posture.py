@@ -368,9 +368,20 @@ def may_overrun(state: RoundState) -> tuple[bool, str]:
             f"even the band cannot fund it: need {need:.1f}s, "
             f"have {state.budget.remaining_s:.1f}s + {left_in_band:.1f}s band"
         )
+    # SAY WHERE THE MONEY COMES FROM. This read "drawing 10.4s from a 0.0s
+    # band" on a round that was in fact funded from 17.6s of unreserved promise
+    # time -- spendable() had refused only because it also reserves the cost of
+    # ACTING on what the round finds, and an overrun deliberately does not.
+    # A reason that names the wrong source is a reason you cannot audit.
+    from_promise = min(need, state.budget.remaining_s)
+    from_band = max(0.0, need - from_promise)
+    where = (f"{from_promise:.1f}s of unreserved promise time"
+             if from_band <= 0 else
+             f"{from_promise:.1f}s of promise time + {from_band:.1f}s of the "
+             f"{left_in_band:.1f}s band")
     return True, (
         f"converging with {len(state.open_gaps)} gap(s) open and evidence "
-        f"returning; drawing {need:.1f}s from a {left_in_band:.1f}s band"
+        f"returning; spending {need:.1f}s from {where}"
     )
 
 
