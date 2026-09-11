@@ -13729,6 +13729,7 @@ ${message}`;
       _pendingMentions = [];
     }
     let activeCorrelationId = "";
+    let activeComparison = null;
     const _chatAuthHeaders = await auth.getAuthHeader?.() ?? {};
     fetch(API_BASE + "/chat", {
       method: "POST",
@@ -13739,6 +13740,7 @@ ${message}`;
         currentThreadId = data.thread_id;
       window.__mobiusChatThreadId = currentThreadId;
       activeCorrelationId = data.correlation_id ?? "";
+      activeComparison = data.comparison ?? null;
       if ((data.correlation_id || "").trim()) {
         onRequestCorrelationId();
       }
@@ -14282,8 +14284,8 @@ ${message}`;
           correlationId: data.correlation_id ?? activeCorrelationId
         }));
       }
-      if (data.comparison && data.status === "completed") {
-        turnWrap.appendChild(renderAbShadowComparison(data.comparison, selectedMode));
+      if (activeComparison && data.status === "completed") {
+        turnWrap.appendChild(renderAbShadowComparison(activeComparison, selectedMode));
       }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
