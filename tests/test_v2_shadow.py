@@ -228,3 +228,54 @@ def test_a_rewording_is_RECORDED_not_absorbed_silently():
                           acting_cost_s=0.0).open_gaps[0]
     assert g2.reworded_from == ""
     assert g2.reworded_similarity == 1.0
+
+
+def test_SIBLING_gaps_never_merge_however_similar_their_wording():
+    """Found live on cid 28a02bf9 while Ananth watched a dev turn:
+
+        S381309  "Sunshine Health prior authorization requirements for..."
+        S381309  "Humana prior authorization requirements for..."
+
+    Two payers, one id. Those texts differ only by a proper noun, so
+    jaccard = 0.778 >= 0.70 and the "same thing restated" rule fused them.
+    WORSE than the positional ids it replaced: those mislabelled a gap, this
+    silently DELETED one — in the multi-payer comparison case the system most
+    exists for.
+
+    The rule is principled, not a tuned threshold: two gaps react listed in the
+    SAME round are different gaps BY CONSTRUCTION. A rewording can only happen
+    ACROSS rounds, because it is the model saying the same thing again LATER.
+    """
+    import app.pipeline.v2.shadow as S
+    from app.pipeline.v2.posture import jaccard, REPEAT_JACCARD
+    A = "Sunshine Health prior authorization requirements for outpatient behavioral health"
+    B = "Humana prior authorization requirements for outpatient behavioral health"
+    # the premise: these WOULD merge on similarity alone
+    assert jaccard(A, B) >= REPEAT_JACCARD, "fixture no longer exercises the bug"
+
+    class Ctx:
+        message = "q"
+        react_trace_rounds = [
+            {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [A, B], "gaps_closed": [],
+                            "running_answer": ""}}]
+    gaps = S.state_from_ctx(Ctx(), round_index=1, elapsed_s=1.0,
+                            promise_latency_s=31.0, round_cost_s=0.0,
+                            acting_cost_s=0.0).open_gaps
+    assert len(gaps) == 2
+    assert len({g.gap_id for g in gaps}) == 2, "two payers collapsed to one gap"
+
+    # ...and a genuine ACROSS-round rewording still merges
+    class Later(Ctx):
+        react_trace_rounds = [
+            {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": [A], "gaps_closed": [], "running_answer": ""}},
+            {"round": 2, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": ["Sunshine Health prior authorization "
+                                          "requirements outpatient behavioral health"],
+                            "gaps_closed": [], "running_answer": ""}}]
+    g2 = S.state_from_ctx(Later(), round_index=2, elapsed_s=1.0,
+                          promise_latency_s=31.0, round_cost_s=0.0,
+                          acting_cost_s=0.0).open_gaps[0]
+    assert g2.reworded_from == A, "across-round rewording stopped being recognised"
+    assert g2.opened_round == 1, "the rewording restarted the gap's clock"

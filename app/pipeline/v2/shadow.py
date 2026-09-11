@@ -133,12 +133,14 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
 
         closed_all: list[str] = []
         all_texts: list[str] = []          # every gap text this turn, in order
+        texts_by_round: list[list[str]] = []   # grouped, so siblings never merge
         for r in rounds:
             enr = (r or {}).get("enrichment") or {}
             gaps = [g for g in (enr.get("gaps_open") or []) if isinstance(g, str)]
             closed = [g for g in (enr.get("gaps_closed") or []) if isinstance(g, str)]
             closed_all.extend(closed)
             history.append(len(gaps))
+            texts_by_round.append(list(gaps))
             for g in gaps:
                 if g not in all_texts:
                     all_texts.append(g)
@@ -193,17 +195,37 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         # REPEAT_JACCARD is the threshold posture.py already uses to decide
         # whether a new query complies with a directive -- the same question
         # ("is this the same thing restated?"), so the same constant.
-        # Built over EVERY text seen this turn, in round order -- not just the
-        # current round's list. A rewording is only recognisable against what
-        # came BEFORE it, and the first version compared the latest list to
-        # itself, so it could never match anything.
+        # Built over every text seen this turn, ROUND BY ROUND -- and a text
+        # may only inherit an id from an EARLIER round, never from a sibling in
+        # its own round.
+        #
+        # 🔴 SIBLINGS MUST NOT MERGE, found live 2026-09-11 on
+        # cid 28a02bf9 while Ananth was watching:
+        #
+        #   S381309  "Sunshine Health prior authorization requirements for..."
+        #   S381309  "Humana prior authorization requirements for..."
+        #
+        # Two payers, one id. Those texts differ only by a proper noun, so
+        # jaccard = 0.778 >= 0.70 and the "same thing restated" rule fused
+        # them. That is WORSE than the positional ids it replaced: positional
+        # ids mislabelled gaps, this one silently DELETED one -- and it did it
+        # in the multi-payer comparison case the system most exists for.
+        #
+        # The principled rule, not a tuned threshold: two gaps react listed in
+        # the SAME round are different gaps BY CONSTRUCTION -- it named them
+        # separately, in one breath, about one state. A rewording can only
+        # happen ACROSS rounds, because it is the model saying the same thing
+        # again LATER. Sibling-blindness makes the threshold unable to cause
+        # this class of error at all, rather than making it less likely.
         canon: dict[str, str] = {}   # text -> the text whose id it inherits
-        for t in all_texts:
-            if t in canon:
-                continue
-            match = next((k for k in canon.values() if jaccard(k, t) >= REPEAT_JACCARD),
-                         None)
-            canon[t] = match or t
+        for _round_texts in texts_by_round:
+            _established = list(canon.values())      # earlier rounds ONLY
+            for t in _round_texts:
+                if t in canon:
+                    continue
+                match = next((k for k in _established
+                              if jaccard(k, t) >= REPEAT_JACCARD), None)
+                canon[t] = match or t
         gaps = tuple(
             Gap(gap_id=gap_id_for(canon[t]), text=t,
                 opened_round=opened_at.get(canon[t], opened_at.get(t, round_index)),
