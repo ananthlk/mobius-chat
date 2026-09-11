@@ -49,10 +49,12 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
                 "shape": "lookup", "mode": "copilot" },
   "harness": true,                          // page renders the "NOT production" banner from this flag (§2)
   "experiment": {                           // Rule 5, data-driven → also the reusability mechanism (§4)
-    "arm_a": { "id": "v1", "label": "v1 orchestrator" },
-    "arm_b": { "id": "v2", "label": "v2 posture machine (shadow)" },
+    "arms": [                               // ORDERED list, 1..N. Column count = arms.length (NOT a flag).
+      { "id": "v1", "label": "v1 orchestrator" },
+      { "id": "v2", "label": "v2 posture machine (shadow)" }
+    ],                                      // one entry = single-column run (baseline capture); two = A/B; N = N-way
     "held_constant": ["question", "mode:copilot", "window:90d", "input"],
-    "varied": ["orchestrator"]
+    "varied": ["orchestrator"]              // empty for a single-arm run (nothing varied — it's a capture)
   },
   "arms": {
     "v1": {
@@ -85,9 +87,12 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
 ```
 
 Notes that are load-bearing, not stylistic:
-- **`arms` is a map keyed by arm id, arms are symmetric.** Both carry `answer_envelope` + `decision_trace` +
-  `delivered`. v2's `answer_envelope` is `null` today and a real envelope at R1 — same key, same render path.
-  Designing for the two-answer end state now (Governor §5) means the schema is already symmetric.
+- **Two `arms`-shaped fields, distinct jobs:** `experiment.arms[]` is the ORDERED list of `{id, label}` — it sets
+  column order and the header labels. Top-level `arms{}` is the DATA map keyed by that same id. The page iterates
+  `experiment.arms` for order and looks each arm's payload up in `arms{}` by id. Column count = `experiment.arms.length`.
+- **`arms{}` is symmetric across arms.** Each carries `answer_envelope` + `decision_trace` + `delivered`. v2's
+  `answer_envelope` is `null` today and a real envelope at R1 — same key, same render path. Designing for the
+  two-answer end state now (Governor §5) means the schema is already symmetric, and 1 or N arms is the same shape.
 - **`null` is not `false` and not `0`.** `kept:null`/`in_band:null`/absent latency render as **"—"**, never a
   clamped value. Same rule as `self:"n/a"` when parallel calls make it uncomputable. (This is the same defect
   family the program keeps removing — a UI that renders a value where the data holds "unknown".)
@@ -137,21 +142,32 @@ A persistent top banner rendered from `harness:true`: **"A/B HARNESS — both ar
 Nobody was served. Production routes to exactly one orchestrator."** Governor §1: if a reader concludes
 production may fork, the harness has done damage — so the page says it can't, in the page.
 
-**Default = the near-production view; the machine internals expand (Ananth 2026-09-10).** A first-time reader
-must land on *what a user would actually see* — the two rendered answers side by side, clean, exactly the
-bubble — not a wall of postures and latencies. Everything diagnostic is **collapsed by default and expandable**,
-so the near-production comparison is the resting state and the machine detail is one click away.
+**Column count = number of arms, not a property of the page (Ananth 2026-09-10, verbatim: *"only if a run is an
+A/B run is when the 2-column setup will exist. Else the single column."*).** The surface renders
+`experiment.arms.length` columns: **one arm → single column** (a valid, useful run — baseline capture of the
+20-question set against v1 alone, or re-reading one arm full-width), **two → the A/B pair**, **N → N columns**
+(the reusability case, e.g. manifest 5 vs 15 vs 57, needs no new mode). Normal chat is untouched and single-column;
+the harness page is just "one box per arm." **The single-column case is NOT a different renderer** — it's the
+multi-box layout with one box, same production renderer / same envelope passthrough / same snapshot source. If
+single-column ever rendered through a different path, the comparison stops being valid the instant someone flips
+between a 1-arm and 2-arm run. The `harness:true` banner shows on *any* harness run, single-arm included — a
+baseline capture still isn't production.
 
-**Per comparison:**
+**Default = the near-production view; the machine internals expand (Ananth 2026-09-10).** A first-time reader
+must land on *what a user would actually see* — the rendered answer(s), clean, exactly the bubble — not a wall
+of postures and latencies. Everything diagnostic is **collapsed by default and expandable**, so the
+near-production view is the resting state and the machine detail is one click away.
+
+**Per comparison (two-arm shown; one box per arm, 1..N):**
 ```
-┌─ [banner: NOT production — harness forks]                                                           ┐
+┌─ [banner: NOT production — harness forks (shows on ANY harness run, incl. single-arm)]              ┐
 ├─ experiment header (from `experiment`): Held: question · copilot · 90d   |   Varied: orchestrator ──┤   ← Rule 5, always on
 │  question text                                                                                      │
-├──────────────────── box 1: ARM A [▾] ────────────────────┬──────────── box 2: ARM B [▾] ───────────┤
-│  v1 answer, rendered via the PRODUCTION renderer          │  answer present → same renderer          │  ← DEFAULT view:
-│  (byte-for-byte the bubble)                               │  answer null    → decision trace         │    just the answers,
-│  [›] round-by-round trace  (collapsed)                    │  [›] round-by-round trace  (collapsed)   │    near-production
-├─────────────────────── [›] Divergences (collapsed) — where the two machines disagreed ──────────────┤   ← expand for detail
+├──────────────────── box 1: ARM A [▾] ────────────────────┬──────────── box 2: ARM B [▾] ───────────┤   ← columns = arms.length
+│  v1 answer, rendered via the PRODUCTION renderer          │  answer present → same renderer          │    (1 arm = this box only,
+│  (byte-for-byte the bubble)                               │  answer null    → decision trace         │     full width, SAME renderer)
+│  [›] round-by-round trace  (collapsed)                    │  [›] round-by-round trace  (collapsed)   │
+├─────────────────────── [›] Divergences (collapsed) — where the arms disagreed ──────────────────────┤   ← multi-arm only; absent for 1 arm
 ├─────────────────────── [›] Terms (collapsed) — latency · cost · exit · rounds · kept ────────────────┤   ← diagnostic, subordinate
 └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -173,6 +189,10 @@ so the near-production comparison is the resting state and the machine detail is
   reached back to a live endpoint for anything, it inherits the TTL expiry above, and it's the *expanded* view
   that breaks — the one someone opens precisely when they're looking hard at something. So no on-expand network
   call: expand is a pure show/hide over data already in hand.
+
+**Divergences exist only for a multi-arm run.** A single-arm run (baseline capture) has nothing to diverge from —
+no shadow verdict is authored — so the strip is simply absent, not an empty section. The strip appears once a run
+has a shadow arm whose trace rows carry `verdict`.
 
 **Divergences = a filtered view of `v2.decision_trace`, keyed on the STORED `verdict` (Governor's condition,
 load-bearing):** the strip is `v2.decision_trace.filter(r => r.verdict !== "agree")` — no separate array. Each
@@ -203,12 +223,13 @@ reads like the former.
 
 ## 3 · Reusability — the page is arm-agnostic
 
-The page renders `experiment.arm_a/arm_b.label` + `held_constant`/`varied` verbatim and keys the boxes by
-arm id. It does **not** know it's v1-vs-v2. So the same surface takes any two arms with zero page changes:
-`{label:"prompt profile A"}` vs `{label:"prompt profile B"}`, varied `["prompt_profile"]`; `manifest 57` vs
-`manifest 5`; `model X` vs `model Y`. When both arms produce answers (prompt/model A/B), both `answer_envelope`s
-are non-null and box 2 is in answer-mode — no special case. v2's trace-mode is just the `answer_envelope:null`
-branch, not a v2-specific code path.
+The page renders `experiment.arms[].label` + `held_constant`/`varied` verbatim and keys each box by arm id. It
+does **not** know it's v1-vs-v2, and it does **not** know how many arms there are — it maps over `arms` and renders
+one box each. So the same surface takes any arm set with zero page changes: one arm (baseline capture); two —
+`{label:"prompt profile A"}` vs `{label:"prompt profile B"}`, varied `["prompt_profile"]`, or `manifest 57` vs
+`manifest 5`, or `model X` vs `model Y`; three-plus — `manifest 5` vs `15` vs `57`, no new mode. When an arm
+produces an answer its box is answer-mode; when `answer_envelope` is null it's trace-mode — a per-arm branch on
+the data, never a v2-specific code path. Column count falls out of `arms.length`; nothing is a flag.
 
 ---
 
