@@ -510,3 +510,86 @@ def _post_chat(message: str, mode: str, arm: str, correlation_id: str) -> None:
         req.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(req, timeout=30) as resp:
         resp.read()
+
+
+# ── ask anything ────────────────────────────────────────────────────────────
+
+class Ask(BaseModel):
+    question: str
+    mode: str = "copilot"
+    arms: list[str] | None = None
+    run_id: str | None = None        # append to an existing ad-hoc run
+
+
+@router.post("/ab/ask")
+def ask(body: Ask) -> dict:
+    """Type a question, fork it to every arm, watch both.
+
+    Ananth: "where do I see it by posting a question." /fork needed a run_id
+    and a qid from the fixed twenty, so there was no path from a typed question
+    to a comparison at all. This is that path.
+
+    The run is REAL, not a scratch object: same ab_runs row, same
+    ab_run_questions rows, same snapshot rules, so an ad-hoc comparison is
+    re-openable tomorrow exactly like a set-based one. The only difference is
+    where the question came from, and that is recorded rather than implied --
+    `source: "ad_hoc"` on the frozen question set.
+
+    WHY THE QUESTION IS SNAPSHOT AND NOT JUST STORED AS TEXT: the run's
+    question_set column is the frozen record of what was asked. A typed
+    question that lived only in a log would make the run unreadable the moment
+    the log rotated, which is the same failure as reading an envelope back from
+    a TTL'd cache.
+
+    NOT a general chat endpoint. It forks -- two turns, nobody served -- and it
+    is admin-gated like the rest of the harness. A caller wanting an answer
+    should POST /chat.
+    """
+    q_text = (body.question or "").strip()
+    if not q_text:
+        raise HTTPException(400, "question is empty")
+
+    run_id = body.run_id
+    if run_id:
+        runs = _q("select * from ab_runs where run_id=:r", {"r": run_id})
+        if not runs:
+            raise HTTPException(404, f"run {run_id!r} not found")
+        qset = _run_set(runs[0])
+        arms = body.arms or [a for a in (runs[0]["arm_a_id"], runs[0].get("arm_b_id")) if a]
+    else:
+        arms = body.arms or ["v1", "v2"]
+        run_id = f"ab-{uuid.uuid4().hex[:10]}"
+        qset = {"set_id": "ad_hoc", "source": "ad_hoc",
+                "mode": body.mode, "questions": []}
+        _x("""INSERT INTO ab_runs (run_id, set_id, arm_a_id, arm_a_label,
+                                   arm_b_id, arm_b_label, held_constant, varied,
+                                   created_by, question_set)
+              VALUES (:r,'ad_hoc',:aid,:alab,:bid,:blab,
+                      CAST(:h AS JSONB),CAST(:v AS JSONB),'ad_hoc',
+                      CAST(:qs AS JSONB))""",
+           {"r": run_id,
+            "aid": arms[0], "alab": f"{arms[0]} orchestrator",
+            "bid": arms[1] if len(arms) > 1 else "",
+            "blab": f"{arms[1]} orchestrator" if len(arms) > 1 else "",
+            "h": json.dumps(["question", f"mode:{body.mode}", "input",
+                             "tool manifest", "prompt blocks", "model roster",
+                             "publish path", "renderer",
+                             "corpus + cache + load (simultaneous)",
+                             "wall-clock time"]),
+            "v": json.dumps(["the orchestrator decision",
+                             "LLM sampling — simultaneity removes the "
+                             "confound, not the variance"]),
+            "qs": json.dumps(qset)})
+
+    qid = f"q{len(qset.get('questions') or []) + 1:02d}"
+    qset.setdefault("questions", []).append(
+        {"id": qid, "q": q_text, "shape": "ad_hoc"})
+    _x("""UPDATE ab_runs SET question_set = CAST(:qs AS JSONB) WHERE run_id=:r""",
+       {"qs": json.dumps(qset), "r": run_id})
+
+    out = fork(run_id, qid, Fork(mode=body.mode, arms=arms))
+    # The page needs these to build its own URL; fork() answers about a
+    # question it was handed and does not know it was just created.
+    out["created_run"] = (body.run_id is None)
+    out["view"] = f"/ab?run={run_id}&q={qid}"
+    return out

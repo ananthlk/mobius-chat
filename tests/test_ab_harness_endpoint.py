@@ -19,6 +19,7 @@ def test_the_routes_the_contract_names_exist():
         "GET /ab/runs/{run_id}", "GET /ab/runs/{run_id}/q/{qid}",
         "POST /ab/runs/{run_id}/q/{qid}/arm/{arm}",
         "POST /ab/runs/{run_id}/q/{qid}/fork",
+        "POST /ab/ask",
     }, paths
 
 
@@ -376,3 +377,30 @@ def test_the_fork_env_vars_are_in_the_deploy_allowlist():
     sh = pathlib.Path("scripts/deploy.sh").read_text()
     for var in ("MOBIUS_V2_AB_FORK=", "MOBIUS_SELF_URL=", "MOBIUS_AB_FORK_TOKEN="):
         assert var in sh, var
+
+
+def test_ask_freezes_the_typed_question_onto_the_run():
+    """A typed question that lived only in a log makes the run unreadable the
+    moment the log rotates — the same failure as reading an envelope back from
+    a TTL'd cache. The question_set column is the frozen record of what was
+    asked, and an ad-hoc run must be re-openable tomorrow exactly like a
+    set-based one."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "ask")
+    src = ast.unparse(fn)
+    assert "UPDATE ab_runs SET question_set" in src, "the question is not frozen"
+    assert '"source": "ad_hoc"' in src or "'source': 'ad_hoc'" in src, \
+        "an ad-hoc run is indistinguishable from a set-based one"
+    assert "fork(run_id, qid" in src, "ask does not actually fork"
+
+
+def test_ask_refuses_an_empty_question():
+    import app.api.ab_harness as H
+    from fastapi import HTTPException
+    try:
+        H.ask(H.Ask(question="   "))
+        raise AssertionError("ran on an empty question")
+    except HTTPException as e:
+        assert e.status_code == 400
