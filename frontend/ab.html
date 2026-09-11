@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A/B harness — Mobius</title>
+<!-- mobius-tokens: shared palette. styles.css: the ANSWER-CARD renderer's own classes,
+     so a rendered answer here is byte-for-byte the bubble (renderEnvelope emits them). -->
+<link rel="stylesheet" href="/static/mobius-tokens.css">
+<link rel="stylesheet" href="/static/styles.css">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--mobius-bg-primary,#fafbfc);color:var(--mobius-text-primary,#1a1d21);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+  #ab-app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+  .ab-nav-host{border-right:1px solid var(--mobius-border,#e2e8f0);background:#fff;padding:16px 12px}
+  .ab-nav-run{font-size:12px;font-weight:650;color:var(--mobius-text-muted,#64748b);margin-bottom:10px;
+              letter-spacing:.02em;word-break:break-all}
+  .ab-nav-list{display:flex;flex-wrap:wrap;gap:6px}
+  .ab-nav-q{border:1px solid var(--mobius-border,#e2e8f0);background:#fff;border-radius:6px;padding:4px 8px;
+            font-size:12px;cursor:pointer;color:var(--mobius-text-primary,#1a1d21)}
+  .ab-nav-q:hover{border-color:#7c3aed}
+  .ab-nav-q--active{background:#7c3aed;border-color:#7c3aed;color:#fff}
+  .ab-body{padding:22px 28px;max-width:1400px}
+
+  /* Harness banner — the page says, in the page, that production cannot fork. */
+  .ab-banner{background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:8px;
+             padding:10px 14px;font-size:12.5px;font-weight:600;margin-bottom:16px}
+
+  .ab-exp-header{display:flex;align-items:center;gap:24px;flex-wrap:wrap;
+                 padding-bottom:12px;border-bottom:1px solid var(--mobius-border,#e2e8f0);margin-bottom:14px}
+  .ab-exp-key{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mobius-text-muted,#64748b);
+              margin-right:8px;font-weight:650}
+  .ab-exp-val{font-size:13px}
+  .ab-exp-varied .ab-exp-val{color:#7c3aed;font-weight:600}
+  .ab-expand-all{margin-left:auto;border:1px solid var(--mobius-border,#e2e8f0);background:#fff;border-radius:6px;
+                 padding:5px 12px;font-size:12px;cursor:pointer;color:var(--mobius-text-primary,#1a1d21)}
+  .ab-expand-all:hover{border-color:#7c3aed}
+
+  .ab-question{font-size:19px;font-weight:650;letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
+  .ab-question-meta{display:flex;gap:6px;margin-bottom:18px}
+  .ab-chip{font-size:11px;background:var(--mobius-bg-secondary,#f1f5f9);border-radius:5px;padding:2px 8px;
+           color:var(--mobius-text-muted,#64748b)}
+
+  /* Columns = arms.length, driven by --ab-cols set from the data. */
+  .ab-grid{display:grid;grid-template-columns:repeat(var(--ab-cols,1),minmax(0,1fr));gap:18px}
+  .ab-box{border:1px solid var(--mobius-border,#e2e8f0);border-radius:10px;background:#fff;overflow:hidden}
+  .ab-box-head{display:flex;align-items:center;justify-content:space-between;
+               padding:9px 14px;border-bottom:1px solid var(--mobius-border,#e2e8f0);background:#fafbfc}
+  .ab-box-arm{font-weight:650;font-size:13px}
+  .ab-box-status{font-size:11px;color:var(--mobius-text-muted,#64748b)}
+  .ab-status--captured{color:#059669}
+  .ab-answer{padding:14px 16px}
+  .ab-answer--empty,.ab-answer--error{color:var(--mobius-text-muted,#64748b);font-size:13px}
+  .ab-answer--error{color:#dc2626}
+  .ab-trace-mode-note{padding:10px 16px 0;font-size:12px;color:var(--mobius-text-muted,#64748b);font-style:italic}
+
+  .ab-collapsible{border-top:1px solid var(--mobius-border,#eef2f6)}
+  .ab-collapsible-summary{cursor:pointer;padding:9px 16px;font-size:12.5px;font-weight:600;
+                          color:var(--mobius-text-muted,#475569);list-style:none;user-select:none}
+  .ab-collapsible-summary::-webkit-details-marker{display:none}
+  .ab-collapsible-summary::before{content:"›";display:inline-block;margin-right:8px;transition:transform .15s}
+  .ab-collapsible[open] > .ab-collapsible-summary::before{transform:rotate(90deg)}
+  .ab-collapsible-body{padding:2px 16px 14px}
+
+  .ab-trace-row{display:flex;gap:10px;align-items:baseline;padding:4px 0;font-size:12.5px;
+                border-bottom:1px dashed var(--mobius-border,#eef2f6)}
+  .ab-trace-round{font-weight:650;color:#7c3aed;min-width:28px}
+  .ab-trace-posture{font-weight:600}
+  .ab-trace-tool{font-size:11px;background:#ecfdf5;color:#047857;border-radius:4px;padding:1px 6px}
+  .ab-trace-dur{font-size:11px;color:var(--mobius-text-muted,#94a3b8)}
+  .ab-trace-why{color:var(--mobius-text-muted,#64748b);flex:1}
+
+  .ab-diverge-row{display:flex;gap:10px;align-items:baseline;padding:6px 0}
+  .ab-diverge-round{font-weight:650;min-width:28px}
+  .ab-diverge-tag{font-size:11px;border-radius:4px;padding:1px 7px;background:#f1f5f9;color:#64748b}
+  .ab-diverge-tag--real{background:#fef2f2;color:#b91c1c}
+  .ab-diverge--unmapped{opacity:.72}
+  .ab-diverge-detail{flex:1;font-size:12.5px}
+  .ab-diverge-none,.ab-diverge-tag{font-size:12px}
+
+  .ab-terms-table{border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .ab-terms-table th,.ab-terms-table td{text-align:left;padding:4px 16px 4px 0}
+  .ab-terms-table th{color:var(--mobius-text-muted,#64748b);font-weight:600}
+  .ab-terms-label{color:var(--mobius-text-muted,#64748b)}
+  .ab-terms-note{margin-top:10px;font-size:11.5px;color:var(--mobius-text-muted,#94a3b8);font-style:italic;max-width:60ch}
+
+  .ab-empty,.ab-loading{padding:40px 8px;color:var(--mobius-text-muted,#64748b);font-size:14px}
+  @media (max-width:820px){#ab-app{grid-template-columns:1fr}.ab-grid{grid-template-columns:1fr!important}}
+</style>
+</head>
+<body>
+<div id="ab-app"></div>
+<script type="module" src="/static/ab.js"></script>
+</body>
+</html>

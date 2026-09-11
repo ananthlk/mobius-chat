@@ -3255,6 +3255,17 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
+    @app.get("/ab")
+    def ab_harness_page():
+        """A/B harness — comparisons a human judges. Admin-gated technical surface,
+        same as /traces. The page reads /ab/runs?run=<id>&q=<qid>."""
+        from app.api.admin import _admin_enabled
+        if not _admin_enabled():
+            raise HTTPException(status_code=404, detail="Not found")
+        r = FileResponse(_frontend / "ab.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
     # Set / reset password — public pre-auth page; no session required.
     # Both invite and reset emails link here (?token=…). The page calls
     # /api/v1/auth/token-info to determine purpose (invite vs reset) and

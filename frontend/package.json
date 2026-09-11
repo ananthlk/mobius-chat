@@ -6,7 +6,8 @@
     "@mobius/auth": "file:../../mobius-auth"
   },
   "scripts": {
-    "build": "esbuild src/app.ts --bundle --outfile=static/app.js --format=esm --target=es2020",
+    "build": "esbuild src/app.ts --bundle --outfile=static/app.js --format=esm --target=es2020 && npm run build:ab",
+    "build:ab": "esbuild src/ab.ts --bundle --outfile=static/ab.js --format=esm --target=es2020",
     "build:check": "tsc --noEmit",
     "watch": "esbuild src/app.ts --bundle --outfile=static/app.js --format=esm --target=es2020 --watch",
     "test": "vitest run",
