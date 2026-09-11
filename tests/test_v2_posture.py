@@ -378,3 +378,36 @@ def test_compare_passes_the_reason_through():
     c = compare("extend", st, v1_reason="quality issue flagged — going deeper")
     assert c["v1_reason"].startswith("quality issue")
     assert c["v1_maps_to"] == "narrow"
+
+
+def test_the_197_extend_path_is_unreachable_pre_round():
+    """Chat seat's finding, encoded so it cannot silently stop being true.
+
+    _pp_pre_state hardcodes proposes_complete=False, and governor.py's
+    'quality issue flagged' extend sits inside `if state.proposes_complete`.
+    So EVERY pre-round extend is the ':209' path -- still gathering evidence.
+
+    If someone later makes the pre-round state propose completion, this fails,
+    and the pre-round mapping below stops being safe to assume.
+    """
+    from pathlib import Path
+    loop = Path("app/pipeline/react_loop.py").read_text()
+    gov = Path("app/pipeline/react/governor.py").read_text()
+
+    assert "proposes_complete=False, self_reported_confidence=None" in loop, \
+        "pre-round state no longer hardcodes proposes_complete=False"
+
+    # The claim is positional: the remediation reason lives INSIDE the
+    # proposes_complete guard. Checked against the LAST occurrence of each
+    # needle, because both phrases also appear in the module docstring above
+    # evaluate() -- a first-occurrence check reads the prose, not the code.
+    # (My first version of this test asserted an ordering between the two
+    # reasons and failed on exactly that: it found the docstring copy.)
+    guard = gov.rindex("if state.proposes_complete:")
+    remediation = gov.rindex("quality issue flagged")
+    assert guard < remediation, "the :197 extend left the proposes_complete guard"
+
+    # Textual proxy, and a limited one: it shows the remediation reason follows
+    # the guard, not that it is lexically nested under it. A control-flow proof
+    # would need the AST. Stated so the next reader does not over-trust it.
+    assert "round budget exhausted" in gov

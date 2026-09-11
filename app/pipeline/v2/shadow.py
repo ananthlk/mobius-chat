@@ -35,18 +35,26 @@ logger = logging.getLogger(__name__)
 # and groups 'extend' with 'consolidate' as "synthesize". Two declarations of
 # one idea, disagreeing: the defect removed three times this week.
 #
-# BUT v1's mapping must not simply be copied, because governor.py:282-295
-# documents it as KNOWN LOSSY on exactly this pair:
+# CITATION CORRECTED 2026-09-11 (chat seat). An earlier version of this comment
+# said _DIRECTIVE_TO_AGENT_ROLE is documented KNOWN LOSSY. It is not: that
+# docstring belongs to agent_role_to_reasoning_depth() at governor.py:275, and
+# the DEPTH path was already routed around the lossy hop in 2026-08-04
+# (directive_to_reasoning_depth goes direct). _DIRECTIVE_TO_AGENT_ROLE itself is
+# live and unflagged -- it selects the prompt COMPOSITION.
 #
-#   'both "consolidate" (time pressure -- wrap up NOW) and "extend"
-#    (deliberately spending MORE budget on a groundedness problem, not
-#    time-pressured) collapse to "synthesize" ... Caught live 2026-08-04.'
+# The decision below stands on the second reason, not the misattributed first:
+# 'extend' is two different pieces of work wearing one name.
 #
-# So aligning with it would inherit a mapping bug its own author named. The
-# resolution is to be EXPLICIT about the relationship rather than parallel to
-# it: agree where v1's bucket is sound, and where we deliberately diverge, say
-# so with a reason -- and let a test enforce that the divergence list is
-# exhaustive.
+# AND the chat seat then verified something that makes the split load-bearing
+# rather than merely tidy -- a live v1 defect, three facts:
+#   react_loop.py:4724  _pp_pre_state hardcodes proposes_complete=False
+#   governor.py:191     the :197 extend path sits INSIDE `if proposes_complete`
+#   => every PRE-ROUND extend is necessarily the :209 path -- still gathering
+#      evidence -- and directive_to_agent_role("extend") -> "synthesize"
+#      selects a SYNTHESIZE composition for a round that is still gathering.
+# Same bucket, same shape as the depth bug Ananth caught live on 2026-08-04;
+# depth was fixed by going direct from directive, composition still routes
+# through agent_role and still carries it.
 #
 # 'extend' is two different pieces of work wearing one name:
 #   governor.py:197  proposes_complete AND groundedness failed
