@@ -246,6 +246,10 @@ SET_ENV_VARS=(
     # shadow that is permanently, silently off -- and "the flag was set" and
     # "the flag reached the process" are different facts.
     "MOBIUS_V2_SHADOW=${MOBIUS_V2_SHADOW:-}"
+    # SET_ENV_VARS is an ALLOWLIST, not a passthrough -- an env var absent
+    # from this list is simply not in the container, silently. MOBIUS_V2_PCT
+    # is the A/B split: 0 (default) = every turn on v1.
+    "MOBIUS_V2_PCT=${MOBIUS_V2_PCT:-}"
     # Cache-assist (2026-04-23). Empty-default so unset vars don't
     # break the csv; see deploy/dev.env for rationale on each.
     "CACHE_ASSIST_ENABLED=${CACHE_ASSIST_ENABLED:-}"

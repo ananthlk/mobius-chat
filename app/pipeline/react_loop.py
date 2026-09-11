@@ -5560,6 +5560,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         # observes is not an observer -- same posture as the
                         # attestation write. Off unless MOBIUS_V2_SHADOW=1.
                         if os.environ.get("MOBIUS_V2_SHADOW", "").strip() == "1":
+                            _v2_applied = False
                             try:
                                 from app.pipeline.v2 import shadow as _v2s
 
@@ -5585,8 +5586,74 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                         "[v2] accumulated round=%s total=%d ctx_id=%s",
                                         rn, len(ctx.v2_shadow_rounds), id(ctx),
                                     )
+                                # ── STEP 2: v2 DECIDES (governor seat) ─────
+                                # Above this line v2 is observed. Below it, on
+                                # a turn ROUTED to v2, it decides -- and the
+                                # ONLY thing that changes is this one string.
+                                # The prompts, the manifest, the tools, the
+                                # model and the publish path are the same code
+                                # a line later, which is what makes a
+                                # divergence attributable to the decision.
+                                #
+                                # Routed at POST, never sampled here: a turn
+                                # that flipped arms mid-flight would be in both
+                                # populations and in neither.
+                                #
+                                # v1's directive is NOT overwritten -- it is
+                                # already on _v2_cmp["v1_directive"], so the
+                                # row still records what v1 would have done.
+                                # An arm that erases its counterfactual cannot
+                                # be compared with anything.
+                                if getattr(ctx, "orchestrator_version", "v1") == "v2":
+                                    from app.pipeline.v2 import executor as _v2x
+                                    from app.pipeline.v2 import posture as _v2p
+
+                                    _v2_dec = _v2p.select(_v2_state)
+                                    _v2_act = _v2x.decide(_v2_dec,
+                                                          _v2p.exit_mode(_v2_state))
+                                    logger.info(
+                                        "[v2.exec] cid=%s round=%s v1=%s -> v2=%s "
+                                        "posture=%s%s",
+                                        (ctx.correlation_id or "")[:8], rn,
+                                        _pp_directive, _v2_act.directive,
+                                        _v2_act.posture.value,
+                                        " MISMATCHED_PROMPT" if _v2_act.prompt_mismatch else "",
+                                    )
+                                    _pp_directive = _v2_act.directive
+                                    _pp_reason = _v2_act.because
+                                    ctx.product_promise_directive = _pp_directive
+                                    # Set THE INSTANT the substitution takes
+                                    # effect, not at the end of the block. A
+                                    # raise in the recording below leaves v2's
+                                    # directive already running -- calling that
+                                    # turn "degraded to v1" would file a v2 turn
+                                    # in v1's population, which is worse than
+                                    # the crash.
+                                    _v2_applied = True
+                                    if _v2_cmp is not None:
+                                        # What v2 ACTUALLY ran, distinct from
+                                        # what it would have chosen. On a v1
+                                        # turn these are the same; on a v2 turn
+                                        # the exit mode may have overridden the
+                                        # posture, and that override is the
+                                        # interesting row.
+                                        _v2_cmp["v2_applied"] = True
+                                        _v2_cmp["v2_directive_applied"] = _v2_act.directive
+                                        _v2_cmp["v2_prompt_mismatch"] = _v2_act.prompt_mismatch
                             except Exception as _v2_exc:  # pragma: no cover
+                                # A v2 turn whose hook raised has ALREADY fallen
+                                # back to v1's directive, because _pp_directive
+                                # is only reassigned on the last line of the
+                                # try. It degrades to v1 rather than failing --
+                                # but it must not then be counted as a v2 turn.
                                 logger.warning("[v2.shadow] hook failed: %s", _v2_exc)
+                                # Only a turn that never got v2's directive
+                                # degraded. One that did is a v2 turn whose
+                                # RECORDING failed -- a different fact, and
+                                # filing it in v1's population would be worse
+                                # than the crash it is reporting.
+                                if not _v2_applied:
+                                    ctx.v2_degraded_to_v1 = True
 
                         if _pp_directive == "extend":
                             _pp_extension_rounds_used += 1

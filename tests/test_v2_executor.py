@@ -178,3 +178,71 @@ def test_the_two_branches_react_loop_names_are_both_still_there():
                 for c in n.comparators
                 if isinstance(c, ast.Constant) and isinstance(c.value, str)}
     assert {ex.EXTEND, ex.FINALIZE} <= compared, compared
+
+
+# ── the wiring: what the pure module cannot assert about itself ─────────────
+
+def _react_src():
+    return pathlib.Path("app/pipeline/react_loop.py").read_text()
+
+
+def test_the_executor_branch_is_gated_on_the_ROUTED_arm_not_on_sampling():
+    """A turn that flipped arms mid-flight would be in both populations and in
+    neither. The gate must read the arm assigned at POST — never a coin flip,
+    a round index, or a rate."""
+    tree = ast.parse(_react_src())
+    gates = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "getattr"
+             and any(isinstance(a, ast.Constant) and a.value == "orchestrator_version"
+                     for a in n.args)]
+    assert gates, "the executor is not gated on the routed arm"
+
+
+def test_v1s_directive_is_never_erased_on_a_v2_turn():
+    """The row must still record what v1 WOULD have done. An arm that erases
+    its counterfactual cannot be compared with anything — and the whole point
+    of routing one turn to one arm is that the other arm's answer is a
+    prediction, not a second execution."""
+    src = _react_src()
+    i = src.index("STEP 2: v2 DECIDES")
+    block = src[i:i + 5000]
+    assert "_pp_directive = _v2_act.directive" in block
+    # v1_directive is written by compare() BEFORE this block and must not be
+    # reassigned inside it
+    assert 'v1_directive"] =' not in block
+
+
+def test_applied_is_set_at_the_substitution_not_at_the_end_of_the_block():
+    """A raise in the recording leaves v2's directive already running. Marking
+    that turn 'degraded to v1' would file a v2 turn in v1's population, which
+    is worse than the crash. Ordering, not existence — a hardened branch below
+    an earlier return is dead code."""
+    src = _react_src()
+    i = src.index("STEP 2: v2 DECIDES")
+    block = src[i:i + 5000]
+    assert block.index("_v2_applied = True") < block.index('"v2_applied"')
+
+
+def test_the_arm_reaches_every_round_row():
+    """Without it every row lands as 'v1', the two populations become one, and
+    the comparison is v1 against itself — which agrees 100% of the time and
+    reads like a success."""
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    assert '_row["orchestrator_version"] = _arm' in orch
+
+
+def test_the_split_is_in_the_deploy_allowlist():
+    """SET_ENV_VARS is an allowlist, not a passthrough. A var absent from it is
+    simply not in the container, silently — the defect that made the shadow
+    flag a no-op on its first deploy."""
+    assert "MOBIUS_V2_PCT=" in pathlib.Path("scripts/deploy.sh").read_text()
+
+
+def test_the_default_split_is_zero():
+    """Merging the executor must not move a single turn. Turning it on is one
+    number; turning it off is the same number."""
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    assert 'os.environ.get("MOBIUS_V2_PCT", "0")' in orch
+    from app.pipeline.v2.routing import assign
+    assert all(assign(f"cid-{i}", 0) == "v1" for i in range(200))

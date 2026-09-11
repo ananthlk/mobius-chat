@@ -468,6 +468,26 @@ def run_pipeline(
     # the request was enqueued before the promise existed; the turn runs
     # normally and still attests with a null promise. Never synthesised here.
     ctx.promise = promise
+    # ── A/B arm, assigned ONCE per turn (governor seat, step 2) ─────────────
+    # Deterministic on correlation_id, so a retry lands on the same arm and a
+    # disputed result can be re-derived from the stored row rather than re-run.
+    # The env read happens HERE, at the edge -- routing.assign is pure, which
+    # is what lets an arm be replayed.
+    #
+    # MOBIUS_V2_PCT defaults to 0: every turn on v1. The R0 shadow keeps
+    # running at 0 (it is gated on MOBIUS_V2_SHADOW, not on this), so turning
+    # the executor on is one number and turning it off is the same number.
+    #
+    # ONE arm per turn. Never both: two orchestrators sharing write state is
+    # the two-writer defect at maximum scale, and nobody is being served twice.
+    try:
+        from app.pipeline.v2.routing import assign as _v2_assign
+        _v2_pct = int(os.environ.get("MOBIUS_V2_PCT", "0").strip() or 0)
+        ctx.orchestrator_version = _v2_assign(correlation_id, _v2_pct)
+    except Exception:
+        # A routing failure must not decide the turn. v1 is the safe arm
+        # because it is the one whose behaviour is already known.
+        ctx.orchestrator_version = "v1"
     # P2b turn telemetry: per-module spans, counts-by-target, wall/llm split.
     # Attached to ctx rather than a thread-local so a span crossing a thread
     # boundary is a visible choice (react_loop spawns daemon threads).
@@ -1093,8 +1113,15 @@ def run_pipeline(
                             _nxt = _el.get(_n + 1)
                             if _nxt is not None and _nxt > _el[_n]:
                                 _dur[_n] = round(_nxt - _el[_n], 3)
+                        _arm = getattr(ctx, "orchestrator_version", "v1")
                         for _row in _v2_rows:
                             _n = int(_row.get("round") or 0)
+                            # WHICH ARM RAN THIS TURN. Without it every row
+                            # lands as 'v1' and the two populations are one --
+                            # the comparison would be v1 against itself and
+                            # would agree 100% of the time, which reads like a
+                            # success.
+                            _row["orchestrator_version"] = _arm
                             _row["tool_called"] = _tr.get(_n)
                             _row["round_duration_s"] = _dur.get(_n)
                             # v1 offers the WHOLE manifest every round. Recorded
