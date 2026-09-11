@@ -201,6 +201,9 @@ def compare(v1_directive: str | None, state: RoundState,
         "v2_posture": d.posture.value,
         "v2_directive": d.directive.value if d.directive else None,
         "v2_because": d.because,
+        # A deliberate, evidenced draw on the band -- not a miss. Carried so the
+        # record can tell the two apart; they are identical in a latency number.
+        "v2_overran": bool(getattr(d, "overran", False)),
         "v2_gap_targeted": d.gap_targeted,
         # THE verdict, authored HERE and nowhere else. An earlier version
         # returned only the two booleans and let emit() derive the string as a

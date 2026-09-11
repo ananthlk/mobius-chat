@@ -136,11 +136,11 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     correlation_id, round_index, orchestrator_version,
                     posture, directive, gap_targeted, rationale,
                     v1_directive, v1_reason, v1_maps_to, shadow_verdict,
-                    gaps_opened, gaps_closed
+                    gaps_opened, gaps_closed, overran
                 ) VALUES (
                     :cid, :rn, :ver, :posture, :directive, :gap, :rationale,
                     :v1d, :v1r, :v1m, :verdict,
-                    CAST(:opened AS JSONB), CAST(:closed AS JSONB)
+                    CAST(:opened AS JSONB), CAST(:closed AS JSONB), :overran
                 )
                 ON CONFLICT (correlation_id, round_index, orchestrator_version)
                 DO NOTHING
@@ -164,6 +164,7 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     # datetime lesson from the attestation, one type over.
                     "opened": json.dumps(r.get("gaps_opened") or []),
                     "closed": json.dumps(r.get("gaps_closed") or []),
+                    "overran": bool(r.get("v2_overran")),
                 },
             )
             if isinstance(res, dict) and res.get("error"):

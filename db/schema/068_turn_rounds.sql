@@ -75,3 +75,19 @@ CREATE INDEX IF NOT EXISTS turn_rounds_cid_idx
 CREATE INDEX IF NOT EXISTS turn_rounds_verdict_idx
     ON turn_rounds (shadow_verdict, created_at DESC)
     WHERE shadow_verdict IS NOT NULL;
+
+-- ── the overrun, added 2026-09-11 ────────────────────────────────────────────
+--
+-- Ananth: "would you relax a constraint like cost or latency when you are this
+-- close to a final answer?" Yes -- into the BAND, on evidence of convergence,
+-- bounded, and on the record.
+--
+-- This column is the record. A promise breach and a deliberate evidenced
+-- overrun look IDENTICAL in a latency number and are opposite facts about the
+-- governor: one is a miss, the other is a judgement it was authorised to make
+-- and said so. Without the flag, every conformance report conflates them and
+-- the governor gets blamed for exercising a budget it was given.
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS overran BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS turn_rounds_overran_idx
+    ON turn_rounds (created_at DESC) WHERE overran;

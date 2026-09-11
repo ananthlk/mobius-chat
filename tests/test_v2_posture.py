@@ -656,3 +656,19 @@ def test_the_promise_itself_is_never_edited_by_an_overrun():
     before = st.budget.remaining_s
     select(st)
     assert st.budget.remaining_s == before      # frozen: nothing was mutated
+
+
+def test_overran_survives_the_whole_chain_decision_to_row():
+    """END-TO-END on the fields, not just the decision. `overran` existed in
+    Decision and nowhere else -- decided and discarded, the defect this module
+    was built to hunt. This asserts every hop carries it."""
+    import inspect
+    from app.pipeline.v2 import ledger as _ledger
+    st = _state(round_index=4, open_gaps=(_converging_gap(),),
+                gaps_open_history=(2, 1), budget=_broke())
+    d = select(st)
+    assert d.overran is True                                  # 1. decided
+    c = compare("search", st)
+    assert c["v2_overran"] is True                            # 2. carried
+    src = inspect.getsource(_ledger.write_rounds)
+    assert "overran" in src and "v2_overran" in src           # 3. written
