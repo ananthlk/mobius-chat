@@ -245,3 +245,43 @@ def emit(correlation_id: str, comparison: dict | None) -> None:
         )
     except Exception as exc:
         logger.warning("[v2.shadow] emit failed: %s", exc)
+
+
+def divergence_rate(verdicts: list[str]) -> dict:
+    """The rate, WITH its population stated — never a bare percentage.
+
+    Tool Selection's finding, 2026-09-11, applied here before it bit: a
+    verdict enum answers more than one question, and `unmapped` answers a
+    different one from `agree`/`diverge`.
+
+        DECISION   agree · diverge     "the two seats chose differently"
+        MAPPING    unmapped            "v1 said something I do not cover"
+
+    An `unmapped` round is not v2 disagreeing with v1. Folded into a
+    denominator it inflates divergence and blames the posture machine for a
+    hole in the translation table. Today there are ZERO unmapped rows, which
+    is exactly why this is the moment to write it — the guard has to exist
+    before the value does, or the first one through is counted wrong and the
+    number is already in a report.
+
+    Their harder lesson is the reason this is a function and not a comment:
+    a correction can land FURTHER from the truth than the original when the
+    fix addresses the numerator and leaves the denominator carrying rows that
+    were never in scope. `excluded_unmapped` is reported ALONGSIDE and is
+    never folded in.
+    """
+    agree = sum(1 for v in verdicts if v == "agree")
+    diverge = sum(1 for v in verdicts if v == "diverge")
+    unmapped = sum(1 for v in verdicts if v == "unmapped")
+    decided = agree + diverge
+    return {
+        "population": "rounds where BOTH seats made a coverable decision",
+        "decided": decided,
+        "agree": agree,
+        "diverge": diverge,
+        # None, not 0.0. A rate over an empty population is not zero
+        # divergence; it is no measurement.
+        "pct_diverge": round(100.0 * diverge / decided, 1) if decided else None,
+        "excluded_unmapped": unmapped,
+        "unclassified": len(verdicts) - decided - unmapped,
+    }
