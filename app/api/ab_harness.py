@@ -73,10 +73,15 @@ def create_run(body: CreateRun) -> dict:
     held = body.held_constant or ["question", f"mode:{qset.get('mode','copilot')}", "input"]
     varied = body.varied or (["orchestrator"] if len(arms) > 1 else [])
 
+    # The set is read from disk ONCE, here, and frozen onto the run. Every read
+    # after this is from the snapshot: editing eval/<set_id>.json must not
+    # retroactively rewrite what an already-created run asked.
     _x("""INSERT INTO ab_runs (run_id, set_id, arm_a_id, arm_a_label, arm_b_id,
-                               arm_b_label, held_constant, varied, created_by)
-          VALUES (:r,:s,:aid,:alab,:bid,:blab,CAST(:h AS JSONB),CAST(:v AS JSONB),:by)""",
-       {"r": run_id, "s": body.set_id,
+                               arm_b_label, held_constant, varied, created_by,
+                               question_set)
+          VALUES (:r,:s,:aid,:alab,:bid,:blab,CAST(:h AS JSONB),CAST(:v AS JSONB),:by,
+                  CAST(:qs AS JSONB))""",
+       {"r": run_id, "s": body.set_id, "qs": json.dumps(qset),
         "aid": arms[0]["id"], "alab": arms[0].get("label", arms[0]["id"]),
         "bid": arms[1]["id"] if len(arms) > 1 else "",
         "blab": arms[1].get("label", "") if len(arms) > 1 else "",
@@ -91,6 +96,19 @@ def create_run(body: CreateRun) -> dict:
     return {"run_id": run_id, "set_id": body.set_id,
             "arms": arms, "questions": len(qset.get("questions", []))}
 
+
+def _run_set(run: dict) -> dict:
+    """The FROZEN set, from the run row.
+
+    Never _load_set() on a read path. A run created before this column existed
+    has no snapshot and says so -- it does not silently fall back to whatever
+    the file says today, because that is the drift this column exists to stop.
+    """
+    qs = run.get("question_set")
+    if qs is None:
+        raise HTTPException(409, f"run {run['run_id']!r} predates the question-set "
+                                 "snapshot; its questions are not reproducible")
+    return json.loads(qs) if isinstance(qs, str) else qs
 
 # ── read ────────────────────────────────────────────────────────────────────
 
@@ -108,7 +126,7 @@ def get_run(run_id: str) -> dict:
     if not runs:
         raise HTTPException(404, f"run {run_id!r} not found")
     run = runs[0]
-    qset = _load_set(run["set_id"])
+    qset = _run_set(run)
     status = {(r["question_id"], r["arm_id"]): r["status"]
               for r in _q("""select question_id, arm_id, status from ab_run_questions
                               where run_id=:r""", {"r": run_id})}
@@ -172,7 +190,7 @@ def get_comparison(run_id: str, qid: str) -> dict:
     if not runs:
         raise HTTPException(404, f"run {run_id!r} not found")
     run = runs[0]
-    qset = _load_set(run["set_id"])
+    qset = _run_set(run)
     q = next((x for x in qset.get("questions", []) if x["id"] == qid), None)
     if q is None:
         raise HTTPException(404, f"question {qid!r} not in set {run['set_id']!r}")

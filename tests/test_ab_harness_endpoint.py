@@ -85,3 +85,36 @@ def test_kept_is_none_not_false_when_unknown():
 
 def test_uses_the_logical_db_key():
     assert ab._DB == "chat"
+
+
+def test_only_create_reads_the_set_file():
+    """The file is a CREATE-time input, never a read-time one.
+
+    Over the AST, not the text: a run's questions come from its frozen
+    snapshot, so editing eval/<set_id>.json cannot rewrite what a past run
+    asked. Mutation-checked by pointing get_run at _load_set -- this fails.
+    """
+    import ast, pathlib
+    src = pathlib.Path("app/api/ab_harness.py").read_text()
+    tree = ast.parse(src)
+    callers = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+               and n.func.id == "_load_set":
+                callers.add(fn.name)
+    assert callers == {"create_run"}, callers
+
+
+def test_create_persists_the_snapshot():
+    """question_set must be in the INSERT column list -- a snapshot that is
+    decided and not written is the `overran` defect again."""
+    import ast, pathlib
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "create_run")
+    sql = " ".join(n.value for n in ast.walk(fn)
+                   if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    assert "INSERT INTO ab_runs" in sql and "question_set" in sql

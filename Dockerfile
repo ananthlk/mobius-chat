@@ -104,6 +104,11 @@ RUN pip install --no-cache-dir \
 COPY mobius-chat/app        /build/mobius-chat/app
 COPY mobius-chat/config     /build/mobius-chat/config
 COPY mobius-chat/db         /build/mobius-chat/db
+# eval/ carries the A/B question sets. The COPY list is an ALLOWLIST, not a
+# passthrough: without this line ab_harness 404s in the container while every
+# local test passes, because the fixture is on disk in the repo and not in the
+# image. Same class as SET_ENV_VARS in scripts/deploy.sh.
+COPY mobius-chat/eval       /build/mobius-chat/eval
 COPY mobius-chat/frontend   /build/mobius-chat/frontend
 
 # --- Docs the platform page reads at runtime ---

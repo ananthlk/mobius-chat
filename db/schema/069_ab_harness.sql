@@ -110,3 +110,15 @@ ALTER TABLE ab_run_questions
     ADD COLUMN IF NOT EXISTS envelope_captured_at TIMESTAMPTZ;
 ALTER TABLE ab_run_questions
     ADD COLUMN IF NOT EXISTS delivered JSONB;
+
+-- ── question_set SNAPSHOT, appended 2026-09-11 ──────────────────────────────
+-- A run stored only `set_id` and re-read eval/<set_id>.json at RENDER time.
+-- That is the 065 defect exactly: "never edit a version's values in place" was
+-- a comment, not a constraint. Editing the file retroactively rewrites what
+-- every past run asked, silently, with nothing able to detect it. The set is
+-- read ONCE, at create, and frozen here; every read after that is from this
+-- column. It also removes the deployed image from the read path -- eval/ is
+-- not COPYed into the container, which is how this was found: 9 green tests
+-- and a 404 in production.
+-- Idempotent: run_migrations.py re-applies every file on every boot.
+ALTER TABLE ab_runs ADD COLUMN IF NOT EXISTS question_set JSONB;
