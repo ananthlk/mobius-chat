@@ -68,6 +68,53 @@ def test_internal_skill_llm_ok(client, monkeypatch):
     assert body.get("usage", {}).get("model") == "gemini-2.5-flash"
 
 
+def test_internal_skill_llm_502_on_permanent_upstream_failure(client, monkeypatch):
+    # Deep Research, 2026-09-11: rag_strategy_c_validate 500s with no way
+    # to tell an upstream provider refusal (Perplexity quota exhausted,
+    # confirmed live) from an actual LLM Manager bug. A classified
+    # permanent failure must come back as 502 with the reason surfaced,
+    # not FastAPI's bare contentless 500.
+    monkeypatch.setenv("MOBIUS_SKILL_LLM_INTERNAL_KEY", "ok")
+
+    async def fake_generate(*args, **kwargs):
+        raise Exception(
+            '{"error": {"message": "You exceeded your current quota, please check '
+            'your plan and billing details.", "type": "insufficient_quota", "code": 401}}'
+        )
+
+    with patch("app.services.llm_manager.generate", new=AsyncMock(side_effect=fake_generate)):
+        r = client.post(
+            "/internal/skill-llm",
+            json={"system": "s", "user": "u", "stage": "credentialing_validate", "max_tokens": 10},
+            headers={"X-Mobius-Skill-LLM-Key": "ok"},
+        )
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert detail["permanent_reason"] == "insufficient_quota"
+    assert "not an LLM Manager bug" in detail["message"]
+
+
+def test_internal_skill_llm_500_on_unclassified_failure(client, monkeypatch):
+    # An unrecognized failure shape must still surface as 500 with the
+    # real exception type/message -- not silently degrade to the same 502
+    # the classified case gets, and not FastAPI's bare contentless default.
+    monkeypatch.setenv("MOBIUS_SKILL_LLM_INTERNAL_KEY", "ok")
+
+    async def fake_generate(*args, **kwargs):
+        raise ValueError("something genuinely unexpected broke")
+
+    with patch("app.services.llm_manager.generate", new=AsyncMock(side_effect=fake_generate)):
+        r = client.post(
+            "/internal/skill-llm",
+            json={"system": "s", "user": "u", "stage": "credentialing_validate", "max_tokens": 10},
+            headers={"X-Mobius-Skill-LLM-Key": "ok"},
+        )
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "ValueError" in detail["message"]
+    assert "something genuinely unexpected broke" in detail["message"]
+
+
 # ── allowlist ↔ roster registration ──────────────────────────────────
 # An allowlisted stage that is in NO model's eligible_stages passes the gate,
 # gets zero candidates from _get_candidates, and falls through to

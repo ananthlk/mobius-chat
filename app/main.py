@@ -2940,6 +2940,47 @@ async def internal_skill_llm(
                 "stage": stage,
             },
         ) from e
+    except Exception as e:
+        # Deep Research (2026-09-11, cross-session finding, RAG's
+        # rag_strategy_c_validate 500s): every non-timeout failure here fell
+        # through to FastAPI's bare, contentless 500 -- "the log line cannot
+        # distinguish [an upstream provider refusal] from an LLM Manager
+        # bug," their own words, and they were right: this endpoint didn't
+        # distinguish them either. Confirmed live root cause before writing
+        # this: Perplexity (sonar-pro, the sole model locked to
+        # rag_strategy_c_validate) returns a genuine 401 insufficient_quota
+        # on direct API probe -- an account-level refusal, not an internal
+        # fault, same family as tonight's Anthropic credit exhaustion.
+        # classify_permanent_failure (Task #108-adjacent) already
+        # recognizes this class; reusing it here to give the CALLER (RAG,
+        # not just chat's own internal circuit breaker) the same
+        # distinction, since a stage locked to one model has no in-process
+        # fallback to hide behind when that model is the one refusing.
+        permanent_reason = None
+        try:
+            from app.services.model_registry import classify_permanent_failure
+            permanent_reason = classify_permanent_failure(str(e))
+        except Exception:
+            pass
+        if permanent_reason:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": f"Upstream model provider refused the call for stage={stage!r} "
+                    f"(permanent, account-level: {permanent_reason}) -- not an LLM Manager bug. "
+                    "The account/key backing this stage's model needs attention (credits/quota/key), "
+                    "not a chat-side fix.",
+                    "stage": stage,
+                    "permanent_reason": permanent_reason,
+                },
+            ) from e
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": f"LLM Manager failed for stage={stage!r}: {type(e).__name__}: {e}",
+                "stage": stage,
+            },
+        ) from e
     return {"text": text, "usage": usage}
 
 
