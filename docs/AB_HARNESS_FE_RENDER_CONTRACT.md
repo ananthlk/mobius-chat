@@ -64,7 +64,9 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
     }
   },
   "divergences": [                          // §5 payoff: the R0 view where the machines disagree, by round
-    { "round_n": 9, "dimension": "exit", "v1": "complete", "v2": "gaps_increasing", "why": "v2 saw 2 gaps still open" }
+    { "round_n": 9, "dimension": "exit", "v1": "complete", "v2": "gaps_increasing",
+      "verdict": "diverge", "why": "v2 saw 2 gaps still open" }
+    // verdict ∈ {agree, diverge, unmapped}. "unmapped" ≠ "diverge" — see §2 render rule.
   ]
 }
 ```
@@ -78,6 +80,15 @@ Notes that are load-bearing, not stylistic:
   family the program keeps removing — a UI that renders a value where the data holds "unknown".)
 - **`gaps_opened`/`gaps_closed` are id arrays**, so the page shows *which* gaps and can diff them across arms —
   a count alone can't distinguish "closed the same gap it opened" from "closed a different one".
+
+**Sources are named and confirmed (Governor 2f6b912 / 05bfdc5, 2026-09-10) — both §0/§4 hard deps resolved:**
+- `answer_envelope` ← **`GET /chat/response/{correlation_id}`.`assistant_envelope`**, the verbatim object the live
+  turn produced ({version, blocks}). No pre-render, no markdown, no reconstruction — box 1 runs the bubble's code.
+- `decision_trace` ← **`turn_rounds`** (migration 068, dev-applied, idempotent). Column map: `round_n`←`round_index`,
+  `posture`←`posture`, `directive`←`directive`, `rationale`←`rationale`, `gaps_opened/closed`←JSONB of same name.
+  Shadow half for the divergence view: `v1_directive`, `v1_reason`, `v1_maps_to`, `shadow_verdict`. NOT `turn_spans`
+  — that table has a `sampled`/`sample_rate` column that can make a row absent by config; `turn_rounds` has none and
+  that absence is the row-is-truth guarantee. Trace is a persisted row now, never computed from a log line.
 
 ---
 
@@ -120,6 +131,17 @@ so the near-production comparison is the resting state and the machine detail is
   remembered (localStorage, per the standard try/catch-guarded pattern) so a reviewer working through 20 questions
   isn't re-collapsing on every one.
 
+**Divergences render `unmapped` ≠ `diverge` (Governor's condition, load-bearing):** the strip keys off
+`divergence.verdict`, and the three verdicts get three visibly different treatments — never one lumped "they
+disagreed" row:
+- `agree` → not shown in the strip (it's the null result; no divergence to surface).
+- `diverge` → v1 and v2 reached different postures on the same, mapped dimension. This is the real signal —
+  neutral "⚑ round N · v1 X vs v2 Y" row, the thing a human judges.
+- `unmapped` → v1 said something the shadow mapping doesn't cover. **This is a finding about the MAPPING, not
+  evidence against v2** — render it in a distinct, clearly-not-a-conflict style (muted, tagged "mapping gap",
+  e.g. "⊘ round N · v1 X — not covered by mapping") and keep it out of any "where v2 differs" framing. Collapsing
+  it into `diverge` would make Governor's mapping coverage look like v2 errors; the contract forbids that.
+
 **The rendering (box 1/2) is the judgement surface; the terms are diagnostic and clearly subordinate** — which
 is exactly why they collapse and the answers don't. Never an aggregate score. 20 comparisons = **0** data points
 for v2's exit criteria and **20** for human judgement (Governor §2/§3); the page must not show a number that
@@ -138,16 +160,23 @@ branch, not a v2-specific code path.
 
 ---
 
-## 4 · Open — needs Governor + Ananth
-1. **`answer_envelope` = the real `assistant_envelope`, not HTML/markdown** (§0). Confirm you can return it —
-   this is the one hard dependency; fidelity dies without it.
-2. **Symmetric arm schema now** (§1): v2's `answer_envelope:null` today, real at R1. Confirm you'll build it
-   symmetric so R1 is data, not a migration.
-3. **Human-judgement capture — Ananth's call.** He said *"I can point at all the things working vs not."* Does
-   the page CAPTURE his per-question verdict/notes (persisted where)? It's the only quality signal in the fleet,
-   so it's worth persisting — but it is HUMAN judgement and must **never** be aggregated into a metric (that's
-   the "20 comparisons look like 20 data points" trap). If yes, I need a tiny write endpoint (`POST /ab/runs/
-   {run_id}/q/{qid}/verdict {better: "v1"|"v2"|"tie", notes}`) and it renders as an annotation, never a score.
-4. **Decision-trace persistence** (Governor owes, §"what I owe you"): the v2 trace is a log line today. The
-   structured shape in §1 (`{round_n, posture, directive, gaps_opened[], gaps_closed[], rationale}`) is what I
-   render round-by-round. Persist it queryable (row=truth, never computed from logs — your own contract).
+## 4 · Open
+
+**RESOLVED (Governor 2f6b912 / 05bfdc5, 2026-09-10):**
+1. ✓ **Real `assistant_envelope`** — `GET /chat/response/{cid}`.`assistant_envelope` returns it verbatim (§1). Box 1
+   runs the bubble's code; §0 fidelity holds with zero reconstruction.
+2. ✓ **Symmetric arms** — taken as specified: `answer_envelope:null` for v2 today, real at R1, box 2 switches by
+   data. R1 is a data change, not a migration.
+4. ✓ **Decision-trace persistence** — `turn_rounds` migration 068, dev-applied, row-is-truth (no sampling column,
+   unlike `turn_spans`). Shadow columns present for the divergence view; `unmapped`≠`diverge` (§2).
+
+**STILL OPEN:**
+3. **Human-verdict capture — Ananth's call.** He said *"I can point at all the things working vs not."* If he wants
+   it, I need a tiny write endpoint (`POST /ab/runs/{run_id}/q/{qid}/verdict {better:"v1"|"v2"|"tie", notes}`),
+   rendered as a per-question annotation. **Governor's condition, which I adopt:** nothing in the system ever SUMS
+   it, and the page says so where the verdict is entered. 20 comparisons = 0 data points for v2's exit criteria,
+   20 for judgement — the instant a "13/20" exists, that distinction stops being observed and it gets quoted as an
+   exit criterion. So: capture verdict + notes, never aggregate, state that on the page.
+5. **Harness endpoint itself** — Governor has both composing sources (`/chat/response`, `turn_rounds`) + the
+   question set (`eval/ab_question_set_v1.json`); it exists as this shape, not yet as code. He builds to this doc.
+   I build the page once it returns.
