@@ -85,3 +85,28 @@ CREATE TABLE IF NOT EXISTS ab_verdicts (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (run_id, question_id)
 );
+
+-- ── SNAPSHOT, added 2026-09-11 ───────────────────────────────────────────────
+--
+-- Ananth: "the setup will exist potentially forever."
+--
+-- It would not have. GET /chat/response/{cid} -- the source the FE render
+-- contract names for box 1 -- reads a Redis key written with
+-- `ex=redis_response_ttl_seconds`. Verified against a 30-day-old turn: it does
+-- NOT 404. It returns {"status": "processing"} with no assistant_envelope.
+--
+-- So an expired run would render as "still working" rather than as missing --
+-- a plausible value where the honest answer is absence. Same family as
+-- crawlable=None conflating "unreachable" with "no opinion", and as a null
+-- flag rendering "false".
+--
+-- The harness therefore SNAPSHOTS the envelope at capture time and serves the
+-- snapshot. The FE contract is unchanged -- box 1 still receives the verbatim
+-- {version, blocks} object the live turn produced -- only the source behind it
+-- becomes durable. A comparison you cannot re-open is not infrastructure.
+ALTER TABLE ab_run_questions
+    ADD COLUMN IF NOT EXISTS answer_envelope JSONB;
+ALTER TABLE ab_run_questions
+    ADD COLUMN IF NOT EXISTS envelope_captured_at TIMESTAMPTZ;
+ALTER TABLE ab_run_questions
+    ADD COLUMN IF NOT EXISTS delivered JSONB;
