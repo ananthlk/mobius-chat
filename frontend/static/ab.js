@@ -1189,6 +1189,93 @@ function renderComparison(cmp, root) {
       root.appendChild(div);
   }
   root.appendChild(renderTerms(cmp, arms, expandAll));
+  if (arms.length > 1)
+    root.appendChild(renderPreference(cmp, arms));
+}
+function renderPreference(cmp, arms) {
+  const wrap = el("section", "ab-prefer");
+  wrap.appendChild(el("h3", "ab-prefer-title", "Your read"));
+  wrap.appendChild(el(
+    "div",
+    "ab-prefer-note",
+    "Recorded beside the comparison \u2014 it does not change the conversation. A follow-up still continues from " + (arms[0]?.label || "arm A") + " even if you prefer another arm here. Never summed into a score."
+  ));
+  const form = el("div", "ab-prefer-form");
+  const choices = el("div", "ab-prefer-choices");
+  let picked = "";
+  const opts = [...arms.map((a) => ({ id: a.id, label: a.label })), { id: "tie", label: "Tie / can't tell" }];
+  for (const o of opts) {
+    const b = el("button", "ab-prefer-choice", o.label);
+    b.addEventListener("click", () => {
+      picked = o.id;
+      [...choices.children].forEach((c) => c.classList.remove("ab-prefer-choice--on"));
+      b.classList.add("ab-prefer-choice--on");
+    });
+    choices.appendChild(b);
+  }
+  form.appendChild(choices);
+  const notes = document.createElement("textarea");
+  notes.className = "ab-prefer-notes";
+  notes.placeholder = "Why? (the load-bearing part \u2014 what worked, what didn't, what you'd point at)";
+  notes.rows = 3;
+  form.appendChild(notes);
+  const submit = el("button", "ab-prefer-submit", "Record preference");
+  const status = el("span", "ab-prefer-status", "");
+  submit.addEventListener("click", async () => {
+    if (!picked) {
+      status.textContent = "Pick an arm (or tie) first.";
+      return;
+    }
+    submit.disabled = true;
+    status.textContent = "Recording\u2026";
+    try {
+      const r = await fetch(
+        `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/prefer`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ better: picked, notes: notes.value.trim() || void 0 }) }
+      );
+      if (!r.ok)
+        throw new Error(`HTTP ${r.status}`);
+      status.textContent = "Recorded.";
+      notes.value = "";
+      void loadVerdicts(cmp, list);
+    } catch (e) {
+      status.textContent = `Could not record: ${e.message}`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  form.appendChild(submit);
+  form.appendChild(status);
+  wrap.appendChild(form);
+  const list = el("div", "ab-prefer-list");
+  wrap.appendChild(list);
+  void loadVerdicts(cmp, list);
+  return wrap;
+}
+async function loadVerdicts(cmp, list) {
+  try {
+    const r = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/verdicts`);
+    if (!r.ok)
+      return;
+    const d = await r.json();
+    const recorded = d.verdicts || [];
+    list.textContent = "";
+    if (d.read_this_as)
+      list.appendChild(el("div", "ab-prefer-framing", `Read this as: ${d.read_this_as}`));
+    if (!recorded.length)
+      return;
+    list.appendChild(el("div", "ab-prefer-list-head", "Recorded reads (annotations, never a rate):"));
+    for (const v of recorded) {
+      const row = el("div", "ab-prefer-vrow");
+      row.appendChild(el("span", "ab-prefer-vlabel", dash(v.better)));
+      if (v.notes)
+        row.appendChild(el("span", "ab-prefer-vnotes", v.notes));
+      else
+        row.appendChild(el("span", "ab-prefer-vnotes ab-prefer-vnotes--empty", "(no reason given \u2014 counted beside, not folded in)"));
+      list.appendChild(row);
+    }
+  } catch {
+  }
 }
 function renderLiveBox(arm, live, expandAll) {
   if (live.status === "done" && live.final)
@@ -1272,17 +1359,38 @@ async function startFork(cmp, root) {
   }
   paint();
   async function captureAndFinalize(armId, cid) {
+    const base = `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`;
     try {
-      await fetch(
-        `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/arm/${encodeURIComponent(armId)}`,
+      const cap = await fetch(
+        `${base}/arm/${encodeURIComponent(armId)}`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correlation_id: cid }) }
       );
-      const cr = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`);
-      const fresh = await cr.json();
-      state[armId] = { status: "done", final: fresh.arms[armId] };
+      if (!cap.ok) {
+        state[armId] = { status: "error", error: `capture failed (HTTP ${cap.status}): ${(await cap.text()).slice(0, 120)}` };
+        paint();
+        return;
+      }
     } catch (e) {
-      state[armId] = { status: "error", error: `capture failed: ${e.message}` };
+      state[armId] = { status: "error", error: `capture request failed: ${e.message}` };
+      paint();
+      return;
     }
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const cr = await fetch(base);
+        if (cr.ok) {
+          const fresh = await cr.json();
+          if (fresh.arms[armId]?.answer_envelope || fresh.arms[armId]?.status === "captured") {
+            state[armId] = { status: "done", final: fresh.arms[armId] };
+            paint();
+            return;
+          }
+        }
+      } catch {
+      }
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+    state[armId] = { status: "error", error: "captured, but the render fetch kept failing \u2014 reload the page to view it" };
     paint();
   }
   for (const a of arms) {

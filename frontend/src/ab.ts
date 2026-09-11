@@ -313,6 +313,94 @@ export function renderComparison(cmp: Comparison, root: HTMLElement): void {
   }
 
   root.appendChild(renderTerms(cmp, arms, expandAll));
+
+  // Preference — multi-arm only. Ananth's ruling: NO promotion. A preference is recorded
+  // BESIDE the answers; it does NOT rewrite conversation history (a follow-up still
+  // continues from v1 even if the reader preferred v2). The page must not imply the picked
+  // arm "became the conversation". notes is the load-bearing field; `better` is a label.
+  if (arms.length > 1) root.appendChild(renderPreference(cmp, arms));
+}
+
+interface Verdict { better?: string | null; notes?: string | null; created_at?: string | null; }
+
+function renderPreference(cmp: Comparison, arms: ArmMeta[]): HTMLElement {
+  const wrap = el("section", "ab-prefer");
+  wrap.appendChild(el("h3", "ab-prefer-title", "Your read"));
+  wrap.appendChild(el("div", "ab-prefer-note",
+    "Recorded beside the comparison — it does not change the conversation. A follow-up still "
+    + "continues from " + (arms[0]?.label || "arm A") + " even if you prefer another arm here. "
+    + "Never summed into a score."));
+
+  const form = el("div", "ab-prefer-form");
+  const choices = el("div", "ab-prefer-choices");
+  let picked = "";
+  const opts: Array<{ id: string; label: string }> = [...arms.map((a) => ({ id: a.id, label: a.label })), { id: "tie", label: "Tie / can't tell" }];
+  for (const o of opts) {
+    const b = el("button", "ab-prefer-choice", o.label) as HTMLButtonElement;
+    b.addEventListener("click", () => {
+      picked = o.id;
+      [...choices.children].forEach((c) => c.classList.remove("ab-prefer-choice--on"));
+      b.classList.add("ab-prefer-choice--on");
+    });
+    choices.appendChild(b);
+  }
+  form.appendChild(choices);
+
+  const notes = document.createElement("textarea");
+  notes.className = "ab-prefer-notes";
+  notes.placeholder = "Why? (the load-bearing part — what worked, what didn't, what you'd point at)";
+  notes.rows = 3;
+  form.appendChild(notes);
+
+  const submit = el("button", "ab-prefer-submit", "Record preference") as HTMLButtonElement;
+  const status = el("span", "ab-prefer-status", "");
+  submit.addEventListener("click", async () => {
+    if (!picked) { status.textContent = "Pick an arm (or tie) first."; return; }
+    submit.disabled = true;
+    status.textContent = "Recording…";
+    try {
+      const r = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/prefer`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ better: picked, notes: notes.value.trim() || undefined }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      status.textContent = "Recorded.";
+      notes.value = "";
+      void loadVerdicts(cmp, list);
+    } catch (e) {
+      status.textContent = `Could not record: ${(e as Error).message}`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  form.appendChild(submit);
+  form.appendChild(status);
+  wrap.appendChild(form);
+
+  const list = el("div", "ab-prefer-list");
+  wrap.appendChild(list);
+  void loadVerdicts(cmp, list);
+  return wrap;
+}
+
+async function loadVerdicts(cmp: Comparison, list: HTMLElement): Promise<void> {
+  try {
+    const r = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/verdicts`);
+    if (!r.ok) return;
+    const d = await r.json() as { verdicts?: Verdict[]; read_this_as?: string };
+    const recorded = d.verdicts || [];        // endpoint scopes to the run; the read carries no rate by design
+    list.textContent = "";
+    // The endpoint's own honest framing — render it, don't drop it: "preference, not
+    // quality … evidence for human reading rather than for any exit criterion".
+    if (d.read_this_as) list.appendChild(el("div", "ab-prefer-framing", `Read this as: ${d.read_this_as}`));
+    if (!recorded.length) return;
+    list.appendChild(el("div", "ab-prefer-list-head", "Recorded reads (annotations, never a rate):"));
+    for (const v of recorded) {
+      const row = el("div", "ab-prefer-vrow");
+      row.appendChild(el("span", "ab-prefer-vlabel", dash(v.better)));
+      if (v.notes) row.appendChild(el("span", "ab-prefer-vnotes", v.notes));
+      else row.appendChild(el("span", "ab-prefer-vnotes ab-prefer-vnotes--empty", "(no reason given — counted beside, not folded in)"));
+      list.appendChild(row);
+    }
+  } catch { /* leave list empty */ }
 }
 
 // ── live simultaneous fork ────────────────────────────────────────────────────
@@ -423,15 +511,40 @@ async function startFork(cmp: Comparison, root: HTMLElement): Promise<void> {
   paint();
 
   async function captureAndFinalize(armId: string, cid: string): Promise<void> {
+    const base = `${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`;
+    // 1) Capture — the DURABLE step. If this fails, the snapshot didn't land; surface the
+    //    real status, not a JSON-parse error on an HTML 500 body.
     try {
-      await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}/arm/${encodeURIComponent(armId)}`,
+      const cap = await fetch(`${base}/arm/${encodeURIComponent(armId)}`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correlation_id: cid }) });
-      const cr = await fetch(`${API}/ab/runs/${encodeURIComponent(cmp.run_id)}/q/${encodeURIComponent(cmp.question.id)}`);
-      const fresh: Comparison = await cr.json();
-      state[armId] = { status: "done", final: fresh.arms[armId] };
+      if (!cap.ok) {
+        state[armId] = { status: "error", error: `capture failed (HTTP ${cap.status}): ${(await cap.text()).slice(0, 120)}` };
+        paint();
+        return;
+      }
     } catch (e) {
-      state[armId] = { status: "error", error: `capture failed: ${(e as Error).message}` };
+      state[armId] = { status: "error", error: `capture request failed: ${(e as Error).message}` };
+      paint();
+      return;
     }
+    // 2) Re-fetch to render — RETRYABLE. The capture already succeeded (step 1 was ok), so a
+    //    transient 500 here must NOT strand the arm: retry a few times, and if the render fetch
+    //    still won't come, say "captured — reload to view" rather than "error". The data is durable.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const cr = await fetch(base);
+        if (cr.ok) {
+          const fresh: Comparison = await cr.json();
+          if (fresh.arms[armId]?.answer_envelope || fresh.arms[armId]?.status === "captured") {
+            state[armId] = { status: "done", final: fresh.arms[armId] };
+            paint();
+            return;
+          }
+        }
+      } catch { /* transient — retry */ }
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+    state[armId] = { status: "error", error: "captured, but the render fetch kept failing — reload the page to view it" };
     paint();
   }
 
