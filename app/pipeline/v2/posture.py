@@ -31,6 +31,7 @@ class Posture(str, Enum):
     FRAME = "frame"
     EXPLORE = "explore"
     NARROW = "narrow"
+    ALTERNATIVES = "alternatives"
     VALIDATE = "validate"
     COMMUNICATE = "communicate"
 
@@ -111,6 +112,7 @@ class RoundState:
     next_round_cost_s: float
     acting_cost_s: float                   # cost of ACTING on what a round finds
     validate_cost_s: float
+    alternatives_cost_s: float = 0.0
     errored: bool = False
     quality_uncertain: bool = False
     min_importance: str = "normal"
@@ -204,6 +206,34 @@ def worth_spending(state: RoundState) -> Gap | None:
     return None
 
 
+def _stuck_count(state: RoundState) -> int:
+    return sum(1 for g in state.open_gaps if stuck(g, state.round_index))
+
+
+def alternatives_worth_it(state: RoundState) -> bool:
+    """Offer a route when a gap is unreachable -- not when it is merely unbought.
+
+    Requires (a) at least one gap that is genuinely stuck or has been attempted
+    and returned nothing, and (b) budget for the round. A gap nobody has tried
+    yet is not unreachable; it is unfunded, and the honest thing there is to say
+    we ran out of time, not to suggest the user go elsewhere.
+
+    That distinction is the same one that separates BUDGET from CAPABILITY at
+    exit, and getting it wrong in the flattering direction -- offering
+    alternatives for something we simply did not attempt -- would tell the user
+    to go away when we could have answered.
+    """
+    if not state.open_gaps:
+        return False
+    if state.budget.remaining_s < state.alternatives_cost_s:
+        return False
+    return any(
+        stuck(g, state.round_index)
+        or (g.attempted_by and not any(a.returned_payload for a in g.attempted_by))
+        for g in state.open_gaps
+    )
+
+
 def validate_worth_it(state: RoundState) -> bool:
     """Value of information: spend on knowing only when knowing can change doing.
 
@@ -253,6 +283,32 @@ def select(state: RoundState) -> Decision:
         )
 
     if state.open_gaps:
+        # NARROW scopes; ALTERNATIVES makes the shortfall actionable. Ananth,
+        # 2026-09-11: "when stuck we should have a posture of
+        # alternatives/reframe before communicate -- this leaves the user with
+        # something they can get without saying I don't know; some help as to
+        # where they can go."
+        #
+        # The distinction matters because they answer different questions:
+        #   NARROW        -- what are we claiming, and what is left open
+        #   ALTERNATIVES  -- given that it is open and we cannot reach it,
+        #                    what CAN the user do
+        #
+        # Why it sits AFTER narrow and BEFORE communicate: it needs to know
+        # what is being left open (narrow decides that), and its output is part
+        # of what gets said (communicate delivers it).
+        #
+        # And it is most valuable exactly where the system is least able to
+        # help: a CAPABILITY exit says "I have no source for x", which is
+        # honest and useless on its own. attempted_by is what makes the
+        # alternative specific rather than generic -- three failed rag attempts
+        # says "our corpus does not carry this", which points somewhere.
+        if alternatives_worth_it(state):
+            return Decision(
+                Posture.ALTERNATIVES,
+                f"{_stuck_count(state)} gap(s) unreachable: offer a route rather "
+                f"than a shortfall",
+            )
         return Decision(
             Posture.NARROW,
             "gaps open but none worth buying: scope and name what is left",

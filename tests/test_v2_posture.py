@@ -13,7 +13,8 @@ import pytest
 
 from app.pipeline.v2.posture import (
     Attempt, Budget, Decision, Directive, ExitMode, Gap, Posture, RoundState,
-    Trend, complied, distinct_levers, exit_mode, jaccard, offers_continuation,
+    Trend, alternatives_worth_it, complied, distinct_levers, exit_mode, jaccard,
+    offers_continuation,
     select, spendable, stuck, trend, validate_worth_it, worth_spending,
 )
 
@@ -26,7 +27,7 @@ def _state(**kw):
     base = dict(
         round_index=3, open_gaps=(), gaps_open_history=(1, 1),
         budget=_budget(), next_round_cost_s=10.0, acting_cost_s=10.0,
-        validate_cost_s=9.6,
+        validate_cost_s=9.6, alternatives_cost_s=8.0,
     )
     base.update(kw)
     return RoundState(**base)
@@ -127,7 +128,14 @@ def test_stuck_gap_is_not_bought_again():
         Attempt(2, tool="healthcare_query", returned_payload=False),
     ])
     d = select(_state(round_index=4, open_gaps=(g,), gaps_open_history=(1, 1)))
-    assert d.posture is Posture.NARROW
+    # The invariant is "does not buy another CLOSE round on a gap two levers
+    # have already failed". The DESTINATION changed on 2026-09-11 when Ananth
+    # added ALTERNATIVES -- a stuck gap now routes to offering the user a route
+    # rather than straight to naming the shortfall. Asserted as "not CLOSE"
+    # plus the new destination, so the invariant survives the next change to
+    # where stuck gaps go.
+    assert d.directive is not Directive.CLOSE
+    assert d.posture is Posture.ALTERNATIVES
 
 
 # ── reserve the cost of ACTING ──────────────────────────────────────────────
@@ -448,3 +456,56 @@ def test_compare_authors_the_verdict_string_not_just_booleans():
     c = compare("search", _state(open_gaps=(_gap(),)))
     assert (c["verdict"] == "agree") is c["agrees"]
     assert (c["verdict"] == "unmapped") is c["unmapped"]
+
+
+# ── ALTERNATIVES — a route, not a shortfall ─────────────────────────────────
+
+def _tried_nothing(gid="G1", opened=0):
+    return _gap(gid, opened=opened, attempts=[
+        Attempt(1, tool="rag", returned_payload=False),
+        Attempt(2, tool="healthcare_query", returned_payload=False),
+    ])
+
+
+def test_stuck_gap_routes_to_ALTERNATIVES_not_straight_to_narrow():
+    """Ananth: 'this leaves the user with something they can get without saying
+    I don't know.' NARROW names the shortfall; ALTERNATIVES makes it actionable."""
+    d = select(_state(round_index=4, open_gaps=(_tried_nothing(),),
+                      gaps_open_history=(1, 1)))
+    assert d.posture is Posture.ALTERNATIVES
+
+
+def test_an_UNTRIED_gap_does_not_get_alternatives():
+    """MUTATION-CHECKED distinction, and the flattering-direction one: a gap
+    nobody attempted is UNFUNDED, not unreachable. Offering alternatives there
+    tells the user to go elsewhere for something we could have answered."""
+    st = _state(round_index=4, open_gaps=(_gap(attempts=[]),),
+                gaps_open_history=(1, 1), budget=_budget(s=5.0),
+                next_round_cost_s=10.0, acting_cost_s=10.0)
+    assert alternatives_worth_it(st) is False
+    assert select(st).posture is Posture.NARROW
+
+
+def test_alternatives_needs_budget_for_the_round():
+    st = _state(round_index=4, open_gaps=(_tried_nothing(),),
+                gaps_open_history=(1, 1), budget=_budget(s=2.0),
+                next_round_cost_s=10.0, acting_cost_s=10.0,
+                alternatives_cost_s=8.0)
+    assert alternatives_worth_it(st) is False
+    assert select(st).posture is Posture.NARROW
+
+
+def test_a_gap_that_RETURNED_something_is_not_unreachable():
+    """Evidence came back; it is a synthesis or budget problem, not a source
+    problem. Suggesting the user look elsewhere would be wrong."""
+    got_something = _gap(attempts=[
+        Attempt(1, tool="rag", returned_payload=True),
+        Attempt(2, tool="rag", returned_payload=False)])
+    st = _state(round_index=5, open_gaps=(got_something,), gaps_open_history=(1, 1),
+                budget=_budget(s=3.0), next_round_cost_s=10.0, acting_cost_s=10.0)
+    assert alternatives_worth_it(st) is False
+
+
+def test_alternatives_never_fires_with_no_open_gaps():
+    assert alternatives_worth_it(_state(open_gaps=())) is False
+    assert select(_state(open_gaps=())).posture is Posture.COMMUNICATE
