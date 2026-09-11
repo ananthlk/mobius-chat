@@ -114,6 +114,19 @@ Notes that are load-bearing, not stylistic:
   A second array carrying facts already in `decision_trace[]` drifts the first time someone edits one and not the
   other — the exact defect family this program removed repeatedly this week. The divergence strip is a **filtered
   view** of `v2.decision_trace` (rows where `verdict != "agree"`), computed at render time, never stored twice.
+- **`decision_trace` is joined live from `turn_rounds` on `correlation_id`, not snapshotted** — one copy, so the
+  envelope snapshot and the trace can never disagree about which turn they describe. Durability invariants Governor
+  *verified* (not reasoned): `correlation_id` minted once at POST and never reassigned; `turn_rounds` keyed on it,
+  no TTL; and no retention/prune/purge/DELETE job touches any table the harness reads. ("It's a table, not TTL'd"
+  holds only until someone adds a retention job — hence checked, not assumed.)
+- **Two invariants that shape what the FE must NOT build:**
+  1. *No trace "refresh" affordance.* `turn_rounds` is `ON CONFLICT DO NOTHING` — a round row is immutable once
+     written (correct for a record of account). So a wrong trace row is fixed by a **new run**, never an update; the
+     page must not offer a refresh/retry that implies a stale row will change in place. It won't.
+  2. *The harness owns its `correlation_id`.* The API accepts a client-supplied `correlation_id` unvalidated, and a
+     reused one collides two turns onto one key (first-write-wins silently drops the second's rows → envelope paired
+     with a foreign trace). Governor's endpoint mints its own id per arm and never accepts one — asserted server-side,
+     not assumed. The FE relies on that guarantee; it does not itself pass or trust a caller-supplied id.
 
 ---
 
