@@ -187,6 +187,26 @@ async def create_block_version(block_key: str, body: NewBlockVersionRequest) -> 
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Governor seat, 2026-09-10: the backfill that seeded token_counts
+            # surfaced react.critical_rules growing 1402->3093 tokens (2.2x)
+            # across 6 versions, monotonically, with nothing ever removed —
+            # found only because someone happened to look at the history
+            # after the fact. "create_block_version already computes the
+            # count before the transaction, so it can also compare against
+            # the previous active version and surface the delta... that
+            # turns accretion into a decision someone makes rather than one
+            # that happens." Fetch the CURRENT active row's counts (the one
+            # this new version will supersede) inside the same transaction
+            # so the comparison is against the exact version being replaced,
+            # not a stale read from before this call started.
+            prev_row = await conn.fetchrow(
+                """
+                SELECT version, token_counts FROM prompt_blocks
+                WHERE block_key = $1 AND active = true
+                ORDER BY version DESC LIMIT 1
+                """,
+                block_key,
+            )
             next_ver = await conn.fetchval(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM prompt_blocks WHERE block_key = $1",
                 block_key,
@@ -207,9 +227,41 @@ async def create_block_version(block_key: str, body: NewBlockVersionRequest) -> 
                 validated_at, validated_by, body.activate, body.created_by,
                 json.dumps(token_counts),
             )
-    logger.info("[admin-prompts] new block version block_key=%s version=%s activate=%s token_counts=%s by=%s",
-                block_key, next_ver, body.activate, token_counts, body.created_by)
-    return dict(row)
+
+    # Delta vs the version being superseded, per tokenizer. Only meaningful
+    # when both sides have a count for the same tokenizer (an absent key on
+    # either side means "unknown," not "zero" -- never fabricate a delta
+    # from a missing count).
+    token_delta: dict[str, dict[str, float]] = {}
+    prev_counts: dict[str, int] = {}
+    if prev_row is not None:
+        raw_prev = prev_row["token_counts"]
+        prev_counts = json.loads(raw_prev) if isinstance(raw_prev, str) else (raw_prev or {})
+        for tokenizer, new_count in token_counts.items():
+            old_count = prev_counts.get(tokenizer)
+            if old_count is None:
+                continue
+            delta = new_count - old_count
+            pct = round(100.0 * delta / old_count, 1) if old_count else None
+            token_delta[tokenizer] = {"from": old_count, "to": new_count, "delta": delta, "pct": pct}
+
+    if token_delta:
+        # WARNING, not INFO, when growth is the story -- this is the exact
+        # "someone should see this number" signal the delta exists for.
+        grew = any(d["delta"] > 0 for d in token_delta.values())
+        log_fn = logger.warning if grew else logger.info
+        log_fn(
+            "[admin-prompts] new block version block_key=%s version=%s (was %s) "
+            "activate=%s token_counts=%s delta=%s by=%s",
+            block_key, next_ver, prev_row["version"], body.activate, token_counts, token_delta, body.created_by,
+        )
+    else:
+        logger.info("[admin-prompts] new block version block_key=%s version=%s activate=%s token_counts=%s by=%s",
+                    block_key, next_ver, body.activate, token_counts, body.created_by)
+
+    out = dict(row)
+    out["token_delta"] = token_delta
+    return out
 
 
 class SetVersionActiveRequest(BaseModel):
