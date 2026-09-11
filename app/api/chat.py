@@ -512,7 +512,21 @@ def post_chat(
             _pct = int(os.environ.get("MOBIUS_V2_PCT", "0").strip() or 0)
             _thread_arm = payload.get("ab_arm") or _assign(correlation_id, _pct)
             _others = [a for a in ("v1", "v2") if a != _thread_arm]
+            # EXPLICIT structure. The first version made the reader infer
+            # which key was an arm from the SHAPE of its value -- "a string
+            # that isn't thread_arm" -- and the Chat FE seat implemented
+            # exactly that, correctly, against the contract I sent them.
+            # Then I added `view` (a string) and `thread_arm` was already a
+            # string, so their rule picked THREE candidates where there is
+            # one. I changed the payload and did not tell them.
+            #
+            # `shadow_arms` is the answer to the question they actually have,
+            # stated once, as data. Nothing has to be derived from a type.
             comparison = {"thread_arm": _thread_arm, _thread_arm: correlation_id,
+                          "arms": {_thread_arm: {"correlation_id": correlation_id,
+                                                 "thread_id": thread_id,
+                                                 "served": True}},
+                          "shadow_arms": [],
                           "shadow": {}}
             for _arm in _others:
                 _shadow_cid = str(uuid.uuid4())
@@ -526,6 +540,10 @@ def post_chat(
                 _p.pop("promise", None)
                 get_queue().publish_request(_shadow_cid, _p)
                 comparison[_arm] = _shadow_cid
+                comparison["shadow_arms"].append(_arm)
+                comparison["arms"][_arm] = {"correlation_id": _shadow_cid,
+                                            "thread_id": _shadow_thread,
+                                            "served": False}
                 comparison["shadow"][_arm] = {"correlation_id": _shadow_cid,
                                               "thread_id": _shadow_thread}
             # Register the pair as an ad-hoc harness run so the EXISTING,

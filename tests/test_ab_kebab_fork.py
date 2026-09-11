@@ -137,3 +137,45 @@ def test_the_chat_fork_does_not_build_a_second_renderer():
     assert 'comparison["view"]' in block
     for renderer_ish in ("innerHTML", "render_blocks", "build_assistant_envelope"):
         assert renderer_ish not in block, f"the fork path renders ({renderer_ish})"
+
+
+def test_no_field_in_the_comparison_must_be_identified_BY_ITS_TYPE():
+    """The Chat FE seat derived the shadow arm as "the key whose value is a
+    string and isn't thread_arm" — correct against the contract I sent them.
+    Then I added `view` (a string), and `thread_arm`'s own value is a string,
+    so their rule picked THREE candidates where there is one.
+
+    I changed the payload and did not tell them. The fix is not a better
+    heuristic on their side; it is to stop asking a reader to infer STRUCTURE
+    from a VALUE'S TYPE. `shadow_arms` answers the question they actually have,
+    once, as data.
+    """
+    src = _chat_src()
+    i = src.index("A/B FORK, the kebab toggle")
+    block = src[i:src.index("return ChatResponse(", i)]
+    assert '"shadow_arms": []' in block, "no explicit shadow-arm list"
+    assert 'comparison["shadow_arms"].append(_arm)' in block
+    assert '"served": True' in block and '"served": False' in block, \
+        "which arm was served must be stated, not inferred from thread_arm"
+
+
+def test_the_shadow_arms_list_survives_a_new_string_field():
+    """The regression that caused this: adding ANY string-valued field to the
+    comparison block broke a type-based pick. Simulate the shape and assert
+    that reading `shadow_arms` is unaffected by unrelated keys."""
+    comparison = {
+        "thread_arm": "v2",
+        "v2": "cid-served", "v1": "cid-shadow",
+        "shadow_arms": ["v1"],
+        "arms": {"v2": {"correlation_id": "cid-served", "served": True},
+                 "v1": {"correlation_id": "cid-shadow", "served": False}},
+        "view": "/ab?run=ab-1&q=q01",
+        "some_future_string_field": "whatever ships next",
+    }
+    # the type-based rule, for the record — it picks 4 here
+    naive = [k for k, v in comparison.items()
+             if isinstance(v, str) and k != comparison["thread_arm"]]
+    assert len(naive) > 1, "fixture no longer reproduces the ambiguity"
+    # the stated rule picks exactly one, whatever else is added
+    assert comparison["shadow_arms"] == ["v1"]
+    assert comparison["arms"][comparison["shadow_arms"][0]]["served"] is False
