@@ -2695,6 +2695,7 @@ from app.api.history import router as _history_router
 from app.api.product_feedback import router as _product_feedback_router
 from app.api.tasks import router as _tasks_router
 from app.api.training import router as _training_router
+from app.api.ab_harness import router as _ab_harness_router
 from app.api.uploads import router as _uploads_router
 from app.api.user_tools import router as _user_tools_router
 app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
@@ -2709,6 +2710,7 @@ app.include_router(_verify_claim_router)  # verify_claim scaffold (Fact Store ce
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
 app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
+app.include_router(_ab_harness_router)  # A/B harness — comparisons the human judges; NOT production (it forks; production routes)
 app.include_router(_admin_prompts_router)  # v2 prompt-block CRUD + monitoring (blocks/compositions/versions)
 app.include_router(_auth_proxy_router)  # 2026-05-06 — /api/v1/auth/* + /api/v1/public-config → mobius-user
 app.include_router(_org_proxy_router)   # /api/v1/org/* → mobius-org-agent (admin/clients console)
