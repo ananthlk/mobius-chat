@@ -21,7 +21,8 @@ from __future__ import annotations
 import logging
 
 from app.pipeline.v2.posture import (
-    explain,
+    explain, gap_id_for, jaccard,
+    REPEAT_JACCARD,
     Attempt, Budget, Decision, Gap, Posture, RoundState, select,
 )
 
@@ -131,12 +132,16 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         attempts_by_text: dict[str, list[Attempt]] = {}
 
         closed_all: list[str] = []
+        all_texts: list[str] = []          # every gap text this turn, in order
         for r in rounds:
             enr = (r or {}).get("enrichment") or {}
             gaps = [g for g in (enr.get("gaps_open") or []) if isinstance(g, str)]
             closed = [g for g in (enr.get("gaps_closed") or []) if isinstance(g, str)]
             closed_all.extend(closed)
             history.append(len(gaps))
+            for g in gaps:
+                if g not in all_texts:
+                    all_texts.append(g)
             open_texts = gaps  # the latest round's list is the live one
             tool = (r or {}).get("tool")
             query = (((r or {}).get("inputs") or {}).get("query"))
@@ -175,10 +180,35 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             for g in (enr.get("gaps_open") or []):
                 opened_at.setdefault(g, int((r or {}).get("round") or 0))
 
+        # CONTENT-ADDRESSED, not positional. f"S{i+1}" made the id a POSITION
+        # in the latest round's list, so 7 of 35 turns had an id change meaning
+        # mid-turn -- S1 was Sunshine Health at one round and Humana at the
+        # next. Stable ids also let a REWORDED gap be recognised rather than
+        # minted fresh: react restates the same sub-question in slightly
+        # different words between rounds ("fax number for LTC waiver appeals
+        # coordinator at S..." / "fax number for the LTC waiver appeals
+        # coordinator"), and a pure hash would treat those as two gaps and
+        # reset the age and lever counts that make `stuck` reachable.
+        #
+        # REPEAT_JACCARD is the threshold posture.py already uses to decide
+        # whether a new query complies with a directive -- the same question
+        # ("is this the same thing restated?"), so the same constant.
+        # Built over EVERY text seen this turn, in round order -- not just the
+        # current round's list. A rewording is only recognisable against what
+        # came BEFORE it, and the first version compared the latest list to
+        # itself, so it could never match anything.
+        canon: dict[str, str] = {}   # text -> the text whose id it inherits
+        for t in all_texts:
+            if t in canon:
+                continue
+            match = next((k for k in canon.values() if jaccard(k, t) >= REPEAT_JACCARD),
+                         None)
+            canon[t] = match or t
         gaps = tuple(
-            Gap(gap_id=f"S{i+1}", text=t, opened_round=opened_at.get(t, round_index),
+            Gap(gap_id=gap_id_for(canon[t]), text=t,
+                opened_round=opened_at.get(canon[t], opened_at.get(t, round_index)),
                 attempted_by=tuple(attempts_by_text.get(t, ())))
-            for i, t in enumerate(open_texts)
+            for t in open_texts
         )
         remaining = max(0.0, promise_latency_s - elapsed_s)
         return RoundState(

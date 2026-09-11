@@ -15,6 +15,7 @@ these decides anything in production.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -205,6 +206,28 @@ class Budget:
 # emitted as one -- it is implicit, and implicit is what the machine could not
 # see.
 ROOT_GAP_ID = "G0"
+
+
+def gap_id_for(text: str) -> str:
+    """A STABLE id for a sub-question — derived from what it asks, not from
+    where it sits in a list.
+
+    It was f"S{i+1}" over the LATEST round's gaps_open list, so the id was a
+    POSITION. Measured 2026-09-11 across 35 turns: 7 (20%) had an id change
+    meaning mid-turn — on one, S1 was "timely filing deadline for Sunshine
+    Health" at one round and "…for Humana" at the next. A different payer under
+    the same name.
+
+    The stored VALUES survived that, because age, levers and attempts are keyed
+    on the gap's text; only the label lied. But a label that lies is worse than
+    no label: it invites exactly the false continuity I read into my own dump.
+
+    Content-addressed, so the same sub-question keeps its id across rounds AND
+    across turns in a thread — which is what migration 067's thread-scoped
+    ledger was designed for and never received.
+    """
+    norm = " ".join((text or "").lower().split())
+    return "S" + hashlib.sha1(norm.encode("utf-8")).hexdigest()[:6]
 
 
 def seed_root_gap(question: str, *, round_index: int = 1) -> Gap:

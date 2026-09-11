@@ -104,3 +104,82 @@ def test_the_band_is_wired_from_the_promise():
     # an unrecognised promise gets NO band — a synthesised tolerance is the
     # same defect as a synthesised promise
     assert band_seconds(42.0) == 0.0
+
+
+def test_a_gap_id_means_the_same_sub_question_every_round():
+    """It was f"S{i+1}" over the LATEST round's list — a POSITION, not an
+    identity. Measured across 35 turns: 7 (20%) had an id change meaning
+    mid-turn. On one, S1 was "timely filing deadline for Sunshine Health" at
+    one round and "…for Humana" at the next.
+
+    The stored VALUES survived (age/levers/attempts are keyed on text), but a
+    label that lies is worse than no label — it invites the false continuity I
+    read into my own reasoning dump.
+    """
+    from app.pipeline.v2.posture import gap_id_for
+    a = gap_id_for("timely filing deadline for Sunshine Health")
+    b = gap_id_for("  Timely Filing Deadline for   Sunshine Health ")
+    c = gap_id_for("timely filing deadline for Humana")
+    assert a == b, "whitespace/case must not mint a new gap"
+    assert a != c, "different sub-questions must not share an id"
+    # and it is NOT positional: order cannot change the id
+    assert gap_id_for("x") == gap_id_for("x")
+
+
+def test_a_reworded_gap_keeps_its_id_and_its_age():
+    """react restates the same sub-question in slightly different words between
+    rounds. A pure hash would mint a fresh gap and RESET the age and lever
+    counts — which is what makes `stuck` reachable at all, so resetting them
+    silently disables the stuck rule.
+
+    Reuses REPEAT_JACCARD, the threshold posture.py already applies to the same
+    question: is this the same thing restated?
+    """
+    import app.pipeline.v2.shadow as S
+
+    class Ctx:
+        message = "q"
+        react_trace_rounds = [
+            {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": ["fax number for LTC waiver appeals coordinator at Sunshine"],
+                            "gaps_closed": [], "running_answer": ""}},
+            {"round": 2, "tool": "rag", "inputs": {"query": "q"},
+             "enrichment": {"gaps_open": ["fax number for the LTC waiver appeals coordinator"],
+                            "gaps_closed": [], "running_answer": ""}},
+        ]
+    st = S.state_from_ctx(Ctx(), round_index=2, elapsed_s=1.0,
+                          promise_latency_s=31.0, round_cost_s=0.0,
+                          acting_cost_s=0.0)
+    g = st.open_gaps[0]
+    assert g.opened_round == 1, "a reworded gap restarted its clock"
+    assert g.age(2) == 1
+
+
+def test_state_from_ctx_ids_are_CONTENT_addressed_not_positional():
+    """Guards the CALL SITE, not just gap_id_for().
+
+    A first pass at this tested the helper and left state_from_ctx free to go
+    back to f"S{i+1}" — reverting the call site kept the suite green. The
+    property that matters is that REORDERING the same gaps does not rename
+    them, which is exactly what positional ids fail.
+    """
+    import app.pipeline.v2.shadow as S
+    A = "timely filing deadline for Sunshine Health"
+    B = "timely filing deadline for Humana"
+
+    def ids(order):
+        class Ctx:
+            message = "q"
+            react_trace_rounds = [
+                {"round": 1, "tool": "rag", "inputs": {"query": "q"},
+                 "enrichment": {"gaps_open": list(order), "gaps_closed": [],
+                                "running_answer": ""}}]
+        st = S.state_from_ctx(Ctx(), round_index=1, elapsed_s=1.0,
+                              promise_latency_s=31.0, round_cost_s=0.0,
+                              acting_cost_s=0.0)
+        return {g.text: g.gap_id for g in st.open_gaps}
+
+    first, flipped = ids([A, B]), ids([B, A])
+    assert first[A] == flipped[A], "reordering renamed a gap — ids are positional"
+    assert first[B] == flipped[B]
+    assert first[A] != first[B]
