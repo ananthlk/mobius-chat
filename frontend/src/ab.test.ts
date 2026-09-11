@@ -71,9 +71,20 @@ describe("A/B page — renders the live q01 payload", () => {
   });
 
   it("null cost renders '—', never '0' (unset ≠ measured-zero)", () => {
-    // delivered.cost_usd is null on every row today; a 0 would be a step-1 failure shown as cheap.
+    // delivered.cost_cents is null on every row today; a 0 would be a step-1 failure shown as cheap.
     const rows = [...root.querySelectorAll(".ab-terms-table tr")];
     const costRow = rows.find((r) => (r.querySelector(".ab-terms-label")?.textContent || "") === "cost");
     expect(costRow?.querySelector(".ab-terms-val")?.textContent).toBe("—");
+  });
+
+  it("cost_cents renders in $ (unit on the value, never a bare cents number as dollars)", () => {
+    // The column is CENTS; a bare number would read 100× high. Feed a synthetic cents value.
+    const withCost = JSON.parse(JSON.stringify(cmp)) as Comparison;
+    withCost.arms.v1.delivered.cost_cents = 1.2;   // 1.2¢ → $0.012
+    const r2 = document.createElement("div");
+    renderComparison(withCost, r2);
+    const costRow = [...r2.querySelectorAll(".ab-terms-table tr")]
+      .find((r) => (r.querySelector(".ab-terms-label")?.textContent || "") === "cost");
+    expect(costRow?.querySelector(".ab-terms-val")?.textContent).toBe("$0.012");
   });
 });

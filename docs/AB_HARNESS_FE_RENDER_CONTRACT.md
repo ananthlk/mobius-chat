@@ -62,7 +62,7 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
       "decision_trace": [                   // structured, round-by-round — NOT free-text log lines (row=truth)
         { "round_n": 1, "posture": "gather", "directive": "…", "gaps_opened": ["g1"], "gaps_closed": [], "rationale": "…" }
       ],
-      "delivered": { "latency_ms": 17504, "cost_usd": 0.012, "exit_mode": "complete", "rounds": 9 },
+      "delivered": { "latency_ms": 17504, "cost_cents": 1.2, "exit_mode": "complete", "rounds": 9 },  // CENTS, not USD
       "promised":  { "latency_ms": 20000, "exit_mode": "complete" },
       "kept": true, "in_band": true
     },
@@ -77,7 +77,7 @@ GET /ab/runs/{run_id}/q/{qid}         → ONE comparison (below). 200-with-empty
           "verdict": "agree" }              // verdict ∈ {agree, diverge, unmapped}; = turn_rounds.shadow_verdict,
                                             //   AUTHORED server-side in compare(). Read it; NEVER recompute it FE-side.
       ],
-      "delivered": { "latency_ms": null, "cost_usd": null, "exit_mode": "shadow", "rounds": 12 },
+      "delivered": { "latency_ms": null, "cost_cents": null, "exit_mode": "shadow", "rounds": 12 },
       "kept": null, "in_band": null         // null renders "—", never "false" (unset ≠ false; the count-vs-total lesson)
     }
   }
@@ -98,6 +98,17 @@ Notes that are load-bearing, not stylistic:
   family the program keeps removing — a UI that renders a value where the data holds "unknown".)
 - **`gaps_opened`/`gaps_closed` are id arrays**, so the page shows *which* gaps and can diff them across arms —
   a count alone can't distinguish "closed the same gap it opened" from "closed a different one".
+- **`delivered.cost_cents` is CENTS, not dollars (Governor rename, 2026-09-11).** Every cost in the system is
+  cents (`promised_cost_c`, `delivered_cost_c`, `Budget.remaining_c`); the field is named where it's read so no
+  boundary silently changes the unit. The page renders it in `$` (`$${(c/100).toFixed(3)}`) so the unit rides on
+  the value — a bare cents number would read 100× high as dollars. `null` → "—", never `0` (0 is a measured cost).
+  Enforced server-side by a mutation-checked gate: a `_usd`-named field may never take a `_c` column's value.
+- **`prompt_mismatch` is a DECLARED known-wrong on the shadow arm's trace rows, surfaced VISIBLY on the arm — not
+  in the trace (Governor).** It means v2 chose a posture v1 has no prompt for, so v1 answered normally and the
+  person saw *v1's* answer. The `ALTERNATIVES` case is the sharp one: v2 decided to offer routes, v1 generated
+  none. If such a row rendered as a clean v2 win the page would credit v2 with an answer nobody saw — so any arm
+  with a `prompt_mismatch` round shows an amber, above-the-answer banner naming the substituted directive and
+  saying those rounds are not like-for-like. It is a known-wrong, NOT an error tint.
 
 **Sources are named and confirmed (Governor 2f6b912 / 05bfdc5, 2026-09-10) — both §0/§4 hard deps resolved:**
 - `answer_envelope` ← **a snapshot taken from `/chat/response/{cid}`.`assistant_envelope` at capture time, stored

@@ -33,12 +33,17 @@ interface TraceRow {
   round_duration_s?: number | null; gaps_opened?: string[]; gaps_closed?: string[];
   v1_directive?: string | null; v1_reason?: string | null; v1_maps_to?: string | null;
   verdict?: "agree" | "diverge" | "unmapped" | null; overran?: boolean;
+  // v2 substitution telemetry (Governor). prompt_mismatch is a DECLARED known-wrong, not an
+  // error: v2 chose a posture v1 has no prompt for, so v1 answered normally and the person saw
+  // v1's answer. Surfaced visibly on the arm (below), never as a silent clean win.
+  prompt_mismatch?: string | boolean | null;
+  applied_directive?: string | null; v2_applied?: string | null;
 }
 interface ArmData {
   answer_envelope: { version?: number; blocks?: EnvBlock[] } | null;
   envelope_captured_at?: string | null;
   decision_trace: TraceRow[];
-  delivered: { latency_ms: number | null; cost_usd: number | null; exit_mode: string | null; rounds: number | null };
+  delivered: { latency_ms: number | null; cost_cents: number | null; exit_mode: string | null; rounds: number | null };
   promised?: { latency_ms: number | null; promise_version?: string | null; tier?: string | null };
   kept: boolean | null;
   status?: string; error?: string | null;
@@ -99,6 +104,18 @@ function renderArmBox(arm: ArmMeta, data: ArmData, expandAll: boolean): HTMLElem
   st.classList.add(`ab-status--${data.status || "unknown"}`);
   head.appendChild(st);
   box.appendChild(head);
+
+  // prompt_mismatch — surfaced HERE, above the answer, so a substituted posture v1 couldn't
+  // answer never reads as a clean win. It is a declared known-wrong, not an error tint.
+  const mismatched = data.decision_trace.filter((r) => r.prompt_mismatch);
+  if (mismatched.length) {
+    const directives = [...new Set(mismatched.map(
+      (r) => (typeof r.prompt_mismatch === "string" ? r.prompt_mismatch : null)
+             || r.applied_directive || r.posture || "a posture"))].join(", ");
+    box.appendChild(el("div", "ab-mismatch",
+      `⚠ v2 chose ${directives} — v1 has no prompt for it, so the person saw v1's answer, not this. `
+      + "Not a like-for-like comparison on those rounds."));
+  }
 
   // The answer — the near-production view. Answer-mode when an envelope is present;
   // trace-mode when it is null (v2 shadow today). The switch is on the DATA.
@@ -221,7 +238,10 @@ function renderTerms(cmp: Comparison, arms: ArmMeta[], expandAll: boolean): HTML
     ["kept", (d) => (d.kept == null ? "—" : d.kept ? "✓" : "missed")],
     ["exit", (d) => dash(d.delivered.exit_mode)],
     ["rounds", (d) => dash(d.delivered.rounds)],
-    ["cost", (d) => (d.delivered.cost_usd == null ? "—" : String(d.delivered.cost_usd))],
+    // cost_cents is CENTS (every cost in the system is — promised_cost_c, delivered_cost_c,
+    // Budget.remaining_c). Rendered in $ so the unit is on the value, never a bare number
+    // that reads as dollars while holding cents. null → "—", never 0 (0 is a measured cost).
+    ["cost", (d) => (d.delivered.cost_cents == null ? "—" : `$${(d.delivered.cost_cents / 100).toFixed(3)}`)],
   ];
   for (const [label, fn] of rowDefs) {
     const tr = el("tr");

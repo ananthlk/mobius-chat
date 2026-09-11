@@ -981,6 +981,17 @@ function renderArmBox(arm, data, expandAll) {
   st.classList.add(`ab-status--${data.status || "unknown"}`);
   head.appendChild(st);
   box.appendChild(head);
+  const mismatched = data.decision_trace.filter((r) => r.prompt_mismatch);
+  if (mismatched.length) {
+    const directives = [...new Set(mismatched.map(
+      (r) => (typeof r.prompt_mismatch === "string" ? r.prompt_mismatch : null) || r.applied_directive || r.posture || "a posture"
+    ))].join(", ");
+    box.appendChild(el(
+      "div",
+      "ab-mismatch",
+      `\u26A0 v2 chose ${directives} \u2014 v1 has no prompt for it, so the person saw v1's answer, not this. Not a like-for-like comparison on those rounds.`
+    ));
+  }
   const env = data.answer_envelope;
   if (env && Array.isArray(env.blocks) && env.blocks.length) {
     const { answerBody, sources } = renderEnvelope(env.blocks, {
@@ -1099,7 +1110,10 @@ function renderTerms(cmp, arms, expandAll) {
     ["kept", (d) => d.kept == null ? "\u2014" : d.kept ? "\u2713" : "missed"],
     ["exit", (d) => dash(d.delivered.exit_mode)],
     ["rounds", (d) => dash(d.delivered.rounds)],
-    ["cost", (d) => d.delivered.cost_usd == null ? "\u2014" : String(d.delivered.cost_usd)]
+    // cost_cents is CENTS (every cost in the system is — promised_cost_c, delivered_cost_c,
+    // Budget.remaining_c). Rendered in $ so the unit is on the value, never a bare number
+    // that reads as dollars while holding cents. null → "—", never 0 (0 is a measured cost).
+    ["cost", (d) => d.delivered.cost_cents == null ? "\u2014" : `$${(d.delivered.cost_cents / 100).toFixed(3)}`]
   ];
   for (const [label, fn] of rowDefs) {
     const tr = el("tr");
