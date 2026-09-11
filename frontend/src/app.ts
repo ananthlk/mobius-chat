@@ -288,13 +288,20 @@ interface ChatResponse {
   message: string | null;
   correlation_id?: string;
   /** A/B compare (ab_fork). Present ONLY when the turn forked. `thread_arm` names which
-   *  correlation_id was the conversation's served turn (do NOT assume v1 — routing picks it;
-   *  at PCT=100 it is v2). The other arm ran on a FRESH thread and was never served. A normal
-   *  turn omits this entirely; a single-arm `comparison` is a bug, not "the other had nothing". */
+   *  arm was served (do NOT assume v1 — routing picks it; at PCT=100 it is v2). The shadow
+   *  arm(s) ran on a FRESH thread and were never served. A normal turn omits this entirely.
+   *
+   *  Read STRUCTURE from named fields, never infer it from a value's type: `shadow_arms` lists
+   *  the non-served arm ids, and `arms[id].served`/`.correlation_id` are authoritative. The flat
+   *  `v1`/`v2` keys and `view` permalink also ride the payload — do not treat every string-valued
+   *  key as an arm (that was the bug: `view` is a URL, not a cid). */
   comparison?: {
     thread_arm: string;
-    shadow?: { [arm: string]: { thread_id?: string } };
-    [arm: string]: unknown;      // arm-id → correlation_id (e.g. v1, v2)
+    shadow_arms?: string[];
+    arms?: { [arm: string]: { correlation_id?: string; thread_id?: string; served?: boolean } };
+    shadow?: { [arm: string]: { correlation_id?: string; thread_id?: string } };
+    view?: string;
+    [k: string]: unknown;
   };
   plan?: unknown;
   /** Sprint A.1 (2026-04-19): thinking_log became a mixed array — legacy
@@ -607,12 +614,7 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
   const wrap = document.createElement("section");
   wrap.className = "chat-ab-shadow";
   const servedArm = comparison.thread_arm;
-  // The shadow arm = the arm-id key whose value is a cid string and which isn't the served arm.
-  const armKeys = Object.keys(comparison).filter(
-    (k) => k !== "thread_arm" && k !== "shadow" && typeof comparison[k] === "string",
-  );
-  const shadowArm = armKeys.find((k) => k !== servedArm);
-  const shadowCid = shadowArm ? String(comparison[shadowArm]) : "";
+  const { shadowArm, shadowCid } = pickShadowArm(comparison as AbComparison, servedArm);
 
   const head = document.createElement("div");
   head.className = "chat-ab-shadow-head";
@@ -849,6 +851,7 @@ import {
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
 import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, renderSourcesList, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
+import { pickShadowArm, type AbComparison } from "./ab-fork";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {

@@ -3826,6 +3826,41 @@ function renderAnswerCard(card, isError, opts) {
   return wrap;
 }
 
+// src/ab-fork.ts
+function looksLikeCid(v) {
+  return typeof v === "string" && v.length > 0 && !/[\s/]/.test(v);
+}
+function pickShadowArm(comparison, servedArm) {
+  const cidFor = (arm2) => {
+    const fromArms = comparison.arms?.[arm2]?.correlation_id;
+    if (looksLikeCid(fromArms))
+      return fromArms;
+    const fromShadow = comparison.shadow?.[arm2]?.correlation_id;
+    if (looksLikeCid(fromShadow))
+      return fromShadow;
+    const flat = comparison[arm2];
+    return looksLikeCid(flat) ? flat : "";
+  };
+  if (Array.isArray(comparison.shadow_arms) && comparison.shadow_arms.length) {
+    const arm2 = String(comparison.shadow_arms[0]);
+    return { shadowArm: arm2, shadowCid: cidFor(arm2) };
+  }
+  if (comparison.arms) {
+    const arm2 = Object.keys(comparison.arms).find((k) => comparison.arms[k]?.served === false);
+    if (arm2)
+      return { shadowArm: arm2, shadowCid: cidFor(arm2) };
+  }
+  if (comparison.shadow) {
+    const arm2 = Object.keys(comparison.shadow).find((k) => k !== servedArm);
+    if (arm2)
+      return { shadowArm: arm2, shadowCid: cidFor(arm2) };
+  }
+  const arm = Object.keys(comparison).find(
+    (k) => k !== servedArm && k !== "thread_arm" && looksLikeCid(comparison[k])
+  );
+  return arm ? { shadowArm: arm, shadowCid: cidFor(arm) } : { shadowArm: "", shadowCid: "" };
+}
+
 // src/app.ts
 var activeClarificationDraft = null;
 function buildWorkflowSelectionPreface() {
@@ -3937,11 +3972,7 @@ function renderAbShadowComparison(comparison) {
   const wrap = document.createElement("section");
   wrap.className = "chat-ab-shadow";
   const servedArm = comparison.thread_arm;
-  const armKeys = Object.keys(comparison).filter(
-    (k) => k !== "thread_arm" && k !== "shadow" && typeof comparison[k] === "string"
-  );
-  const shadowArm = armKeys.find((k) => k !== servedArm);
-  const shadowCid = shadowArm ? String(comparison[shadowArm]) : "";
+  const { shadowArm, shadowCid } = pickShadowArm(comparison, servedArm);
   const head = document.createElement("div");
   head.className = "chat-ab-shadow-head";
   head.innerHTML = `<span class="chat-ab-badge">A/B compare</span> This thread ran <b>${servedArm}</b> (served, above). The shadow arm <b>${shadowArm ?? "\u2014"}</b> ran on a <b>fresh thread</b> \u2014 never served, no memory of earlier turns \u2014 and doubled this turn's cost.`;
