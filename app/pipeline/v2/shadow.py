@@ -202,6 +202,14 @@ def compare(v1_directive: str | None, state: RoundState,
         "v2_directive": d.directive.value if d.directive else None,
         "v2_because": d.because,
         "v2_gap_targeted": d.gap_targeted,
+        # THE verdict, authored HERE and nowhere else. An earlier version
+        # returned only the two booleans and let emit() derive the string as a
+        # local -- so the persisted column read a key that never existed and
+        # every row stored NULL. Worse, I had told the FE seat "compare()
+        # authors it once; the page is a viewer", which was true of the design
+        # and false of the code. One author, and the string is it.
+        "verdict": ("agree" if agrees else "unmapped" if expected is None
+                    else "diverge"),
         "agrees": agrees,
         # unmapped is NOT a disagreement -- it means v1 said something the
         # mapping does not cover, which is a finding about the mapping.
@@ -223,15 +231,13 @@ def emit(correlation_id: str, comparison: dict | None) -> None:
         # row is truth. A shadow whose only record is a log line violates the
         # emit contract it was built under.
         pass
-        verdict = ("AGREE" if comparison["agrees"]
-                   else "UNMAPPED" if comparison["unmapped"] else "DIVERGE")
+        verdict = comparison.get("verdict", "unknown")
         logger.info(
             "[v2.shadow] %s cid=%s r%s v1=%s v2=%s — %s",
-            verdict, str(correlation_id)[:8], comparison["round"],
+            verdict.upper(), str(correlation_id)[:8], comparison["round"],
             comparison["v1_directive"], comparison["v2_posture"],
             comparison["v2_because"],
-            extra={**comparison, "correlation_id": correlation_id,
-                   "verdict": verdict},
+            extra={**comparison, "correlation_id": correlation_id},
         )
     except Exception as exc:
         logger.warning("[v2.shadow] emit failed: %s", exc)

@@ -428,3 +428,23 @@ def test_ledger_uses_the_logical_db_key_not_the_physical_name():
         f"promise._DB={_promise._DB!r}"
     )
     assert _ledger._DB == "chat"
+
+
+def test_compare_authors_the_verdict_string_not_just_booleans():
+    """The persisted column reads `verdict`. An earlier version returned only
+    `agrees`/`unmapped` and let emit() derive the string as a local -- so every
+    stored row was NULL while the log looked correct.
+
+    MUTATION-CHECKED by the fact that it is asserted at all: the write path and
+    the log path must read the SAME key, authored in one place.
+    """
+    st = _state(open_gaps=(_gap(),))
+    for v1, want in (("search", "agree"), ("finalize", "diverge"),
+                     ("nonsense_directive", "unmapped")):
+        c = compare(v1, st)
+        assert c["verdict"] == want, (v1, c["verdict"])
+    # the booleans must agree with the string -- two representations of one
+    # fact, and they must not be able to disagree
+    c = compare("search", _state(open_gaps=(_gap(),)))
+    assert (c["verdict"] == "agree") is c["agrees"]
+    assert (c["verdict"] == "unmapped") is c["unmapped"]
