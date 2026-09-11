@@ -148,7 +148,37 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     :applied, :v2_applied, :mismatch, :decl_ms, :decl_ver
                 )
                 ON CONFLICT (correlation_id, round_index, orchestrator_version)
-                DO NOTHING
+                DO UPDATE SET
+                    -- TWO HOOKS WRITE ONE ROUND. The pre-round hook records
+                    -- the posture before the round runs; the post-round hook
+                    -- records what the round DID and -- on a routed turn --
+                    -- what the executor substituted. Same round_index, so
+                    -- DO NOTHING silently dropped the second one, and the
+                    -- executor's fields never reached the table while the
+                    -- logs showed it firing. Found by reading the row against
+                    -- the log rather than trusting either alone.
+                    --
+                    -- COALESCE(EXCLUDED, existing) on every nullable column:
+                    -- the later write fills in what it knows and CANNOT erase
+                    -- what the earlier one knew. Plain EXCLUDED would let the
+                    -- pre-round hook's nulls wipe the post-round hook's values
+                    -- on any future reordering.
+                    posture           = COALESCE(EXCLUDED.posture, turn_rounds.posture),
+                    directive         = COALESCE(EXCLUDED.directive, turn_rounds.directive),
+                    gap_targeted      = COALESCE(EXCLUDED.gap_targeted, turn_rounds.gap_targeted),
+                    rationale         = COALESCE(EXCLUDED.rationale, turn_rounds.rationale),
+                    v1_directive      = COALESCE(EXCLUDED.v1_directive, turn_rounds.v1_directive),
+                    v1_reason         = COALESCE(EXCLUDED.v1_reason, turn_rounds.v1_reason),
+                    v1_maps_to        = COALESCE(EXCLUDED.v1_maps_to, turn_rounds.v1_maps_to),
+                    shadow_verdict    = COALESCE(EXCLUDED.shadow_verdict, turn_rounds.shadow_verdict),
+                    tool_called       = COALESCE(EXCLUDED.tool_called, turn_rounds.tool_called),
+                    round_duration_s  = COALESCE(EXCLUDED.round_duration_s, turn_rounds.round_duration_s),
+                    applied_directive = COALESCE(EXCLUDED.applied_directive, turn_rounds.applied_directive),
+                    prompt_mismatch   = COALESCE(EXCLUDED.prompt_mismatch, turn_rounds.prompt_mismatch),
+                    -- booleans: OR, never overwrite. A round that overran or
+                    -- was executed by v2 cannot become one that wasn't.
+                    overran           = turn_rounds.overran OR EXCLUDED.overran,
+                    v2_applied        = turn_rounds.v2_applied OR EXCLUDED.v2_applied
                 """,
                 _DB,
                 params={

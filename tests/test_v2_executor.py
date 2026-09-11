@@ -342,3 +342,28 @@ def test_the_ceiling_is_actually_WIRED_at_the_call_site():
     src = _react_src()
     i = src.index("STEP 2: v2 DECIDES")
     assert "extensions_used=_pp_extension_rounds_used" in src[i:i + 5000]
+
+
+def test_the_second_hook_of_a_round_is_MERGED_not_dropped():
+    """TWO hooks write one round: pre-round records the posture, post-round
+    records what the round did and what the executor substituted. Same
+    round_index — so ON CONFLICT DO NOTHING silently dropped the second, and
+    the executor's fields never reached the table while the logs showed it
+    firing every turn.
+
+    COALESCE(EXCLUDED, existing) on every nullable column so the later write
+    fills in what it knows and cannot erase what the earlier one knew;
+    booleans OR rather than overwrite — a round that was executed by v2 cannot
+    become one that wasn't.
+    """
+    # Over the SQL with its -- comments stripped. My own comment here names
+    # DO NOTHING to explain it, and a text search matched that instead of the
+    # statement — the FOURTH time in this program a test has read prose and
+    # called it a program.
+    import re
+    ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
+    sql = "\n".join(re.sub(r"--.*$", "", ln) for ln in ledg.splitlines())
+    assert "DO NOTHING" not in sql, "the second hook's row is still dropped"
+    assert "DO UPDATE SET" in sql
+    assert "applied_directive = COALESCE(EXCLUDED.applied_directive" in sql
+    assert "v2_applied        = turn_rounds.v2_applied OR EXCLUDED.v2_applied" in sql
