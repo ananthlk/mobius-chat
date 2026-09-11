@@ -84,6 +84,19 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick", "task"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers. task: skips integrator, returns raw_text."""
 
+    ab_fork: bool | None = None
+    """Fork this turn for side-by-side comparison — the kebab toggle.
+
+    Ananth, 2026-09-11: the toggle "persists until switched off", so the
+    CLIENT sends this on every turn while it is on. The server deliberately
+    does not remember it: a per-thread server-side flag would keep forking
+    after a tab closed or a session changed hands, and doubling spend is not
+    something that should outlive the intent behind it.
+
+    Honoured only when MOBIUS_V2_AB_FORK=1. It DOUBLES the work of the turn:
+    two full pipelines, two model calls, two tool runs. That is the point of
+    putting it behind a deliberate toggle rather than a default."""
+
     ab_arm: Literal["v1", "v2"] | None = None
     """HARNESS ONLY — pins this turn to one orchestrator instead of letting
     routing.assign() decide from MOBIUS_V2_PCT.
@@ -196,6 +209,19 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     correlation_id: str
     thread_id: str  # Created or reused; client sends on follow-up requests
+
+    comparison: dict | None = None
+    """Present ONLY when this turn was forked for A/B (kebab toggle on).
+
+    {arm_id: correlation_id, ...} plus `shadow_thread_id` and `thread_arm`.
+
+    THE THREAD'S OWN TURN IS IN HERE TOO, under its arm id, and it is the same
+    correlation_id as the top-level field. One turn is the conversation; the
+    others are shadows that never enter it. Ananth, 2026-09-11: "no promotion
+    for now" — the thread keeps its arm's answer whichever one the reader
+    prefers, and a preference is recorded beside it rather than rewriting
+    history. A surface that renders the picked arm as though it became the
+    conversation is lying about what the next turn will follow from."""
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -459,7 +485,63 @@ def post_chat(
         logger.warning("[promise] open failed cid=%s: %s", correlation_id[:8], exc)
 
     get_queue().publish_request(correlation_id, payload)
-    return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
+
+    # ── A/B FORK, the kebab toggle (governor seat, 2026-09-11) ──────────────
+    #
+    # "this query invokes A/B therefore I am going to fork and show" — Ananth.
+    # The comparison belongs on the surface people already use, not on a
+    # separate page: I built the separate page first and it was the wrong
+    # shape, because a person asking a question should not have to know a
+    # run_id.
+    #
+    # THE TURN ABOVE IS THE CONVERSATION'S. It has already been published to
+    # the real thread, with the real promise, and it is what a follow-up will
+    # read. The shadow arm runs on a FRESH thread so it cannot touch that
+    # history — and, with no promotion, that stays true however the reader
+    # judges them.
+    #
+    # The thread's arm is whatever ROUTING already chose for it: forking must
+    # not change which orchestrator serves the person. If it pinned the thread
+    # to v1, then turning the toggle on would silently alter the product for
+    # anyone who used it, and the comparison would be measuring a turn nobody
+    # would otherwise have had.
+    comparison = None
+    if body.ab_fork and os.environ.get("MOBIUS_V2_AB_FORK", "").strip() == "1":
+        try:
+            from app.pipeline.v2.routing import assign as _assign
+            _pct = int(os.environ.get("MOBIUS_V2_PCT", "0").strip() or 0)
+            _thread_arm = payload.get("ab_arm") or _assign(correlation_id, _pct)
+            _others = [a for a in ("v1", "v2") if a != _thread_arm]
+            comparison = {"thread_arm": _thread_arm, _thread_arm: correlation_id,
+                          "shadow": {}}
+            for _arm in _others:
+                _shadow_cid = str(uuid.uuid4())
+                _shadow_thread = ensure_thread(None)   # FRESH — never the user's
+                _p = dict(payload)
+                _p["thread_id"] = _shadow_thread
+                _p["ab_arm"] = _arm
+                # The promise is re-opened for the shadow turn rather than
+                # reused: an attestation keyed on the thread turn's promise
+                # would report two deliveries against one contract.
+                _p.pop("promise", None)
+                get_queue().publish_request(_shadow_cid, _p)
+                comparison[_arm] = _shadow_cid
+                comparison["shadow"][_arm] = {"correlation_id": _shadow_cid,
+                                              "thread_id": _shadow_thread}
+            logger.info("[v2.ab] forked cid=%s thread_arm=%s shadows=%s",
+                        correlation_id[:8], _thread_arm,
+                        {k: v[:8] for k, v in comparison.items()
+                         if k in ("v1", "v2") and k != _thread_arm})
+        except Exception as exc:
+            # The THREAD's turn is already enqueued and unaffected. A failed
+            # fork must degrade to a normal turn, never fail the question --
+            # but it must also not return a comparison block with one arm in
+            # it, which a page would render as "the other one had nothing".
+            logger.warning("[v2.ab] fork failed cid=%s: %s", correlation_id[:8], exc)
+            comparison = None
+
+    return ChatResponse(correlation_id=correlation_id, thread_id=thread_id,
+                        comparison=comparison)
 
 
 @router.get("/chat/response/{correlation_id}")
