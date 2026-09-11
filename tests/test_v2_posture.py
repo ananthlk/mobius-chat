@@ -89,6 +89,30 @@ def test_trend(hist, want):
     assert trend(hist) is want
 
 
+def test_select_never_returns_FRAME_it_has_no_signal_yet():
+    """FRAME's job is real -- a wrong frame makes every later round waste money.
+    Its TRIGGER was positional (round_index <= 1), which is not a posture but a
+    label for a position, and it produced 57% of all shadow divergences at
+    round 1 against a v1 that has no FRAME concept.
+
+    Declared-unreachable, not accidentally unreachable: this test is what keeps
+    the difference. If someone builds a real frame signal, they must delete this
+    test deliberately -- which is the point.
+    """
+    for rn in (1, 2, 5):
+        for gaps in ((), (_gap(),)):
+            for hist in ((), (0,), (0, 1), (2, 1)):
+                d = select(_state(round_index=rn, open_gaps=gaps,
+                                  gaps_open_history=hist))
+                assert d.posture is not Posture.FRAME, (rn, gaps, hist, d)
+
+
+def test_round_one_with_no_gaps_is_discovery():
+    """What v1 calls `search`, and what it actually is: we are gathering."""
+    d = select(_state(round_index=1, open_gaps=(), gaps_open_history=(0,)))
+    assert d.posture in (Posture.EXPLORE, Posture.COMMUNICATE)
+
+
 def test_increasing_gaps_buys_discovery_not_closure():
     """Measured: closure odds are 25.4% when gaps are increasing vs ~41% flat.
     Buying CLOSE here is buying a losing ticket."""

@@ -366,8 +366,30 @@ def select(state: RoundState) -> Decision:
     if state.errored:
         return Decision(Posture.COMMUNICATE, "errored: one exit for every path")
 
-    if not state.open_gaps and state.round_index <= 1:
-        return Decision(Posture.FRAME, "no gap list yet")
+    # FRAME IS DELIBERATELY UNREACHABLE. Removed 2026-09-11.
+    #
+    # It fired on `not open_gaps and round_index <= 1` -- which is POSITIONAL,
+    # the exact shape criticised in is_guidance_round. FRAME is supposed to mean
+    # "we are answering the wrong question"; what it actually meant was "this is
+    # round one". Those coincide on round 1 and diverge everywhere else, and in
+    # the shadow it produced 50 of 88 divergences (57%) -- every one at round 1,
+    # against a v1 that has no FRAME concept and says `search`.
+    #
+    # A posture whose trigger is a round number is not a posture, it is a label
+    # for a position. Round 1 with no gaps is EXPLORE/DISCOVER: we are
+    # gathering, which is what v1 says too.
+    #
+    # The posture stays DEFINED because the job is real -- a wrong frame makes
+    # every subsequent round waste money, and it is the cheapest failure to fix
+    # and the most expensive to miss. It stays UNFIRED because there is no
+    # signal for it yet. Low confidence does not mean it: a model can be
+    # confidently on the wrong question. Candidate tells, none built: gaps that
+    # keep reopening, or evidence that arrives relevant-but-not-responsive.
+    #
+    # Declared-unreachable is not the dead-terminal defect. That terminal was
+    # unreachable by accident, with a docstring and three green tests vouching
+    # for it. This one is unreachable on purpose, says so, and has a test
+    # asserting select() never returns it -- so it cannot come back silently.
 
     if trend(state.gaps_open_history) is Trend.INCREASING:
         return Decision(
