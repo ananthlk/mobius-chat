@@ -1066,6 +1066,26 @@ def run_pipeline(
                     str(correlation_id)[:8], len(_v2_rows or []), id(ctx),
                 )
                 if _v2_rows:
+                    # Enrich with what each round actually RAN, joined from the
+                    # trace by round number. Done HERE and not in the hook
+                    # because the pre-round hook fires before the tool does --
+                    # the round's tool is only knowable after it has run.
+                    #
+                    # No cross-repo call and nothing added to the request path:
+                    # ctx.react_trace_rounds already carries it.
+                    try:
+                        _tr = {int((r or {}).get("round") or 0): (r or {}).get("tool")
+                               for r in (getattr(ctx, "react_trace_rounds", None) or [])}
+                        for _row in _v2_rows:
+                            _row["tool_called"] = _tr.get(int(_row.get("round") or 0))
+                            # v1 offers the WHOLE manifest every round. Recorded
+                            # as a marker rather than 57 names -- the column
+                            # exists to compare an offer against what was used,
+                            # and v1's offer is "everything", which is the
+                            # baseline being replaced.
+                            _row.setdefault("tools_offered", ["*full_manifest*"])
+                    except Exception:
+                        logger.exception("[v2] tool enrichment failed")
                     from app.pipeline.v2.ledger import write_rounds as _v2_wr
                     _v2_wr(ctx.correlation_id, _v2_rows)
             except Exception:

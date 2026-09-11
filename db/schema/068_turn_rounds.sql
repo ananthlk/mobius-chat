@@ -91,3 +91,23 @@ ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS overran BOOLEAN NOT NULL DEFAUL
 
 CREATE INDEX IF NOT EXISTS turn_rounds_overran_idx
     ON turn_rounds (created_at DESC) WHERE overran;
+
+-- ── what the round actually ran, added 2026-09-11 ────────────────────────────
+--
+-- tools_offered was specified and never written -- a column decided and
+-- discarded, the third such field in one night.
+--
+-- tool_called is the half that unblocks the latency question. Measured per-tool
+-- round durations span 10x (healthcare_query 23.0s p50 .. service_line_limits
+-- 2.2s), so "what did this round run" is the join that turns Tool Manifest's
+-- DECLARED latencies into MEASURED ones -- without waiting for per-tool spans
+-- nobody owns.
+--
+-- tools_offered records what was AVAILABLE to the model that round. On v1 rows
+-- that is the whole manifest, recorded as a marker rather than 57 names: the
+-- point of the column is to compare an offer against what was used, and v1's
+-- offer is "everything", which is exactly the baseline being replaced.
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS tool_called TEXT;
+
+CREATE INDEX IF NOT EXISTS turn_rounds_tool_called_idx
+    ON turn_rounds (tool_called) WHERE tool_called IS NOT NULL;

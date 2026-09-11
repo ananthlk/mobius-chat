@@ -708,3 +708,25 @@ def test_the_root_gap_carries_the_question_text_and_high_importance():
     assert g.text == "how do i appeal a carc 24 denial?"
     assert g.importance == "high"      # it is the whole turn
     assert g.attempted_by == ()
+
+
+def test_tools_offered_and_tool_called_reach_the_write():
+    """END-TO-END on the fields. tools_offered was specified and never written --
+    a column decided and discarded, the third such field in one night. This
+    asserts the write actually binds all four."""
+    import inspect
+    from app.pipeline.v2 import ledger as _ledger
+    src = inspect.getsource(_ledger.write_rounds)
+    for col in ("tools_offered", "tool_called", "declared_latency_ms", "declared_version"):
+        assert col in src, f"{col} is in the table and not in the INSERT"
+    for param in ('"offered"', '"tool_called"', '"decl_ms"', '"decl_ver"'):
+        assert param in src, f"{param} bound in SQL but not supplied"
+
+
+def test_the_settle_enrichment_joins_the_trace_by_round():
+    """tool_called is knowable only AFTER the round runs, so the pre-round hook
+    cannot supply it. The join happens at settle, from ctx.react_trace_rounds."""
+    import inspect
+    from app.pipeline import orchestrator as _orch
+    src = inspect.getsource(_orch.run_pipeline)
+    assert "react_trace_rounds" in src and "tool_called" in src
