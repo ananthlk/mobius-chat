@@ -209,3 +209,75 @@ def test_no_field_in_the_payload_claims_a_unit_it_does_not_carry():
             assert not column.endswith("_c"), f"{field} <- {column}: cents as USD"
         if field.endswith("_cents"):
             assert column.endswith("_c") or "cent" in column, f"{field} <- {column}"
+
+
+def test_mismatch_kind_separates_the_two_mismatches():
+    """Chat FE was about to fill a "v2 chose ___" slot from `prompt_mismatch`.
+    That field is PROSE for a human; the name lives in `posture`.
+
+    And the two mismatches are different events, which one prose field could
+    not tell them apart:
+
+        mis_prompted   v2 RAN the round, on v1's remediation prompt instead of
+                       a gathering one — not like-for-like on that round
+        not_generated  v2 chose ALTERNATIVES, v1 cannot produce that content,
+                       so it shipped without it — the person saw a normal
+                       answer, and crediting v2 with it would be crediting an
+                       answer nobody saw
+
+    Derived from stored fields, one rule, one author. Inferring it from the
+    prose on the page would make the renderer the second.
+    """
+    import app.api.ab_harness as H
+    rows = [
+        {"round_index": 1, "posture": "explore", "directive": None,
+         "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
+         "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
+         "shadow_verdict": "diverge", "applied_directive": "extend",
+         "v2_applied": True, "prompt_mismatch": "gathering round receives...",
+         "tool_called": None, "round_duration_s": None, "overran": False},
+        {"round_index": 2, "posture": "alternatives", "directive": None,
+         "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
+         "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
+         "shadow_verdict": "diverge", "applied_directive": "complete",
+         "v2_applied": True, "prompt_mismatch": "routes decided, never generated",
+         "tool_called": None, "round_duration_s": None, "overran": False},
+        {"round_index": 3, "posture": "communicate", "directive": None,
+         "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
+         "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
+         "shadow_verdict": "agree", "applied_directive": "complete",
+         "v2_applied": True, "prompt_mismatch": None,
+         "tool_called": None, "round_duration_s": None, "overran": False},
+    ]
+    orig = H._q
+    H._q = lambda sql, p=None: rows
+    try:
+        trace = H._trace("cid", "v2")
+    finally:
+        H._q = orig
+    assert [t["mismatch_kind"] for t in trace] == \
+        ["mis_prompted", "not_generated", None]
+    # the NAME is never the prose
+    assert trace[1]["posture"] == "alternatives"
+
+
+def test_v1_rows_carry_no_v2_only_fields():
+    """A v1 row has no posture, no applied directive and no mismatch — absent,
+    not null. The FE keys on presence, so a null would read as 'v2 ran and
+    matched' on an arm where v2 never ran at all."""
+    import app.api.ab_harness as H
+    rows = [{"round_index": 1, "posture": None, "directive": None,
+             "gap_targeted": None, "rationale": None, "gaps_opened": [],
+             "gaps_closed": [], "v1_directive": "search", "v1_reason": "r",
+             "v1_maps_to": None, "shadow_verdict": None,
+             "applied_directive": None, "v2_applied": False,
+             "prompt_mismatch": None, "tool_called": "rag",
+             "round_duration_s": 6.0, "overran": False}]
+    orig = H._q
+    H._q = lambda sql, p=None: rows
+    try:
+        t = H._trace("cid", "v1")[0]
+    finally:
+        H._q = orig
+    for f in ("applied_directive", "v2_applied", "prompt_mismatch", "mismatch_kind"):
+        assert f not in t, f

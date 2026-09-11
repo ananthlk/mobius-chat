@@ -187,7 +187,32 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         # interesting row.
                         "applied_directive": r["applied_directive"],
                         "v2_applied": bool(r["v2_applied"]),
+                        # PROSE, for a human to read — not a name. The
+                        # posture is in `posture`; the executed directive is in
+                        # `applied_directive`. A renderer that fills a
+                        # "v2 chose ___" slot from this string prints a
+                        # paragraph where a word belongs.
                         "prompt_mismatch": r["prompt_mismatch"],
+                        # ...and the two mismatches are NOT the same event,
+                        # which the single prose field could not tell anyone:
+                        #
+                        #   mis_prompted   v2 DID run the round, with v1's
+                        #                  remediation prompt instead of a
+                        #                  gathering one. Not like-for-like.
+                        #   not_generated  v2 chose a posture (ALTERNATIVES)
+                        #                  whose content v1 cannot produce, so
+                        #                  it shipped without it. The person
+                        #                  saw a normal answer.
+                        #
+                        # Derived here from stored fields rather than stored as
+                        # a fourth column: it is one rule over two values, and
+                        # it has exactly one author. Asking the page to infer
+                        # it from the prose would make the renderer the second.
+                        "mismatch_kind": (
+                            None if not r["prompt_mismatch"]
+                            else "mis_prompted" if r["applied_directive"] == "extend"
+                            else "not_generated"
+                        ),
                         "tool_called": r["tool_called"],
                         "round_duration_s": r["round_duration_s"],
                         "overran": bool(r["overran"])})
