@@ -509,3 +509,45 @@ def test_a_gap_that_RETURNED_something_is_not_unreachable():
 def test_alternatives_never_fires_with_no_open_gaps():
     assert alternatives_worth_it(_state(open_gaps=())) is False
     assert select(_state(open_gaps=())).posture is Posture.COMMUNICATE
+
+
+# ── measured round costs ────────────────────────────────────────────────────
+
+def test_every_posture_has_a_measured_cost_with_a_stated_basis():
+    """A posture with no cost cannot be budgeted. Adding one without a cost must
+    fail loudly rather than inherit someone else's number silently."""
+    from app.pipeline.v2.posture import _ROUND_COST, round_cost
+    for p in Posture:
+        rc = round_cost(p)
+        assert rc.p50_s > 0 and rc.p90_s >= rc.p50_s, (p, rc)
+        assert rc.basis, f"{p} has a cost with no stated basis"
+        assert rc.basis.startswith(("PROXY", "MEASURED")), rc.basis
+    assert set(_ROUND_COST) == {p.value for p in Posture}
+
+
+def test_unknown_posture_raises_rather_than_defaulting():
+    """A default would price a new posture at another posture's number and never
+    say so -- the silent-default shape."""
+    from app.pipeline.v2.posture import round_cost
+    with pytest.raises(KeyError, match="no measured round cost"):
+        round_cost("teleport")
+
+
+def test_the_costs_encode_the_finding_that_a_tool_round_is_cheaper():
+    """Measured: a rag round is 9.2s p50 while a no-tool mid round is 11.7s. The
+    dominant cost is the reasoning call, not the tool. If this ever inverts, the
+    budget model's central assumption has changed and should be re-derived."""
+    from app.pipeline.v2.posture import round_cost
+    assert round_cost(Posture.EXPLORE).p50_s < round_cost(Posture.NARROW).p50_s
+
+
+def test_spendable_falls_back_to_the_measured_table():
+    """A caller that supplies no per-round cost still gets a real number, not 0."""
+    st = RoundState(round_index=3, open_gaps=(_gap(),), gaps_open_history=(1, 1),
+                    budget=Budget(remaining_s=100.0, remaining_c=10.0),
+                    next_round_cost_s=0.0, acting_cost_s=0.0, validate_cost_s=9.6)
+    assert spendable(st) is True
+    broke = RoundState(round_index=3, open_gaps=(_gap(),), gaps_open_history=(1, 1),
+                       budget=Budget(remaining_s=5.0, remaining_c=10.0),
+                       next_round_cost_s=0.0, acting_cost_s=0.0, validate_cost_s=9.6)
+    assert spendable(broke) is False   # 9.2 + 10.0 > 5.0, from the table

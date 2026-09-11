@@ -27,6 +27,31 @@ REPEAT_JACCARD = 0.70         # [GUESS] 24.5% of consecutive rag pairs exceed it
 TREND_WINDOW = 2              # rounds compared to classify direction
 
 
+# ── measured round costs ─────────────────────────────────────────────────────
+#
+# Replaces a hardcoded 10.3s that priced every round identically. Measured over
+# 60 days of production rounds, from elapsed_s deltas in thinking_log:
+#
+#   (no tool) mid round      n=1173   p50 11.7   p90 32.9   <- the MOST expensive
+#   search_corpus            n=  33        11.4       25.0
+#   (no tool) FINAL round    n=1301        10.0       27.5
+#   web_scrape               n= 120         9.7       27.3
+#   rag                      n= 876         9.2       26.4   <- CHEAPER than no tool
+#   fetch_document           n= 325         8.9       20.8
+#   appeals_get_playbook     n=  47         3.5       11.8
+#
+# THE FINDING THAT MATTERS: a round that calls rag is CHEAPER than a round that
+# calls nothing. The dominant cost is the reasoning call, not the tool -- so the
+# lever is round COUNT, not tool choice, and a better tool wins by removing a
+# round rather than by being fast.
+#
+# 🔴 PROVENANCE: these are PROXIES. They are measured v1 round KINDS mapped onto
+# postures, not measurements of postures -- postures do not exist in production
+# yet, so no per-posture number can exist. turn_rounds replaces every one of
+# these with a real measurement once v2 runs, and until then a cost here is a
+# defensible estimate and not a fact. Do not quote them as per-posture costs.
+
+
 class Posture(str, Enum):
     FRAME = "frame"
     EXPLORE = "explore"
@@ -64,6 +89,15 @@ class Trend(str, Enum):
 
 
 @dataclass(frozen=True)
+class RoundCost:
+    """p50 and p90. A range, never a point -- the queue wait proved a point
+    estimate lies when the underlying is bimodal."""
+    p50_s: float
+    p90_s: float
+    basis: str
+
+
+@dataclass(frozen=True)
 class Attempt:
     """One lever already spent on a gap.
 
@@ -80,6 +114,42 @@ class Attempt:
     model: str | None = None
     query: str | None = None
     returned_payload: bool = False
+
+
+# posture -> measured proxy. `basis` names WHICH measurement, so a reader can
+# check whether the proxy still fits when a posture's behaviour changes.
+_ROUND_COST: dict[str, RoundCost] = {
+    # reasoning about the question, no tool call
+    Posture.FRAME.value:        RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    # the tool-calling round; rag is the dominant case at 876 of 1,481 tool rounds
+    Posture.EXPLORE.value:      RoundCost(9.2, 26.4, "PROXY v1 rag round n=876"),
+    # scoping, no tool call
+    Posture.NARROW.value:       RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    # generating routes, no tool call -- same shape as NARROW
+    Posture.ALTERNATIVES.value: RoundCost(11.7, 32.9, "PROXY v1 (no tool) mid round n=1173"),
+    # the critic, measured directly on llm_calls
+    Posture.VALIDATE.value:     RoundCost(9.6, 16.9, "MEASURED integrator_critic n=135"),
+    # the final synthesis round
+    Posture.COMMUNICATE.value:  RoundCost(10.0, 27.5, "PROXY v1 (no tool) FINAL round n=1301"),
+}
+
+
+def round_cost(posture: "Posture | str") -> RoundCost:
+    """Cost of running one round in this posture.
+
+    Raises on an unknown posture rather than defaulting. A default would price a
+    new posture at someone else's number and never say so -- the silent-default
+    shape this program has spent a week removing. A posture with no cost is a
+    posture that cannot be budgeted, and that must be loud.
+    """
+    key = posture.value if isinstance(posture, Posture) else str(posture)
+    try:
+        return _ROUND_COST[key]
+    except KeyError:
+        raise KeyError(
+            f"no measured round cost for posture {key!r} -- add one to "
+            f"_ROUND_COST with its basis before budgeting it"
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -180,6 +250,18 @@ def stuck(gap: Gap, current_round: int) -> bool:
     )
 
 
+def cost_of(posture: Posture, state: RoundState) -> float:
+    """What buying this posture costs, in seconds. Prefers the measured table
+    over whatever the caller guessed."""
+    explicit = {
+        Posture.VALIDATE: state.validate_cost_s,
+        Posture.ALTERNATIVES: state.alternatives_cost_s,
+    }.get(posture)
+    if explicit:
+        return explicit
+    return round_cost(posture).p50_s
+
+
 def spendable(state: RoundState) -> bool:
     """Reserve the cost of ACTING, not just the cost of looking.
 
@@ -190,7 +272,13 @@ def spendable(state: RoundState) -> bool:
     should refuse. Cost may INFORM a decision; it must not DECIDE one. Time can
     decide; the promise clock is complete.
     """
-    return state.budget.remaining_s >= (state.next_round_cost_s + state.acting_cost_s)
+    # An EXPLORE round is what "one more round" buys, and acting on what it
+    # finds costs a round too -- reserve BOTH. next_round_cost_s, when the
+    # caller supplied one, wins over the table so a tier-specific measurement
+    # can override the global proxy.
+    buy = state.next_round_cost_s or round_cost(Posture.EXPLORE).p50_s
+    act = state.acting_cost_s or round_cost(Posture.COMMUNICATE).p50_s
+    return state.budget.remaining_s >= (buy + act)
 
 
 def worth_spending(state: RoundState) -> Gap | None:
@@ -225,7 +313,7 @@ def alternatives_worth_it(state: RoundState) -> bool:
     """
     if not state.open_gaps:
         return False
-    if state.budget.remaining_s < state.alternatives_cost_s:
+    if state.budget.remaining_s < cost_of(Posture.ALTERNATIVES, state):
         return False
     return any(
         stuck(g, state.round_index)
@@ -241,7 +329,9 @@ def validate_worth_it(state: RoundState) -> bool:
     forecast -- replace it with the forecast, not another proxy. A verdict with
     nowhere to go is pure cost, so the fix round is reserved, not just the look.
     """
-    affordable = state.budget.remaining_s >= (state.validate_cost_s + state.acting_cost_s)
+    affordable = state.budget.remaining_s >= (
+        cost_of(Posture.VALIDATE, state) + (state.acting_cost_s or round_cost(Posture.EXPLORE).p50_s)
+    )
     return affordable and state.quality_uncertain
 
 

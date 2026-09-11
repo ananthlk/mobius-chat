@@ -4751,7 +4751,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _v2ps = _v2sp.state_from_ctx(
                         ctx, round_index=rn, elapsed_s=_pp_elapsed_s,
                         promise_latency_s=float(_pp_contract.soft_target_s),
-                        round_cost_s=10.3, acting_cost_s=10.3,
+                        round_cost_s=0.0, acting_cost_s=0.0,
                     )
                     _v2pc = _v2sp.compare(_pp_pre_directive, _v2ps,
                                           v1_reason=_pp_pre_reason)
@@ -5568,9 +5568,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     round_index=rn,
                                     elapsed_s=_pp_elapsed_s,
                                     promise_latency_s=float(_pp_contract.soft_target_s),
-                                    round_cost_s=10.3,   # agentic p50; per-posture
-                                                         # cost does not exist yet
-                                    acting_cost_s=10.3,
+                                    round_cost_s=0.0,   # 0 => use the measured
+                                    acting_cost_s=0.0,  # per-posture table
                                 )
                                 _v2_cmp = _v2s.compare(_pp_directive, _v2_state,
                                                        v1_reason=_pp_reason)
