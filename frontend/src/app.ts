@@ -610,7 +610,25 @@ function setAbForkComposerHint(on: boolean): void {
  *  memory of prior turns, and this turn's doubled cost. No promotion — the served answer is
  *  and stays the conversation. Polls /chat/response/{shadow_cid} because the shadow may still
  *  be running when the served turn completes (they fork simultaneously but settle apart). */
-function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparison"]>): HTMLElement {
+/** The shadow's poll window is derived from the SERVED turn's TIER, never a fixed timeout
+ *  (Governor 2026-09-11). The shadow can legitimately take the full tier promise + band, and
+ *  the tiers are far apart: a copilot shadow lands ~2.5s behind, but an agentic shadow can run
+ *  ~4× the served arm and still be on time (v1 took 6 rounds where v2 took 3). A fixed
+ *  copilot-sized window dropped exactly the agentic turns where the arms diverge most — which
+ *  are the ones worth seeing. The shadow carries no promise of its own (one attestation per
+ *  contract), so the window comes from the served arm's tier: promise + band, in ms. */
+function _abShadowWindowMs(tier: "quick" | "copilot" | "agentic"): number {
+  switch (tier) {
+    case "quick": return (13 + 5) * 1000;      // 18s
+    case "agentic": return (95 + 25) * 1000;   // 120s
+    case "copilot": default: return (31 + 8) * 1000;  // 39s
+  }
+}
+
+function renderAbShadowComparison(
+  comparison: NonNullable<ChatResponse["comparison"]>,
+  tier: "quick" | "copilot" | "agentic" = "copilot",
+): HTMLElement {
   const wrap = document.createElement("section");
   wrap.className = "chat-ab-shadow";
   const servedArm = comparison.thread_arm;
@@ -634,23 +652,14 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
 
   const body = document.createElement("div");
   body.className = "chat-ab-shadow-body";
-  body.appendChild(_abShadowSpinner(shadowArm));
+  body.appendChild(_abShadowSpinner(shadowArm, tier));
   wrap.appendChild(body);
 
-  void _pollShadowEnvelope(shadowCid).then((env) => {
+  function renderShadowAnswer(env: { blocks?: unknown[] }): void {
     body.textContent = "";
-    if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
-      // A lost/slow SHADOW is a degraded comparison, NOT a failed turn — the served answer
-      // above is complete and unaffected (Governor: the queueing can drop the shadow).
-      const miss = document.createElement("div");
-      miss.className = "chat-ab-shadow-note";
-      miss.textContent = "The shadow arm didn't finish — this is a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
-      body.appendChild(miss);
-      return;
-    }
     // Render the shadow through the SAME production renderer the bubble uses — the comparison
     // is only honest if the shadow renders identically to what a served answer would.
-    const { answerBody, sources } = renderEnvelope(env.blocks as EnvBlock[], {
+    const { answerBody, sources } = renderEnvelope((env.blocks || []) as EnvBlock[], {
       renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
         if (b.type === "tool_attribution") {
           const chip = document.createElement("div");
@@ -673,42 +682,91 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
       const srcEl = renderSourcesList(refs);
       if (srcEl) body.appendChild(srcEl);
     }
+  }
+
+  function note(text: string): HTMLElement {
+    const n = document.createElement("div");
+    n.className = "chat-ab-shadow-note";
+    n.textContent = text;
+    return n;
+  }
+
+  void _pollShadowEnvelope(shadowCid, _abShadowWindowMs(tier)).then((res) => {
+    body.textContent = "";
+    if (res.state === "completed" && Array.isArray(res.env.blocks) && res.env.blocks.length) {
+      renderShadowAnswer(res.env);
+      return;
+    }
+    if (res.state === "running") {
+      // THIRD state (Governor): still working, not dropped. The served answer above is done;
+      // the shadow can legitimately run to the tier's full promise (agentic ~4× the served arm).
+      body.appendChild(note(`The shadow arm ${shadowArm} is still running — it can take longer than the served arm (a different orchestrator may use more rounds). Your answer above is complete; check for the shadow when it settles.`));
+      const again = document.createElement("button");
+      again.className = "chat-ab-check-again";
+      again.textContent = "Check for the shadow";
+      again.addEventListener("click", () => {
+        again.disabled = true;
+        void fetch(`${API_BASE}/chat/response/${encodeURIComponent(shadowCid)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d: { status?: string; assistant_envelope?: { blocks?: unknown[] } } | null) => {
+            if (d && d.status === "completed" && d.assistant_envelope) renderShadowAnswer(d.assistant_envelope);
+            else { again.disabled = false; }
+          })
+          .catch(() => { again.disabled = false; });
+      });
+      body.appendChild(again);
+      return;
+    }
+    // failed / never observed → a degraded comparison, NOT a failed question.
+    body.appendChild(note("The shadow arm didn't complete — a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
   }).catch(() => {
     body.textContent = "";
-    const err = document.createElement("div");
-    err.className = "chat-ab-shadow-note";
-    err.textContent = "Couldn't load the shadow arm — a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
-    body.appendChild(err);
+    body.appendChild(note("Couldn't load the shadow arm — a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
   });
 
   return wrap;
 }
 
-function _abShadowSpinner(arm: string): HTMLElement {
+function _abShadowSpinner(arm: string, tier: "quick" | "copilot" | "agentic"): HTMLElement {
   const s = document.createElement("div");
   s.className = "chat-ab-shadow-spinner";
-  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running…`;
+  // In agentic the shadow can run ~2 min and still be on time, so say so — an unqualified
+  // spinner reads as "stuck" when it is merely a longer tier.
+  const hint = tier === "agentic" ? " (agentic — it can take up to ~2 min)"
+    : tier === "quick" ? "" : " (up to ~40s)";
+  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running…${hint}`;
   return s;
 }
 
-/** Poll /chat/response/{cid} until the shadow turn completes. Bounded — the shadow settled up
- *  to ~30s after the served arm on the first live fork, so we wait a bit past that then give up. */
-async function _pollShadowEnvelope(cid: string): Promise<{ blocks?: unknown[] } | null> {
-  const deadline = Date.now() + 75_000;
+type ShadowPoll =
+  | { state: "completed"; env: { blocks?: unknown[] } }
+  | { state: "failed" }        // the turn explicitly failed → degraded comparison
+  | { state: "running" };      // still processing when the window closed → NOT degraded
+
+/** Poll /chat/response/{cid} until the shadow completes, FAILS, or the tier window closes.
+ *  The window (promise + band, from the served arm's tier) is passed in — a shadow still
+ *  running at the end of it is "still working", not a drop: distinguishing the two is the whole
+ *  point (Governor), because agentic shadows legitimately finish long after the served arm. */
+async function _pollShadowEnvelope(cid: string, windowMs: number): Promise<ShadowPoll> {
+  const deadline = Date.now() + windowMs;
   let delay = 1200;
+  let sawProcessing = false;
   while (Date.now() < deadline) {
     try {
       const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
       if (r.ok) {
         const d = await r.json() as { status?: string; assistant_envelope?: { blocks?: unknown[] } };
-        if (d.status === "completed" && d.assistant_envelope) return d.assistant_envelope;
-        if (d.status === "failed") return null;
+        if (d.status === "completed" && d.assistant_envelope) return { state: "completed", env: d.assistant_envelope };
+        if (d.status === "failed") return { state: "failed" };
+        if (d.status) sawProcessing = true;   // processing/queued — a live, unfinished turn
       }
     } catch { /* transient — keep polling */ }
     await new Promise((res) => setTimeout(res, delay));
     delay = Math.min(delay + 600, 4000);
   }
-  return null;
+  // Window closed. If we ever saw a live status it is still working; only a turn we could never
+  // observe at all is treated as failed/dropped.
+  return sawProcessing ? { state: "running" } : { state: "failed" };
 }
 
 /** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
@@ -12751,7 +12809,7 @@ function run(): void {
         //     SHADOW arm's answer below it — clearly not-served, on a fresh thread. Never
         //     rewrites history (no promotion). Absent `comparison` = a normal turn.
         if (data.comparison && data.status === "completed") {
-          turnWrap.appendChild(renderAbShadowComparison(data.comparison));
+          turnWrap.appendChild(renderAbShadowComparison(data.comparison, selectedMode));
         }
 
         loadSidebarHistory();

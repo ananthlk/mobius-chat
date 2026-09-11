@@ -6697,6 +6697,12 @@ body.landing-state .composer-landing-chips {
 @keyframes chat-ab-pulse { 0%,100%{opacity:.3} 50%{opacity:1} }
 @media (prefers-reduced-motion: reduce) { .chat-ab-dot { animation: none; } }
 .chat-ab-shadow-note { font-size: 12px; color: var(--mobius-text-muted, #94a3b8); font-style: italic; }
+.chat-ab-check-again {
+  margin-top: 8px; border: 1px solid #c4b5fd; background: #fff; color: #7c3aed; border-radius: 6px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.chat-ab-check-again:hover { background: #faf5ff; }
+.chat-ab-check-again:disabled { opacity: .5; cursor: default; }
 
 .composer-agentic-label {
   flex-shrink: 0;

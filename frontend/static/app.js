@@ -3968,7 +3968,18 @@ function setAbForkComposerHint(on) {
   const composer = document.querySelector(".composer") || document.getElementById("composer");
   composer?.classList.toggle("composer--ab-fork", on);
 }
-function renderAbShadowComparison(comparison) {
+function _abShadowWindowMs(tier) {
+  switch (tier) {
+    case "quick":
+      return (13 + 5) * 1e3;
+    case "agentic":
+      return (95 + 25) * 1e3;
+    case "copilot":
+    default:
+      return (31 + 8) * 1e3;
+  }
+}
+function renderAbShadowComparison(comparison, tier = "copilot") {
   const wrap = document.createElement("section");
   wrap.className = "chat-ab-shadow";
   const servedArm = comparison.thread_arm;
@@ -3978,26 +3989,19 @@ function renderAbShadowComparison(comparison) {
   head.innerHTML = `<span class="chat-ab-badge">A/B \xB7 block 2 of 2</span> The answer above is arm <b>${servedArm}</b> (served \u2014 it is your thread). This block is the shadow arm <b>${shadowArm ?? "\u2014"}</b>: a <b>fresh thread</b>, never served, no memory of earlier turns. Shown for comparison only.`;
   wrap.appendChild(head);
   if (!shadowArm || !shadowCid) {
-    const note = document.createElement("div");
-    note.className = "chat-ab-shadow-note";
-    note.textContent = "The shadow arm did not report a turn \u2014 treat this as a bug, not as an empty answer.";
-    wrap.appendChild(note);
+    const note2 = document.createElement("div");
+    note2.className = "chat-ab-shadow-note";
+    note2.textContent = "The shadow arm did not report a turn \u2014 treat this as a bug, not as an empty answer.";
+    wrap.appendChild(note2);
     return wrap;
   }
   const body = document.createElement("div");
   body.className = "chat-ab-shadow-body";
-  body.appendChild(_abShadowSpinner(shadowArm));
+  body.appendChild(_abShadowSpinner(shadowArm, tier));
   wrap.appendChild(body);
-  void _pollShadowEnvelope(shadowCid).then((env) => {
+  function renderShadowAnswer(env) {
     body.textContent = "";
-    if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
-      const miss = document.createElement("div");
-      miss.className = "chat-ab-shadow-note";
-      miss.textContent = "The shadow arm didn't finish \u2014 this is a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
-      body.appendChild(miss);
-      return;
-    }
-    const { answerBody, sources } = renderEnvelope(env.blocks, {
+    const { answerBody, sources } = renderEnvelope(env.blocks || [], {
       renderExtraBlock: (b) => {
         if (b.type === "tool_attribution") {
           const chip = document.createElement("div");
@@ -4021,40 +4025,75 @@ function renderAbShadowComparison(comparison) {
       if (srcEl)
         body.appendChild(srcEl);
     }
+  }
+  function note(text) {
+    const n = document.createElement("div");
+    n.className = "chat-ab-shadow-note";
+    n.textContent = text;
+    return n;
+  }
+  void _pollShadowEnvelope(shadowCid, _abShadowWindowMs(tier)).then((res) => {
+    body.textContent = "";
+    if (res.state === "completed" && Array.isArray(res.env.blocks) && res.env.blocks.length) {
+      renderShadowAnswer(res.env);
+      return;
+    }
+    if (res.state === "running") {
+      body.appendChild(note(`The shadow arm ${shadowArm} is still running \u2014 it can take longer than the served arm (a different orchestrator may use more rounds). Your answer above is complete; check for the shadow when it settles.`));
+      const again = document.createElement("button");
+      again.className = "chat-ab-check-again";
+      again.textContent = "Check for the shadow";
+      again.addEventListener("click", () => {
+        again.disabled = true;
+        void fetch(`${API_BASE}/chat/response/${encodeURIComponent(shadowCid)}`).then((r) => r.ok ? r.json() : null).then((d) => {
+          if (d && d.status === "completed" && d.assistant_envelope)
+            renderShadowAnswer(d.assistant_envelope);
+          else {
+            again.disabled = false;
+          }
+        }).catch(() => {
+          again.disabled = false;
+        });
+      });
+      body.appendChild(again);
+      return;
+    }
+    body.appendChild(note("The shadow arm didn't complete \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
   }).catch(() => {
     body.textContent = "";
-    const err = document.createElement("div");
-    err.className = "chat-ab-shadow-note";
-    err.textContent = "Couldn't load the shadow arm \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
-    body.appendChild(err);
+    body.appendChild(note("Couldn't load the shadow arm \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
   });
   return wrap;
 }
-function _abShadowSpinner(arm) {
+function _abShadowSpinner(arm, tier) {
   const s = document.createElement("div");
   s.className = "chat-ab-shadow-spinner";
-  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running\u2026`;
+  const hint = tier === "agentic" ? " (agentic \u2014 it can take up to ~2 min)" : tier === "quick" ? "" : " (up to ~40s)";
+  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running\u2026${hint}`;
   return s;
 }
-async function _pollShadowEnvelope(cid) {
-  const deadline = Date.now() + 75e3;
+async function _pollShadowEnvelope(cid, windowMs) {
+  const deadline = Date.now() + windowMs;
   let delay = 1200;
+  let sawProcessing = false;
   while (Date.now() < deadline) {
     try {
       const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
       if (r.ok) {
         const d = await r.json();
         if (d.status === "completed" && d.assistant_envelope)
-          return d.assistant_envelope;
+          return { state: "completed", env: d.assistant_envelope };
         if (d.status === "failed")
-          return null;
+          return { state: "failed" };
+        if (d.status)
+          sawProcessing = true;
       }
     } catch {
     }
     await new Promise((res) => setTimeout(res, delay));
     delay = Math.min(delay + 600, 4e3);
   }
-  return null;
+  return sawProcessing ? { state: "running" } : { state: "failed" };
 }
 var CREDENTIALING_ROSTER_TRIGGERS = [
   "provider roster",
@@ -14244,7 +14283,7 @@ ${message}`;
         }));
       }
       if (data.comparison && data.status === "completed") {
-        turnWrap.appendChild(renderAbShadowComparison(data.comparison));
+        turnWrap.appendChild(renderAbShadowComparison(data.comparison, selectedMode));
       }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
