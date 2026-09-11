@@ -23,7 +23,14 @@ from app.pipeline.v2.posture import Attempt, Gap
 
 logger = logging.getLogger(__name__)
 
-_DB = "mobius_chat"
+# db_client's LOGICAL key, NOT the physical database name. promise.py:39 carries
+# the same constant with the comment "see turn_spans.py for why not
+# 'mobius_chat'" -- a warning written to prevent exactly this error, in the file
+# this module was modelled on. I copied the pattern and not the constant, and
+# every round write failed with
+#   {'code': 'connection_error', 'message': "No fallback URL for database 'mobius_chat'"}
+# behind a correct swallow, producing zero rows while the flush logged rows=1.
+_DB = "chat"
 
 
 def mint_gap_id(thread_id: str, existing_count: int) -> str:

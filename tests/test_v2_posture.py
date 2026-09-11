@@ -411,3 +411,20 @@ def test_the_197_extend_path_is_unreachable_pre_round():
     # the guard, not that it is lexically nested under it. A control-flow proof
     # would need the AST. Stated so the next reader does not over-trust it.
     assert "round budget exhausted" in gov
+
+
+def test_ledger_uses_the_logical_db_key_not_the_physical_name():
+    """db_client takes a LOGICAL key. Passing the physical database name fails
+    with 'No fallback URL for database ...' -- swallowed, producing zero rows
+    while every other signal reads healthy.
+
+    promise.py already carries this constant with a comment warning against the
+    exact mistake. The comment did not stop it; this test will.
+    """
+    from app.pipeline.react import promise as _promise
+    from app.pipeline.v2 import ledger as _ledger
+    assert _ledger._DB == _promise._DB, (
+        f"ledger._DB={_ledger._DB!r} disagrees with the known-good "
+        f"promise._DB={_promise._DB!r}"
+    )
+    assert _ledger._DB == "chat"
