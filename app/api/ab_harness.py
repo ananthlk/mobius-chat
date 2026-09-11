@@ -157,7 +157,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
     rows = _q("""select round_index, posture, directive, gap_targeted, rationale,
                         gaps_opened, gaps_closed, v1_directive, v1_reason,
                         v1_maps_to, shadow_verdict, tool_called, tools_offered,
-                        overran, delivered_latency_s
+                        overran, round_duration_s
                    from turn_rounds where correlation_id=:c
                   order by round_index""", {"c": correlation_id})
     out = []
@@ -168,6 +168,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         "directive": r["v1_directive"],
                         "rationale": r["v1_reason"],
                         "tool_called": r["tool_called"],
+                        "round_duration_s": r["round_duration_s"],
                         "gaps_opened": [], "gaps_closed": [],
                         "verdict": None})                # a verdict is ABOUT v2, not v1
         else:
@@ -180,6 +181,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         "v1_maps_to": r["v1_maps_to"],
                         "verdict": r["shadow_verdict"],
                         "tool_called": r["tool_called"],
+                        "round_duration_s": r["round_duration_s"],
                         "overran": bool(r["overran"])})
     return out
 

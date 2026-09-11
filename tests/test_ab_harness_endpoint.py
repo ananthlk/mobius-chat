@@ -159,3 +159,30 @@ def test_capture_reads_the_envelope_through_the_same_function_the_ui_does():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "get_chat_response" in calls
     assert not any("envelope" in c and "get_chat" not in c for c in calls), calls
+
+
+def test_round_duration_is_written_AND_read():
+    """The column that had no writer, wired end to end.
+
+    `delivered_latency_s` and `delivered_cost_c` sat in turn_rounds through 100
+    rows with zero populated -- declared here, never wired. An unwritten column
+    reads as a legitimate negative. This asserts all three ends of the
+    replacement exist: the enrichment sets it, the ledger's INSERT names it,
+    and the endpoint returns it. Any one of the three missing = the same defect.
+    """
+    import pathlib
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
+    api = pathlib.Path("app/api/ab_harness.py").read_text()
+    assert '_row["round_duration_s"] = ' in orch, "no producer"
+    assert "round_duration_s," in ledg and '"dur_s": r.get("round_duration_s")' in ledg, "not written"
+    assert api.count('"round_duration_s": r["round_duration_s"]') == 2, "no consumer"
+    # ...and the two writerless columns are gone from the turn_rounds
+    # statements specifically. turn_attestations has its own delivered_cost_c,
+    # a DECLARED absence with a documented reason (065: "STEP 3, not yet
+    # measured") -- a different thing from a column nobody wired.
+    import re
+    for f, src in (("ledger", ledg), ("ab_harness", api)):
+        for stmt in re.findall(r"[^\"]*turn_rounds[^\"]*", src):
+            assert "delivered_cost_c" not in stmt, (f, stmt[:80])
+            assert "delivered_latency_s" not in stmt, (f, stmt[:80])

@@ -1074,10 +1074,29 @@ def run_pipeline(
                     # No cross-repo call and nothing added to the request path:
                     # ctx.react_trace_rounds already carries it.
                     try:
-                        _tr = {int((r or {}).get("round") or 0): (r or {}).get("tool")
-                               for r in (getattr(ctx, "react_trace_rounds", None) or [])}
+                        _trace = [r or {} for r in
+                                  (getattr(ctx, "react_trace_rounds", None) or [])]
+                        _tr = {int(r.get("round") or 0): r.get("tool") for r in _trace}
+                        # The round CLOCK, computed here for the same reason the
+                        # tool is: elapsed_s is stamped at round START, so a
+                        # round's duration is only knowable once its SUCCESSOR
+                        # has started. duration(n) = elapsed(n+1) - elapsed(n).
+                        #
+                        # The last round stays None. Its span runs to publish,
+                        # and a number that silently includes publish would be
+                        # read as a tool latency -- which is the off-by-one that
+                        # cost a withdrawn per-tool cost claim on 2026-09-11.
+                        _el = {int(r.get("round") or 0): r.get("elapsed_s")
+                               for r in _trace if r.get("elapsed_s") is not None}
+                        _dur = {}
+                        for _n in _el:
+                            _nxt = _el.get(_n + 1)
+                            if _nxt is not None and _nxt > _el[_n]:
+                                _dur[_n] = round(_nxt - _el[_n], 3)
                         for _row in _v2_rows:
-                            _row["tool_called"] = _tr.get(int(_row.get("round") or 0))
+                            _n = int(_row.get("round") or 0)
+                            _row["tool_called"] = _tr.get(_n)
+                            _row["round_duration_s"] = _dur.get(_n)
                             # v1 offers the WHOLE manifest every round. Recorded
                             # as a marker rather than 57 names -- the column
                             # exists to compare an offer against what was used,

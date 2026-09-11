@@ -137,12 +137,13 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     posture, directive, gap_targeted, rationale,
                     v1_directive, v1_reason, v1_maps_to, shadow_verdict,
                     gaps_opened, gaps_closed, overran,
-                    tools_offered, tool_called, declared_latency_ms, declared_version
+                    tools_offered, tool_called, round_duration_s,
+                    declared_latency_ms, declared_version
                 ) VALUES (
                     :cid, :rn, :ver, :posture, :directive, :gap, :rationale,
                     :v1d, :v1r, :v1m, :verdict,
                     CAST(:opened AS JSONB), CAST(:closed AS JSONB), :overran,
-                    CAST(:offered AS JSONB), :tool_called, :decl_ms, :decl_ver
+                    CAST(:offered AS JSONB), :tool_called, :dur_s, :decl_ms, :decl_ver
                 )
                 ON CONFLICT (correlation_id, round_index, orchestrator_version)
                 DO NOTHING
@@ -173,6 +174,9 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     # What the round actually RAN -- the join that turns
                     # declared per-tool latencies into measured ones.
                     "tool_called": r.get("tool_called"),
+                    # Successor-differenced at settle. None on the last round:
+                    # its span includes publish and is NOT a tool latency.
+                    "dur_s": r.get("round_duration_s"),
                     "decl_ms": r.get("declared_latency_ms"),
                     "decl_ver": r.get("declared_version"),
                 },

@@ -111,3 +111,24 @@ ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS tool_called TEXT;
 
 CREATE INDEX IF NOT EXISTS turn_rounds_tool_called_idx
     ON turn_rounds (tool_called) WHERE tool_called IS NOT NULL;
+
+-- ── 2026-09-11: the round clock, and two columns that never had a writer ────
+-- 100 rows in, `delivered_latency_s` and `delivered_cost_c` were populated on
+-- ZERO of them. I declared them here and never wired them -- the same
+-- consumer-with-no-producer defect this program has filed against three other
+-- seats this week, in my own table. An unwritten column is worse than an
+-- absent one: it reads as a legitimate negative.
+--
+-- They are dropped rather than wired, because `delivered_latency_s` was also
+-- the WRONG SHAPE. The only per-round clock available is `elapsed_s`, stamped
+-- at round START -- storing a start time in a column named for a delivered
+-- duration is precisely the naming that produced the off-by-one I had to
+-- withdraw a per-tool cost claim over on 2026-09-11.
+--
+-- `round_duration_s` is the successor difference, computed at settle where the
+-- successor is known: duration(n) = elapsed(n+1) - elapsed(n). The LAST round
+-- is NULL, not the remainder: the final round's span includes publish, and a
+-- number that silently includes publish would be filed as a tool latency.
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS round_duration_s DOUBLE PRECISION;
+ALTER TABLE turn_rounds DROP COLUMN IF EXISTS delivered_latency_s;
+ALTER TABLE turn_rounds DROP COLUMN IF EXISTS delivered_cost_c;

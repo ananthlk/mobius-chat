@@ -84,6 +84,8 @@ def _mcp_before_label(tool_name: str, inputs: dict) -> str:
         return f"◌ Looking up CARC {_s('carc')} rules…"
     if tool_name == "appeals_get_playbook":
         return f"◌ Checking playbook for {_s('payor')}…"
+    if tool_name == "appeals_find_carc":
+        return f"◌ Identifying denial code from description…"
     # Credentialing — named / dual-mode
     if tool_name == "lookup_npi":
         return f"◌ Looking up NPI for {_s('org')}…"
@@ -150,6 +152,37 @@ def _mcp_after_label(tool_name: str, inputs: dict, text: str, success: bool) -> 
     if tool_name == "appeals_assemble_letter":
         wc = len((text or "").split())
         return f"✓ Letter assembled ({wc} words)"
+    if tool_name == "appeals_lookup_rules":
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            _n = _d.get("rules_found", 0)
+            _title = _d.get("carc_title", f"CARC {_s('carc')}")
+            return f"✓ {_n} rule{'s' if _n != 1 else ''} for {_title}"
+        except Exception:
+            return f"✓ Rules loaded for CARC {_s('carc')}"
+    if tool_name == "appeals_get_playbook":
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            if _d.get("found"):
+                _days = _d.get("deadline_appeal_days")
+                _method = _d.get("submission_method", "")
+                return f"✓ Playbook: {_days}d deadline, {_method}" if _days else f"✓ Playbook loaded for {_s('payor')}"
+            return f"✓ No playbook — using FL Medicaid defaults"
+        except Exception:
+            return f"✓ Playbook checked"
+    if tool_name == "appeals_find_carc":
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            _top = _d.get("top_carc")
+            _matches = _d.get("matches", [])
+            if _top and _matches:
+                return f"✓ Likely CARC {_top} — {_matches[0].get('title', '')}"
+            return "✓ Denial code search complete"
+        except Exception:
+            return "✓ Denial identified"
     if tool_name == "appeals_validate_claim":
         # try to parse action/confidence from JSON response
         try:
