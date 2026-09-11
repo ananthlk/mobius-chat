@@ -3043,6 +3043,70 @@ function renderOneSection(sec) {
   _renderSectionBody(sec, sectionEl);
   return sectionEl;
 }
+function renderFormatBlock(block) {
+  const isDomain = block.type === "domain_card";
+  const isBullets = block.type === "bullets";
+  const section = {
+    label: block.label ?? "",
+    format: isDomain ? block.variant : block.type,
+    visibility: "primary",
+    bullets: isBullets ? block.items ?? [] : [],
+    data: isDomain ? block.data : { items: block.items, headers: block.headers, rows: block.rows }
+  };
+  return renderOneSection(section);
+}
+function renderModeBadge(mode) {
+  const m = String(mode ?? "").trim().toUpperCase();
+  if (m !== "CANONICAL" && m !== "RECITAL")
+    return null;
+  const lbl = document.createElement("div");
+  lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + m.toLowerCase();
+  lbl.textContent = m;
+  return lbl;
+}
+function renderFirstPass(block) {
+  const draft = (block.draft_markdown ?? "").trim();
+  const rounds = (block.trace_rounds ?? []).map((r, i) => ({
+    n: typeof r?.round === "number" ? r.round : i + 1,
+    ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
+    isThought: !(r?.running_answer ?? "").trim() && !!(r?.learned ?? "").trim()
+  })).filter((r) => r.ans.length > 0);
+  if (!draft && rounds.length === 0)
+    return null;
+  const fp = document.createElement("div");
+  fp.className = "ac-first-pass";
+  const sum = document.createElement("button");
+  sum.type = "button";
+  sum.className = "ac-first-pass-summary";
+  sum.textContent = rounds.length > 1 ? `First pass \xB7 ${rounds.length} rounds` : "First pass";
+  const fpBody = document.createElement("div");
+  fpBody.className = "ac-first-pass-body";
+  if (rounds.length > 0) {
+    rounds.forEach((r) => {
+      const step = document.createElement("div");
+      step.className = "ac-rd-step";
+      const lbl = document.createElement("span");
+      lbl.className = "ac-rd-label";
+      lbl.textContent = "rd-" + r.n;
+      const ans = document.createElement("div");
+      ans.className = "ac-rd-answer" + (r.isThought ? " ac-rd-thought" : "");
+      ans.innerHTML = simpleMarkdownToHtml(r.ans);
+      step.appendChild(lbl);
+      step.appendChild(ans);
+      fpBody.appendChild(step);
+    });
+  } else {
+    fpBody.innerHTML = simpleMarkdownToHtml(draft);
+  }
+  sum.addEventListener("click", () => {
+    const opening = !fp.classList.contains("ac-first-pass--open");
+    fp.classList.toggle("ac-first-pass--open");
+    fpBody.style.maxHeight = opening ? fpBody.scrollHeight + "px" : "0px";
+  });
+  fp.appendChild(sum);
+  fp.appendChild(fpBody);
+  return fp;
+}
 var _CA_PILL = {
   found: { label: "Sourced", cls: "found" },
   known_absent: { label: "Source silent", cls: "silent" },
@@ -3123,6 +3187,64 @@ function renderCertifiedAnswer(block) {
   if (footer.childElementCount)
     wrap.appendChild(footer);
   return wrap;
+}
+function _proseBlock(cls, markdown) {
+  const el2 = document.createElement("div");
+  el2.className = cls;
+  el2.innerHTML = simpleMarkdownToHtml(String(markdown ?? ""));
+  return el2;
+}
+function _detailBlock(block) {
+  const details = document.createElement("details");
+  details.className = "envelope-detail";
+  details.open = block.collapsed_default === false;
+  const sum = document.createElement("summary");
+  sum.textContent = "Details";
+  details.appendChild(sum);
+  const body = document.createElement("div");
+  body.className = "envelope-detail-body";
+  body.innerHTML = simpleMarkdownToHtml(String(block.markdown ?? ""));
+  details.appendChild(body);
+  return details;
+}
+function renderEnvelope(blocks, opts = {}) {
+  const answerBody = document.createElement("div");
+  answerBody.className = "ac-answer-final";
+  let sources = null;
+  const dropped = [];
+  const FORMAT_TYPES = /* @__PURE__ */ new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
+  for (const block of blocks || []) {
+    if (!block || typeof block !== "object" || typeof block.type !== "string")
+      continue;
+    const t = block.type;
+    let el2 = null;
+    if (t === "sources") {
+      sources = block;
+      continue;
+    } else if (t === "mode_badge")
+      el2 = renderModeBadge(block.mode);
+    else if (FORMAT_TYPES.has(t))
+      el2 = renderFormatBlock(block);
+    else if (t === "first_pass")
+      el2 = renderFirstPass(block);
+    else if (t === "direct_answer")
+      el2 = _proseBlock("ac-answer-envelope-body", block.markdown);
+    else if (t === "tldr")
+      el2 = _proseBlock("ac-answer-tldr", block.markdown);
+    else if (t === "markdown_report")
+      el2 = _proseBlock("envelope-markdown-report", block.markdown);
+    else if (t === "detail")
+      el2 = _detailBlock(block);
+    else
+      el2 = opts.renderExtraBlock ? opts.renderExtraBlock(block) : null;
+    if (el2) {
+      answerBody.appendChild(el2);
+    } else if (t !== "mode_badge" && t !== "first_pass") {
+      dropped.push(t);
+      opts.onUnknownBlock?.(t);
+    }
+  }
+  return { answerBody, sources, dropped };
 }
 function envelopeToAnswerCard(blocks, base) {
   if (!Array.isArray(blocks) || blocks.length === 0)
@@ -3254,6 +3376,56 @@ function stripCitationMarkers(container) {
   for (const n of nodes) {
     n.nodeValue = (n.nodeValue ?? "").replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
   }
+}
+function renderSourcesList(sources, onSourceClick) {
+  if (!sources || sources.length === 0)
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "ac-sources-footnotes";
+  const heading = document.createElement("div");
+  heading.className = "ac-sources-footnotes-heading";
+  heading.textContent = "Sources";
+  wrap.appendChild(heading);
+  const ol = document.createElement("ol");
+  ol.className = "ac-sources-list";
+  sources.forEach((src, i) => {
+    const li = document.createElement("li");
+    li.className = "ac-source-item";
+    li.setAttribute("data-cite-src", String(i + 1));
+    const clickable = !!(src.document_id && onSourceClick);
+    if (clickable) {
+      li.classList.add("ac-source-item--clickable");
+      li.setAttribute("role", "button");
+      li.setAttribute("tabindex", "0");
+      const open = () => onSourceClick(src.document_id, src.page_number ?? null, src.snippet ?? null);
+      li.addEventListener("click", open);
+      li.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      });
+    }
+    const title = document.createElement("span");
+    title.className = "ac-source-title";
+    title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
+    li.appendChild(title);
+    if (src.locator) {
+      const loc = document.createElement("span");
+      loc.className = "ac-source-locator";
+      loc.textContent = src.locator;
+      li.appendChild(loc);
+    }
+    if (src.snippet) {
+      const snip = document.createElement("span");
+      snip.className = "ac-source-snippet";
+      snip.textContent = src.snippet;
+      li.appendChild(snip);
+    }
+    ol.appendChild(li);
+  });
+  wrap.appendChild(ol);
+  return wrap;
 }
 function retainStreamedDraftAsFirstPass(panel, streamedDraftHTML) {
   if (panel.querySelector(".ac-first-pass"))
@@ -3742,6 +3914,116 @@ function normalizeFollowupLineList(raw, defaultClickable) {
       out.push(n);
   }
   return out;
+}
+var AB_FORK_LS_KEY = "chat:ab_fork";
+function abForkEnabled() {
+  try {
+    return localStorage.getItem(AB_FORK_LS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function setAbForkEnabled(on) {
+  try {
+    localStorage.setItem(AB_FORK_LS_KEY, on ? "1" : "0");
+  } catch {
+  }
+}
+function setAbForkComposerHint(on) {
+  const composer = document.querySelector(".composer") || document.getElementById("composer");
+  composer?.classList.toggle("composer--ab-fork", on);
+}
+function renderAbShadowComparison(comparison) {
+  const wrap = document.createElement("section");
+  wrap.className = "chat-ab-shadow";
+  const servedArm = comparison.thread_arm;
+  const armKeys = Object.keys(comparison).filter(
+    (k) => k !== "thread_arm" && k !== "shadow" && typeof comparison[k] === "string"
+  );
+  const shadowArm = armKeys.find((k) => k !== servedArm);
+  const shadowCid = shadowArm ? String(comparison[shadowArm]) : "";
+  const head = document.createElement("div");
+  head.className = "chat-ab-shadow-head";
+  head.innerHTML = `<span class="chat-ab-badge">A/B compare</span> This thread ran <b>${servedArm}</b> (served, above). The shadow arm <b>${shadowArm ?? "\u2014"}</b> ran on a <b>fresh thread</b> \u2014 never served, no memory of earlier turns \u2014 and doubled this turn's cost.`;
+  wrap.appendChild(head);
+  if (!shadowArm || !shadowCid) {
+    const note = document.createElement("div");
+    note.className = "chat-ab-shadow-note";
+    note.textContent = "The shadow arm did not report a turn \u2014 treat this as a bug, not as an empty answer.";
+    wrap.appendChild(note);
+    return wrap;
+  }
+  const body = document.createElement("div");
+  body.className = "chat-ab-shadow-body";
+  body.appendChild(_abShadowSpinner(shadowArm));
+  wrap.appendChild(body);
+  void _pollShadowEnvelope(shadowCid).then((env) => {
+    body.textContent = "";
+    if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
+      const miss = document.createElement("div");
+      miss.className = "chat-ab-shadow-note";
+      miss.textContent = "The shadow arm produced no renderable answer.";
+      body.appendChild(miss);
+      return;
+    }
+    const { answerBody, sources } = renderEnvelope(env.blocks, {
+      renderExtraBlock: (b) => {
+        if (b.type === "tool_attribution") {
+          const chip = document.createElement("div");
+          chip.className = "envelope-tool-chip";
+          chip.setAttribute("data-icon", String(b.icon || "search"));
+          chip.textContent = String(b.label || "Research");
+          return chip;
+        }
+        return null;
+      }
+    });
+    body.appendChild(answerBody);
+    if (sources && Array.isArray(sources.refs)) {
+      const refs = sources.refs.map((r) => ({
+        doc_title: r.title,
+        page_number: r.page ?? null,
+        snippet: r.snippet,
+        document_id: r.document_id
+      }));
+      const srcEl = renderSourcesList(refs);
+      if (srcEl)
+        body.appendChild(srcEl);
+    }
+  }).catch(() => {
+    body.textContent = "";
+    const err = document.createElement("div");
+    err.className = "chat-ab-shadow-note";
+    err.textContent = "Could not load the shadow arm's answer (it ran, but the fetch failed \u2014 it is not part of this conversation).";
+    body.appendChild(err);
+  });
+  return wrap;
+}
+function _abShadowSpinner(arm) {
+  const s = document.createElement("div");
+  s.className = "chat-ab-shadow-spinner";
+  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running\u2026`;
+  return s;
+}
+async function _pollShadowEnvelope(cid) {
+  const deadline = Date.now() + 75e3;
+  let delay = 1200;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.status === "completed" && d.assistant_envelope)
+          return d.assistant_envelope;
+        if (d.status === "failed")
+          return null;
+      }
+    } catch {
+    }
+    await new Promise((res) => setTimeout(res, delay));
+    delay = Math.min(delay + 600, 4e3);
+  }
+  return null;
 }
 var CREDENTIALING_ROSTER_TRIGGERS = [
   "provider roster",
@@ -13321,6 +13603,8 @@ ${message}`;
     const payload = { message };
     if (currentThreadId)
       payload.thread_id = currentThreadId;
+    if (abForkEnabled())
+      payload.ab_fork = true;
     if (opts?.credentialing_options) {
       payload.credentialing_options = opts.credentialing_options;
     }
@@ -13927,6 +14211,9 @@ ${message}`;
         turnWrap.appendChild(renderDemoChip(data.demo, {
           correlationId: data.correlation_id ?? activeCorrelationId
         }));
+      }
+      if (data.comparison && data.status === "completed") {
+        turnWrap.appendChild(renderAbShadowComparison(data.comparison));
       }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
@@ -14898,6 +15185,19 @@ ${message}`;
   function setupComposerOptionsMenu() {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
+    const abItem = document.getElementById("composerOptionAbFork");
+    function reflectAbFork() {
+      const on = abForkEnabled();
+      abItem?.setAttribute("aria-checked", on ? "true" : "false");
+      abItem?.classList.toggle("composer-option-item--on", on);
+      setAbForkComposerHint(on);
+    }
+    abItem?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setAbForkEnabled(!abForkEnabled());
+      reflectAbFork();
+    });
+    reflectAbFork();
     function hideOptionsMenu() {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");

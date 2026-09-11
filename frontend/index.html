@@ -348,6 +348,10 @@
           <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" data-tour-id="composer-input" />
           <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options" data-tour-id="composer-options">⋯</button>
           <div class="composer-options-menu" id="composerOptionsMenu" hidden role="menu">
+            <button type="button" class="composer-option-item" id="composerOptionAbFork" role="menuitemcheckbox" aria-checked="false" title="Run both orchestrators on each turn and show them side by side. Doubles cost. Stays on until you switch it off.">
+              <span class="composer-option-check" aria-hidden="true"></span>
+              <span class="composer-option-label">Compare A/B <span class="composer-option-sub">· doubles cost</span></span>
+            </button>
             <button type="button" class="composer-option-item composer-option-item--disabled" id="composerOptionAddLink" role="menuitem" disabled aria-disabled="true" title="Coming soon">Add link (coming soon)</button>
           </div>
           <button type="button" class="btn-send" id="send" aria-label="Send" data-tour-id="composer-send">

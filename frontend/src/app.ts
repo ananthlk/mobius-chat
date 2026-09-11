@@ -287,6 +287,15 @@ interface ChatResponse {
   status: string;
   message: string | null;
   correlation_id?: string;
+  /** A/B compare (ab_fork). Present ONLY when the turn forked. `thread_arm` names which
+   *  correlation_id was the conversation's served turn (do NOT assume v1 — routing picks it;
+   *  at PCT=100 it is v2). The other arm ran on a FRESH thread and was never served. A normal
+   *  turn omits this entirely; a single-arm `comparison` is a bug, not "the other had nothing". */
+  comparison?: {
+    thread_arm: string;
+    shadow?: { [arm: string]: { thread_id?: string } };
+    [arm: string]: unknown;      // arm-id → correlation_id (e.g. v1, v2)
+  };
   plan?: unknown;
   /** Sprint A.1 (2026-04-19): thinking_log became a mixed array — legacy
    *  string emits alongside new EmitEnvelope dicts. The normalizer
@@ -571,6 +580,133 @@ interface SendMessageOpts {
   selection?: { kind: string; id: string; in_reply_to?: string };
 }
 
+// ── A/B compare toggle (chat surface) ─────────────────────────────────────────
+// Persisted per-viewer in localStorage; the server never remembers it, so a doubled-cost
+// fork can't outlive the intent (a closed tab, a handed-off session). Read per turn by the
+// send path, which sets `ab_fork: true` on /chat while it is on.
+const AB_FORK_LS_KEY = "chat:ab_fork";
+function abForkEnabled(): boolean {
+  try { return localStorage.getItem(AB_FORK_LS_KEY) === "1"; } catch { return false; }
+}
+function setAbForkEnabled(on: boolean): void {
+  try { localStorage.setItem(AB_FORK_LS_KEY, on ? "1" : "0"); } catch { /* private mode */ }
+}
+/** A persistent composer hint so the doubled-cost mode is visible WHILE typing, not only
+ *  in the kebab — Ananth put it in the kebab precisely so forking is a deliberate act. */
+function setAbForkComposerHint(on: boolean): void {
+  const composer = document.querySelector(".composer") || document.getElementById("composer");
+  composer?.classList.toggle("composer--ab-fork", on);
+}
+
+/** The in-chat A/B shadow panel. The bubble above is the SERVED answer (thread_arm); this
+ *  renders the OTHER arm — clearly labelled as the shadow: a fresh thread, never served, no
+ *  memory of prior turns, and this turn's doubled cost. No promotion — the served answer is
+ *  and stays the conversation. Polls /chat/response/{shadow_cid} because the shadow may still
+ *  be running when the served turn completes (they fork simultaneously but settle apart). */
+function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparison"]>): HTMLElement {
+  const wrap = document.createElement("section");
+  wrap.className = "chat-ab-shadow";
+  const servedArm = comparison.thread_arm;
+  // The shadow arm = the arm-id key whose value is a cid string and which isn't the served arm.
+  const armKeys = Object.keys(comparison).filter(
+    (k) => k !== "thread_arm" && k !== "shadow" && typeof comparison[k] === "string",
+  );
+  const shadowArm = armKeys.find((k) => k !== servedArm);
+  const shadowCid = shadowArm ? String(comparison[shadowArm]) : "";
+
+  const head = document.createElement("div");
+  head.className = "chat-ab-shadow-head";
+  head.innerHTML = `<span class="chat-ab-badge">A/B compare</span> This thread ran <b>${servedArm}</b> (served, above). `
+    + `The shadow arm <b>${shadowArm ?? "—"}</b> ran on a <b>fresh thread</b> — never served, no memory of earlier turns — and doubled this turn's cost.`;
+  wrap.appendChild(head);
+
+  if (!shadowArm || !shadowCid) {
+    // A single-arm comparison should never reach us (Governor: a failed fork degrades to a
+    // normal turn with NO block). If it does, say so plainly rather than imply an empty arm.
+    const note = document.createElement("div");
+    note.className = "chat-ab-shadow-note";
+    note.textContent = "The shadow arm did not report a turn — treat this as a bug, not as an empty answer.";
+    wrap.appendChild(note);
+    return wrap;
+  }
+
+  const body = document.createElement("div");
+  body.className = "chat-ab-shadow-body";
+  body.appendChild(_abShadowSpinner(shadowArm));
+  wrap.appendChild(body);
+
+  void _pollShadowEnvelope(shadowCid).then((env) => {
+    body.textContent = "";
+    if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
+      const miss = document.createElement("div");
+      miss.className = "chat-ab-shadow-note";
+      miss.textContent = "The shadow arm produced no renderable answer.";
+      body.appendChild(miss);
+      return;
+    }
+    // Render the shadow through the SAME production renderer the bubble uses — the comparison
+    // is only honest if the shadow renders identically to what a served answer would.
+    const { answerBody, sources } = renderEnvelope(env.blocks as EnvBlock[], {
+      renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
+        if (b.type === "tool_attribution") {
+          const chip = document.createElement("div");
+          chip.className = "envelope-tool-chip";
+          chip.setAttribute("data-icon", String(b.icon || "search"));
+          chip.textContent = String(b.label || "Research");
+          return chip;
+        }
+        return null;
+      },
+    });
+    body.appendChild(answerBody);
+    if (sources && Array.isArray((sources as { refs?: unknown[] }).refs)) {
+      const refs = ((sources as unknown as { refs: Array<Record<string, unknown>> }).refs).map((r) => ({
+        doc_title: r.title as string | undefined,
+        page_number: (r.page as number | null | undefined) ?? null,
+        snippet: r.snippet as string | undefined,
+        document_id: r.document_id as string | undefined,
+      }));
+      const srcEl = renderSourcesList(refs);
+      if (srcEl) body.appendChild(srcEl);
+    }
+  }).catch(() => {
+    body.textContent = "";
+    const err = document.createElement("div");
+    err.className = "chat-ab-shadow-note";
+    err.textContent = "Could not load the shadow arm's answer (it ran, but the fetch failed — it is not part of this conversation).";
+    body.appendChild(err);
+  });
+
+  return wrap;
+}
+
+function _abShadowSpinner(arm: string): HTMLElement {
+  const s = document.createElement("div");
+  s.className = "chat-ab-shadow-spinner";
+  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running…`;
+  return s;
+}
+
+/** Poll /chat/response/{cid} until the shadow turn completes. Bounded — the shadow settled up
+ *  to ~30s after the served arm on the first live fork, so we wait a bit past that then give up. */
+async function _pollShadowEnvelope(cid: string): Promise<{ blocks?: unknown[] } | null> {
+  const deadline = Date.now() + 75_000;
+  let delay = 1200;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
+      if (r.ok) {
+        const d = await r.json() as { status?: string; assistant_envelope?: { blocks?: unknown[] } };
+        if (d.status === "completed" && d.assistant_envelope) return d.assistant_envelope;
+        if (d.status === "failed") return null;
+      }
+    } catch { /* transient — keep polling */ }
+    await new Promise((res) => setTimeout(res, delay));
+    delay = Math.min(delay + 600, 4000);
+  }
+  return null;
+}
+
 /** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
 const CREDENTIALING_ROSTER_TRIGGERS: string[] = [
   "provider roster",
@@ -712,7 +848,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, type CertifiedAnswerBlock } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, renderSourcesList, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -11739,8 +11875,12 @@ function run(): void {
       use_react?: boolean;
       chat_mode?: "copilot" | "agentic" | "quick";
       model_profile?: string;
+      ab_fork?: boolean;
     } = { message };
     if (currentThreadId) payload.thread_id = currentThreadId;
+    // A/B compare: run both orchestrators on THIS turn. The served answer is the thread's
+    // arm (comparison.thread_arm); the shadow runs on a fresh thread and is never served.
+    if (abForkEnabled()) payload.ab_fork = true;
     if (opts?.credentialing_options) {
       payload.credentialing_options = opts.credentialing_options;
     }
@@ -12600,6 +12740,13 @@ function run(): void {
           turnWrap.appendChild(renderDemoChip(data.demo, {
             correlationId: data.correlation_id ?? activeCorrelationId,
           }));
+        }
+
+        // 13. A/B compare (ab_fork): the served answer above IS the thread's arm. Append the
+        //     SHADOW arm's answer below it — clearly not-served, on a fresh thread. Never
+        //     rewrites history (no promotion). Absent `comparison` = a normal turn.
+        if (data.comparison && data.status === "completed") {
+          turnWrap.appendChild(renderAbShadowComparison(data.comparison));
         }
 
         loadSidebarHistory();
@@ -13771,6 +13918,23 @@ function run(): void {
   function setupComposerOptionsMenu(): void {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
+    // A/B compare toggle (Ananth: on the CHAT surface, in the kebab, "persists until
+    // switched off"). Client-side only — the server deliberately does NOT remember it, so
+    // doubled spend can't outlive the tab (Governor). We reflect the persisted state onto
+    // the menu item; the send path reads abForkEnabled() per turn.
+    const abItem = document.getElementById("composerOptionAbFork");
+    function reflectAbFork(): void {
+      const on = abForkEnabled();
+      abItem?.setAttribute("aria-checked", on ? "true" : "false");
+      abItem?.classList.toggle("composer-option-item--on", on);
+      setAbForkComposerHint(on);
+    }
+    abItem?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setAbForkEnabled(!abForkEnabled());
+      reflectAbFork();
+    });
+    reflectAbFork();
     function hideOptionsMenu(): void {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");
