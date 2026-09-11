@@ -254,6 +254,15 @@ SET_ENV_VARS=(
     # without a deploy: `gcloud run services update --update-env-vars
     # MOBIUS_V2_FRAME_DECIDES=` takes ~90s. Empty default = observe only.
     "MOBIUS_V2_FRAME_DECIDES=${MOBIUS_V2_FRAME_DECIDES:-}"
+    # Enables the A/B harness fork: honours a per-turn arm pin so both arms
+    # run in the SAME SECONDS. Empty default = off, and the fork endpoint
+    # returns 409 rather than silently degrading to a single arm.
+    "MOBIUS_V2_AB_FORK=${MOBIUS_V2_AB_FORK:-}"
+    # The fork calls its own /chat; dev auth is optional so this is empty, but
+    # the var exists so a hosted env can supply a token rather than the fork
+    # silently 401ing and reporting an empty launch.
+    "MOBIUS_AB_FORK_TOKEN=${MOBIUS_AB_FORK_TOKEN:-}"
+    "MOBIUS_SELF_URL=${MOBIUS_SELF_URL:-}"
     # Cache-assist (2026-04-23). Empty-default so unset vars don't
     # break the csv; see deploy/dev.env for rationale on each.
     "CACHE_ASSIST_ENABLED=${CACHE_ASSIST_ENABLED:-}"

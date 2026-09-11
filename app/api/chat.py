@@ -84,6 +84,22 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick", "task"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers. task: skips integrator, returns raw_text."""
 
+    ab_arm: Literal["v1", "v2"] | None = None
+    """HARNESS ONLY — pins this turn to one orchestrator instead of letting
+    routing.assign() decide from MOBIUS_V2_PCT.
+
+    Honoured ONLY when MOBIUS_V2_AB_FORK=1. Without that gate a client could
+    steer which orchestrator serves it, which is not a knob any caller should
+    hold: the split is an experiment the governor owns, and a caller that can
+    pick its arm can also pick its arm PER QUESTION and hand back a comparison
+    that is really a selection.
+
+    It exists so the A/B harness can run both arms in the SAME SECONDS against
+    the same corpus, manifest and roster — sequential arms cannot separate "the
+    governor decided better" from "the model rolled differently", which is
+    exactly what q20 of ab-4640b78180 showed: zero divergences and two
+    completely different answers."""
+
     force_citable_required: bool | None = None
     """Per-request override for react's citable_required decision (2026-08-07,
     Task #41(a) follow-up — "confirm from authoritative sources" CTA). Normally
@@ -345,6 +361,10 @@ def post_chat(
         payload["chat_mode"] = body.chat_mode
     if body.force_citable_required is not None:
         payload["force_citable_required"] = bool(body.force_citable_required)
+    # Gate read HERE, in the API process, not in the worker: a payload that
+    # never carries the pin cannot have it honoured downstream by accident.
+    if body.ab_arm and os.environ.get("MOBIUS_V2_AB_FORK", "").strip() == "1":
+        payload["ab_arm"] = body.ab_arm
     if body.is_continuation is not None:
         payload["is_continuation"] = bool(body.is_continuation)
     if isinstance(body.selection, dict) and body.selection:

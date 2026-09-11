@@ -17,6 +17,8 @@ Built to the FE seat's render contract (docs/AB_HARNESS_FE_RENDER_CONTRACT.md).
 from __future__ import annotations
 
 import json
+import os
+import threading
 import logging
 import uuid
 from pathlib import Path
@@ -372,3 +374,139 @@ def capture(run_id: str, qid: str, arm: str, body: Capture) -> dict:
     return {"run_id": run_id, "question_id": qid, "arm": arm,
             "correlation_id": body.correlation_id,
             "envelope_captured": bool(got[0]["has_env"]), "status": got[0]["status"]}
+
+
+# ── the simultaneous fork ───────────────────────────────────────────────────
+
+class Fork(BaseModel):
+    mode: str | None = None          # defaults to the question set's mode
+    arms: list[str] | None = None    # defaults to the run's arms
+
+
+@router.post("/ab/runs/{run_id}/q/{qid}/fork")
+def fork(run_id: str, qid: str, body: Fork) -> dict:
+    """Run every arm on one question AT THE SAME TIME, and return both turn ids
+    before either has finished.
+
+    WHY THIS EXISTS, in one screen: q20 of run ab-4640b78180 came back with
+    `Divergences · 0` -- the governor made identical decisions on both arms,
+    same postures, same rounds, same tools, same durations -- and two
+    completely different answers. One cited eight sources and answered; the
+    other refused on jurisdiction. The arms had run twenty minutes apart.
+
+    Sequential arms cannot separate "the governor decided better" from "the
+    model rolled differently". Every latency number on that row was
+    contaminated by a gap I introduced myself by flipping an env var between
+    passes. Ananth: "simultaneous and onscreen rendering is important -- that's
+    how I would know what works and how."
+
+    WHAT IS ACTUALLY HELD CONSTANT BY RUNNING TOGETHER: the corpus at this
+    instant, the tool manifest, the model roster and whatever the bandit is
+    currently exploring, cache state, and load. None of those are constant
+    across twenty minutes, and none of them were held before.
+
+    WHAT IS STILL NOT: the model's own sampling. Two calls in the same second
+    still roll differently. Simultaneity removes the CONFOUND; it does not
+    remove the variance, and a single fork remains one sample of two.
+
+    TWO WRITERS -- and why this is not that defect. My charter says no turn is
+    ever handled by both orchestrators, because two of them sharing write state
+    is the two-writer defect at maximum scale. Here there are TWO TURNS: two
+    correlation_ids, two fresh threads, two attestations, two sets of round
+    rows. Nothing is shared and nobody is being served twice. The harness forks
+    precisely because there is no user on the other end of it.
+
+    FRESH THREAD PER ARM, deliberately: the same thread would make the second
+    arm a follow-up rather than a comparison.
+
+    Ids are minted HERE and returned immediately, so the page can open both SSE
+    streams before either turn has produced a token -- which is the difference
+    between watching an A/B and reading one afterwards.
+    """
+    runs = _q("select * from ab_runs where run_id=:r", {"r": run_id})
+    if not runs:
+        raise HTTPException(404, f"run {run_id!r} not found")
+    run = runs[0]
+    qset = _run_set(run)
+    q = next((x for x in qset.get("questions", []) if x["id"] == qid), None)
+    if q is None:
+        raise HTTPException(404, f"question {qid!r} not in set {run['set_id']!r}")
+
+    if os.environ.get("MOBIUS_V2_AB_FORK", "").strip() != "1":
+        # A 409, not a silent single-arm run. A fork that quietly degrades to
+        # one arm returns a comparison with one column and no explanation --
+        # absence dressed as a result, which this program has now found nine
+        # times.
+        raise HTTPException(
+            409, "MOBIUS_V2_AB_FORK is not enabled on this service; the arm "
+                 "pin would be ignored and both arms would run on whatever "
+                 "MOBIUS_V2_PCT routes them to")
+
+    arms = body.arms or [a for a in (run["arm_a_id"], run.get("arm_b_id")) if a]
+    mode = body.mode or qset.get("mode") or "copilot"
+    launched: dict[str, str] = {}
+    errors: dict[str, str] = {}
+
+    def _launch(arm: str) -> None:
+        cid = str(uuid.uuid4())
+        try:
+            _post_chat(q["q"], mode, arm, cid)
+            launched[arm] = cid
+        except Exception as exc:          # pragma: no cover
+            errors[arm] = str(exc)[:200]
+
+    # Threads, not a loop: a loop is the sequential design this endpoint exists
+    # to replace. They are started as close together as the runtime allows and
+    # the POST itself only enqueues, so the two turns land in the same second.
+    threads = [threading.Thread(target=_launch, args=(a,), daemon=True) for a in arms]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    for arm, cid in launched.items():
+        _x("""INSERT INTO ab_run_questions (run_id, question_id, arm_id,
+                                            correlation_id, status)
+              VALUES (:r,:q,:a,:c,'running')
+              ON CONFLICT (run_id, question_id, arm_id) DO UPDATE SET
+                  correlation_id = EXCLUDED.correlation_id,
+                  status = 'running'""",
+           {"r": run_id, "q": qid, "a": arm, "c": cid})
+
+    return {
+        "run_id": run_id, "question_id": qid, "question": q["q"], "mode": mode,
+        # {arm: correlation_id} — open /chat/stream/{cid} on each, now.
+        "launched": launched,
+        "errors": errors or None,
+        "simultaneous": True,
+        # Stated on the payload so the page can render it rather than the
+        # reader having to remember it.
+        "held_constant_by_running_together": [
+            "corpus state", "tool manifest", "model roster / bandit state",
+            "cache state", "service load", "wall-clock time",
+        ],
+        "still_varied": [
+            "the orchestrator decision (the point of the experiment)",
+            "LLM sampling — simultaneity removes the confound, not the variance",
+        ],
+    }
+
+
+def _post_chat(message: str, mode: str, arm: str, correlation_id: str) -> None:
+    """Enqueue one arm's turn. Pins the arm; a FRESH thread each time."""
+    import urllib.request
+
+    base = os.environ.get("MOBIUS_SELF_URL", "http://127.0.0.1:8080").rstrip("/")
+    token = os.environ.get("MOBIUS_AB_FORK_TOKEN", "")
+    payload = {
+        "message": message, "chat_mode": mode,
+        "ab_arm": arm, "correlation_id": correlation_id,
+        # thread_id omitted -> ensure_thread() mints a fresh one per arm.
+    }
+    req = urllib.request.Request(
+        f"{base}/chat", data=json.dumps(payload).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()

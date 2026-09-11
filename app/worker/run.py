@@ -289,6 +289,7 @@ def _process_one_inner(correlation_id: str, payload: dict) -> None:
                 force_citable_required=force_citable_required,
                 is_continuation=is_continuation,
                 promise=promise,
+                ab_arm=payload.get("ab_arm"),
                 user_id=user_id,
                 system_context=system_context,
                 cache_assist=cache_assist,

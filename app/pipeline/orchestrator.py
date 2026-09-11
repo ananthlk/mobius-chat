@@ -420,6 +420,7 @@ def run_pipeline(
     is_continuation: bool = False,
     selection: dict | None = None,
     promise: Any | None = None,
+    ab_arm: str | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -482,8 +483,16 @@ def run_pipeline(
     # the two-writer defect at maximum scale, and nobody is being served twice.
     try:
         from app.pipeline.v2.routing import assign as _v2_assign
-        _v2_pct = int(os.environ.get("MOBIUS_V2_PCT", "0").strip() or 0)
-        ctx.orchestrator_version = _v2_assign(correlation_id, _v2_pct)
+        if ab_arm in ("v1", "v2"):
+            # PINNED by the harness so both arms run in the same seconds. The
+            # API process already refused the pin unless MOBIUS_V2_AB_FORK=1,
+            # so a payload carrying one is by construction a harness turn.
+            ctx.orchestrator_version = ab_arm
+            logger.info("[v2] arm PINNED by harness cid=%s arm=%s",
+                        correlation_id[:8], ab_arm)
+        else:
+            _v2_pct = int(os.environ.get("MOBIUS_V2_PCT", "0").strip() or 0)
+            ctx.orchestrator_version = _v2_assign(correlation_id, _v2_pct)
     except Exception:
         # A routing failure must not decide the turn. v1 is the safe arm
         # because it is the one whose behaviour is already known.

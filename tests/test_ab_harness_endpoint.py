@@ -18,6 +18,7 @@ def test_the_routes_the_contract_names_exist():
         "POST /ab/runs", "GET /ab/runs",
         "GET /ab/runs/{run_id}", "GET /ab/runs/{run_id}/q/{qid}",
         "POST /ab/runs/{run_id}/q/{qid}/arm/{arm}",
+        "POST /ab/runs/{run_id}/q/{qid}/fork",
     }, paths
 
 
@@ -293,3 +294,85 @@ def test_each_arm_names_the_turn_it_ran():
     and reading my own traces meant joining ab_run_questions by hand."""
     src = pathlib.Path("app/api/ab_harness.py").read_text()
     assert '"correlation_id": cid,' in src
+
+
+def test_fork_refuses_rather_than_silently_running_one_arm():
+    """A fork that quietly degrades to a single arm returns a comparison with
+    one column and no explanation — absence dressed as a result, nine prior
+    instances in this program. Without MOBIUS_V2_AB_FORK the arm pin is
+    ignored and BOTH turns route on MOBIUS_V2_PCT, so the 'comparison' would
+    be one orchestrator against itself, agreeing 100% of the time."""
+    import os
+    import app.api.ab_harness as H
+    from fastapi import HTTPException
+    H._q = lambda sql, p=None: [{"run_id": "r1", "set_id": "s",
+                                 "arm_a_id": "v1", "arm_b_id": "v2",
+                                 "question_set": {"mode": "copilot",
+                                                  "questions": [{"id": "q01", "q": "x"}]}}]
+    prev = os.environ.pop("MOBIUS_V2_AB_FORK", None)
+    try:
+        try:
+            H.fork("r1", "q01", H.Fork())
+            raise AssertionError("fork ran with the gate off")
+        except HTTPException as e:
+            assert e.status_code == 409
+            assert "MOBIUS_V2_AB_FORK" in str(e.detail)
+    finally:
+        if prev is not None:
+            os.environ["MOBIUS_V2_AB_FORK"] = prev
+
+
+def test_fork_launches_arms_CONCURRENTLY_not_in_a_loop():
+    """A loop is the sequential design this endpoint exists to replace.
+
+    q20 of ab-4640b78180: `Divergences · 0` — identical governor decisions on
+    both arms — and two completely different answers, because the arms ran
+    twenty minutes apart. Sequential arms cannot separate "the governor
+    decided better" from "the model rolled differently".
+    """
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "fork")
+    src = ast.unparse(fn)
+    assert "threading.Thread" in src, "arms are not launched concurrently"
+    assert ".start()" in src and ".join(" in src
+
+
+def test_fork_gives_each_arm_a_FRESH_thread_and_its_own_correlation_id():
+    """The same thread would make the second arm a follow-up, not a
+    comparison. And two correlation_ids is what makes this NOT the two-writer
+    defect: two turns, two attestations, two sets of round rows, nothing
+    shared — the harness forks precisely because nobody is being served."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    helper = next(f for f in ast.walk(tree)
+                  if isinstance(f, ast.FunctionDef) and f.name == "_post_chat")
+    src = ast.unparse(helper)
+    assert "thread_id" not in src, "an explicit thread_id makes arm B a follow-up"
+    assert '"ab_arm": arm' in src or "'ab_arm': arm" in src
+    fork_fn = next(f for f in ast.walk(tree)
+                   if isinstance(f, ast.FunctionDef) and f.name == "fork")
+    assert "uuid.uuid4()" in ast.unparse(fork_fn), "ids are not minted per arm"
+
+
+def test_the_arm_pin_is_gated_in_the_API_process_not_the_worker():
+    """Read where the payload is BUILT, so a payload that never carries the pin
+    cannot have it honoured downstream by accident. A client that can pick its
+    arm can pick it per question and hand back a comparison that is really a
+    selection."""
+    chat = pathlib.Path("app/api/chat.py").read_text()
+    assert 'os.environ.get("MOBIUS_V2_AB_FORK"' in chat
+    assert 'payload["ab_arm"] = body.ab_arm' in chat
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    assert 'if ab_arm in ("v1", "v2"):' in orch
+
+
+def test_the_fork_env_vars_are_in_the_deploy_allowlist():
+    """SET_ENV_VARS is an ALLOWLIST. Omitting MOBIUS_V2_AB_FORK would leave
+    the fork permanently 409ing with no way to enable it short of editing the
+    script — and omitting MOBIUS_SELF_URL would make the fork POST to
+    127.0.0.1 in a container that may not serve itself there."""
+    sh = pathlib.Path("scripts/deploy.sh").read_text()
+    for var in ("MOBIUS_V2_AB_FORK=", "MOBIUS_SELF_URL=", "MOBIUS_AB_FORK_TOKEN="):
+        assert var in sh, var
