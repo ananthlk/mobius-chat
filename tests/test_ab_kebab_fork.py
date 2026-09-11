@@ -193,9 +193,15 @@ def test_shadows_go_to_a_LOWER_PRIORITY_lane():
     q = pathlib.Path("app/queue/redis_queue.py").read_text()
     assert 'self._shadow_key = f"{self._request_key}:shadow"' in q
     assert 'key = self._shadow_key if payload.get("ab_shadow") else self._request_key' in q
-    # BRPOP with keys in PRIORITY order — served first, always
-    assert "r.brpop([self._request_key, self._shadow_key]" in q, \
-        "the consumer does not drain the served lane first"
+    # SUPERSEDED 2026-09-11: this asserted a priority BRPOP
+    # (`r.brpop([request_key, shadow_key])`). That was correct and made things
+    # WORSE — see test_the_shadow_lane_has_its_OWN_consumer_thread. The lane
+    # SPLIT is still the right thing and is what this test now guards; who
+    # drains it moved to its own consumer. Rewritten rather than deleted: a
+    # gate quietly removed when its subject changes is how a rule stops
+    # existing without anyone deciding to remove it.
+    assert "def consume_shadow_requests" in q, \
+        "the shadow lane has no consumer at all — shadows would never run"
     chat = _chat_src()
     assert '_p["ab_shadow"] = True' in chat, "shadow turns are not marked"
 
@@ -210,3 +216,35 @@ def test_the_SERVED_turn_is_never_marked_shadow():
     # ab_shadow is set ONLY on the copied shadow payload (_p), never on payload
     assert 'payload["ab_shadow"]' not in block
     assert '_p["ab_shadow"] = True' in block
+
+
+def test_the_shadow_lane_has_its_OWN_consumer_thread():
+    """Priority alone made it worse. With a single synchronous consumer,
+    giving served turns precedence meant a shadow could only START once the
+    served turn had finished — observed live: served 9ac55ac2 completed at
+    23:08:02, its shadow did not begin until 23:09:11, 68s later, long after
+    anything was listening. It also destroyed the simultaneity that is the
+    fork's entire justification.
+
+    Two consumers, one lane each: a shadow runs ALONGSIDE its served turn.
+    """
+    q = pathlib.Path("app/queue/redis_queue.py").read_text()
+    assert "def consume_shadow_requests" in q
+    # the served consumer must no longer read the shadow lane at all
+    i = q.index("def consume_requests")
+    j = q.index("def consume_shadow_requests")
+    served = q[i:j] if i < j else q[i:]
+    assert "self._shadow_key" not in served, \
+        "the served consumer still drains the shadow lane — it will serialise again"
+    w = pathlib.Path("app/worker/run.py").read_text()
+    assert "consume_shadow_requests" in w and "daemon=True" in w
+
+
+def test_a_missing_shadow_lane_cannot_stop_the_worker_starting():
+    """A comparison feature must not be able to prevent the product's worker
+    from running. The in-memory queue has no shadow lane at all."""
+    w = pathlib.Path("app/worker/run.py").read_text()
+    assert 'hasattr(q, "consume_shadow_requests")' in w
+    i = w.index("A/B SHADOW CONSUMER")
+    block = w[i:i + 1400]
+    assert "except Exception" in block and "served turns" in block

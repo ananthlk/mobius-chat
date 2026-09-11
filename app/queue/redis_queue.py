@@ -101,6 +101,41 @@ class RedisQueue(QueueAdapter):
                         raise last_err
         return self._client
 
+    def consume_shadow_requests(self, callback: Callable[[str, dict], None]) -> None:
+        """Drain the A/B shadow lane on a SEPARATE thread from served turns.
+
+        Two consumers, one lane each, so a shadow runs ALONGSIDE its served
+        turn instead of after it. That restores the simultaneity the fork
+        exists for -- same corpus, same manifest, same seconds -- while keeping
+        the served turn on a consumer no comparison can occupy.
+
+        This is deliberately NOT "make the worker concurrent". A general pool
+        would change how every production turn is scheduled to fix a
+        development comparison feature, and the blast radius of that is the
+        whole product. One extra thread, bounded to work nobody is waiting for.
+        """
+        logger.info("Shadow consumer listening (key=%s)", self._shadow_key)
+        while True:
+            try:
+                r = self._get_client()
+                result = r.brpop(self._shadow_key, timeout=5)
+                if result is None:
+                    continue
+                _, raw = result
+                item = json.loads(raw)
+                cid = item.pop("correlation_id", "")
+                logger.info("Received SHADOW request correlation_id=%s",
+                            cid[:8] if cid else "")
+                try:
+                    callback(cid, item)
+                except Exception as e:
+                    logger.exception("Shadow pipeline error cid=%s: %s",
+                                     cid[:8] if cid else cid, e)
+            except Exception as e:
+                logger.exception("Shadow consumer error: %s", e)
+                self._client = None
+                time.sleep(1)
+
     def publish_request(self, correlation_id: str, payload: dict[str, Any]) -> None:
         """Write chat request to Redis list (LPUSH). Worker consumes with BRPOP.
 
@@ -133,12 +168,21 @@ class RedisQueue(QueueAdapter):
             try:
                 r = self._get_client()
                 # Redis list: BRPOP = block until item available (FIFO with LPUSH)
-                # PRIORITY ORDER, not round-robin: Redis checks keys
-                # left-to-right and returns from the first non-empty one, so
-                # every served turn is taken before any shadow. A shadow can
-                # still block the turn AFTER it once started -- the consumer is
-                # synchronous -- but it can no longer be picked ahead of one.
-                result = r.brpop([self._request_key, self._shadow_key], timeout=5)
+                # SERVED LANE ONLY. This consumer no longer touches the
+                # shadow list at all -- consume_shadow_requests() runs it on
+                # its own thread.
+                #
+                # The priority-order BRPOP that was here was correct and made
+                # things worse: with a single synchronous consumer, giving
+                # served turns precedence meant a shadow could only START once
+                # the served turn had finished. Observed live: served 9ac55ac2
+                # completed at 23:08:02 and its shadow did not begin until
+                # 23:09:11 -- 68 seconds later, long after anything was
+                # listening for it. Priority without concurrency just moves the
+                # delay onto the half you are waiting to look at, and it also
+                # destroyed the simultaneity that was the fork's entire
+                # justification.
+                result = r.brpop(self._request_key, timeout=5)
                 if result is None:
                     continue
                 _, raw = result

@@ -422,6 +422,27 @@ def run_worker() -> None:
     except Exception:
         pass
     q = get_queue()
+
+    # ── A/B SHADOW CONSUMER, on its own thread (governor seat) ─────────────
+    # Started BEFORE the served loop, because the served loop below never
+    # returns. Daemon so it cannot hold the process open on shutdown.
+    #
+    # Guarded and optional: a queue impl without a shadow lane (the in-memory
+    # one) simply has no such method and the worker runs exactly as before.
+    # A comparison feature must not be able to stop the product's worker from
+    # starting.
+    if hasattr(q, "consume_shadow_requests"):
+        def _shadow_loop() -> None:
+            try:
+                q.consume_shadow_requests(process_one)  # type: ignore[attr-defined]
+            except Exception:
+                logger.exception("[worker] shadow consumer died; served turns "
+                                 "are unaffected and A/B comparisons will stop "
+                                 "arriving until restart")
+        threading.Thread(target=_shadow_loop, name="ab-shadow-consumer",
+                         daemon=True).start()
+        logger.info("[worker] A/B shadow consumer started on its own thread")
+
     # Queue impls that accept a stop predicate (the newer shape) drain
     # cleanly on SIGTERM. Older impls fall back to the original signature
     # — they'll stop on process exit, which is still correct, just less
