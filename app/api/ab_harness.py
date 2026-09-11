@@ -251,3 +251,61 @@ def get_comparison(run_id: str, qid: str) -> dict:
         },
         "arms": arms,
     }
+
+
+# ── capture ─────────────────────────────────────────────────────────────────
+
+class Capture(BaseModel):
+    correlation_id: str
+
+
+@router.post("/ab/runs/{run_id}/q/{qid}/arm/{arm}")
+def capture(run_id: str, qid: str, arm: str, body: Capture) -> dict:
+    """Freeze one arm's answer onto the run, at completion time.
+
+    The snapshot exists because /chat/response is a Redis key with a TTL: once
+    it expires the same call returns {"status":"processing"} forever, and a
+    comparison you cannot re-open is not infrastructure. So the capture is
+    SERVER-side and reads the same payload the UI reads, through the same
+    function -- a second envelope builder here would drift from the renderer
+    the first time either changed.
+
+    A turn that is not `completed` is a 409 and writes NOTHING. A half-written
+    row with a null envelope is indistinguishable from a turn that answered
+    with nothing, which is the precise confusion the `kept`-is-None rule exists
+    to prevent.
+    """
+    if not _q("select run_id from ab_runs where run_id=:r", {"r": run_id}):
+        raise HTTPException(404, f"run {run_id!r} not found")
+
+    from app.api.chat import get_chat_response
+    payload = get_chat_response(body.correlation_id)
+    if (payload or {}).get("status") != "completed":
+        raise HTTPException(409, f"turn {body.correlation_id!r} is "
+                                 f"{(payload or {}).get('status')!r}, not completed")
+    env = payload.get("assistant_envelope")
+
+    _x("""INSERT INTO ab_run_questions
+              (run_id, question_id, arm_id, correlation_id, status,
+               answer_envelope, envelope_captured_at, delivered)
+          VALUES (:r,:q,:a,:c,'captured',CAST(:e AS JSONB), now(), CAST(:d AS JSONB))
+          ON CONFLICT (run_id, question_id, arm_id) DO UPDATE SET
+              correlation_id = EXCLUDED.correlation_id,
+              status         = EXCLUDED.status,
+              answer_envelope= EXCLUDED.answer_envelope,
+              envelope_captured_at = EXCLUDED.envelope_captured_at,
+              delivered      = EXCLUDED.delivered""",
+       {"r": run_id, "q": qid, "a": arm, "c": body.correlation_id,
+        "e": json.dumps(env), "d": json.dumps({})})
+
+    # Read back in the same change. A write path with no reader is how the
+    # attestation shipped an empty table behind 21 green tests.
+    got = _q("""select answer_envelope is not null as has_env, status
+                  from ab_run_questions
+                 where run_id=:r and question_id=:q and arm_id=:a""",
+             {"r": run_id, "q": qid, "a": arm})
+    if not got:
+        raise HTTPException(500, "capture wrote no row")
+    return {"run_id": run_id, "question_id": qid, "arm": arm,
+            "correlation_id": body.correlation_id,
+            "envelope_captured": bool(got[0]["has_env"]), "status": got[0]["status"]}

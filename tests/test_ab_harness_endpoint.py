@@ -9,11 +9,14 @@ import inspect
 from app.api import ab_harness as ab
 
 
-def test_the_four_routes_the_contract_names_exist():
+def test_the_routes_the_contract_names_exist():
+    """An EXACT set: adding a route to the FE's contract must be a deliberate
+    edit here, never a side effect."""
     paths = {f"{list(r.methods)[0]} {r.path}" for r in ab.router.routes}
     assert paths == {
         "POST /ab/runs", "GET /ab/runs",
         "GET /ab/runs/{run_id}", "GET /ab/runs/{run_id}/q/{qid}",
+        "POST /ab/runs/{run_id}/q/{qid}/arm/{arm}",
     }, paths
 
 
@@ -118,3 +121,41 @@ def test_create_persists_the_snapshot():
     sql = " ".join(n.value for n in ast.walk(fn)
                    if isinstance(n, ast.Constant) and isinstance(n.value, str))
     assert "INSERT INTO ab_runs" in sql and "question_set" in sql
+
+
+def test_capture_refuses_an_incomplete_turn():
+    """409 and NOTHING written. A row with a null envelope is
+    indistinguishable from a turn that answered with nothing."""
+    import app.api.ab_harness as H
+    from fastapi import HTTPException
+    writes = []
+    H._q = lambda sql, p=None: [{"run_id": "r1"}] if "from ab_runs" in sql else []
+    H._x = lambda sql, p=None: writes.append(sql)
+    import app.api.chat as C
+    orig = C.get_chat_response
+    orig_q, orig_x = ab._q, ab._x
+    C.get_chat_response = lambda cid: {"status": "processing"}
+    try:
+        try:
+            H.capture("r1", "q01", "v1", H.Capture(correlation_id="c1"))
+            raise AssertionError("should have raised")
+        except HTTPException as e:
+            assert e.status_code == 409
+        assert writes == [], writes
+    finally:
+        C.get_chat_response = orig
+        H._q, H._x = orig_q, orig_x
+
+
+def test_capture_reads_the_envelope_through_the_same_function_the_ui_does():
+    """AST: capture() calls chat.get_chat_response, not a second envelope
+    builder -- a private copy drifts from the renderer the first time either
+    side changes."""
+    import ast, pathlib
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "capture")
+    calls = {n.func.id for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "get_chat_response" in calls
+    assert not any("envelope" in c and "get_chat" not in c for c in calls), calls
