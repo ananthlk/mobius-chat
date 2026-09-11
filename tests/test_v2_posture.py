@@ -730,3 +730,53 @@ def test_the_settle_enrichment_joins_the_trace_by_round():
     from app.pipeline import orchestrator as _orch
     src = inspect.getsource(_orch.run_pipeline)
     assert "react_trace_rounds" in src and "tool_called" in src
+
+
+# ── 2026-09-11: three defects the persisted decision_inputs exposed ─────────
+
+def test_zero_to_one_gap_is_discovery_not_a_rising_trend():
+    """history [0,1] fired trend_increasing on essentially every two-round
+    turn in dev — asking for another round on turns that had only just named
+    their own question. A trend needs something to have been a trend FROM,
+    and zero is not that."""
+    from app.pipeline.v2.posture import trend, Trend
+    assert trend((0, 1)) is Trend.FLAT
+    assert trend((0, 3)) is Trend.FLAT
+    # a real rise still reads as one
+    assert trend((1, 2)) is Trend.INCREASING
+    assert trend((2, 1)) is Trend.DECREASING
+
+
+def test_the_increasing_branch_cannot_spend_what_it_cannot_afford():
+    """It returned "buy another round" BEFORE the budget was consulted. Live
+    on q12/ab-c311023248 it asked for a round with 0.0s remaining and a 20.4s
+    shortfall; only the exit mode stopped it, and the exit mode doing all the
+    work is what kept it invisible.
+
+    Discovering that you are lost is not a reason you can afford to keep
+    walking."""
+    from dataclasses import replace
+    from app.pipeline.v2.posture import (
+        Budget, Gap, Posture, RoundState, select, spendable)
+    broke = RoundState(
+        round_index=3, open_gaps=(Gap(gap_id="S1", text="a", opened_round=1),
+                                  Gap(gap_id="S2", text="b", opened_round=2)),
+        gaps_open_history=(1, 2), budget=Budget(remaining_s=0.0, remaining_c=0.0),
+        next_round_cost_s=10.4, acting_cost_s=10.0, validate_cost_s=9.6,
+        question="q")
+    assert not spendable(broke)
+    assert select(broke).posture is not Posture.EXPLORE
+    # ...and with budget, the same rising trend still explores
+    rich = replace(broke, budget=Budget(remaining_s=120.0, remaining_c=0.0))
+    d = select(rich)
+    assert d.posture is Posture.EXPLORE
+    assert d.branch in ("trend_increasing", "gap_affordable")
+
+
+def test_gap_age_accumulates_and_a_fresh_gap_is_age_zero():
+    """WITHDRAWN as a defect after checking. age=0 on every observed row was a
+    gap genuinely opened that round, not a broken clock. Pinned so the next
+    reader does not re-raise it."""
+    from app.pipeline.v2.posture import Gap
+    assert Gap(gap_id="S1", text="x", opened_round=1).age(3) == 2
+    assert Gap(gap_id="S2", text="y", opened_round=2).age(2) == 0

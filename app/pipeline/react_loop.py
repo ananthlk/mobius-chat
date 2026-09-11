@@ -5563,12 +5563,31 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             _v2_applied = False
                             try:
                                 from app.pipeline.v2 import shadow as _v2s
+                                _v2_promise_s = _v2s.promise_seconds
 
                                 _v2_state = _v2s.state_from_ctx(
                                     ctx,
                                     round_index=rn,
                                     elapsed_s=_pp_elapsed_s,
-                                    promise_latency_s=float(_pp_contract.soft_target_s),
+                                    # THE PROMISE, not v1's soft target.
+                                    #
+                                    # This read `_pp_contract.soft_target_s`,
+                                    # which for copilot is 12.0s (governor.py
+                                    # :91) while the copilot PROMISE is 31.0s.
+                                    # v2 has been deciding against a budget
+                                    # under 40% of the contract it exists to
+                                    # keep: `spendable` was False on virtually
+                                    # every round, so `worth_spending` was
+                                    # always None, so every "nothing worth
+                                    # buying" was an artefact of a wrong input
+                                    # rather than a judgement. Found only once
+                                    # decision_inputs was persisted and the
+                                    # shortfall was visible on round 1.
+                                    #
+                                    # A soft target is a NUDGE; a promise is a
+                                    # CONTRACT. Wiring one to the other is the
+                                    # same class as cost_usd holding cents.
+                                    promise_latency_s=_v2_promise_s(ctx, _pp_contract),
                                     round_cost_s=0.0,   # 0 => use the measured
                                     acting_cost_s=0.0,  # per-posture table
                                 )

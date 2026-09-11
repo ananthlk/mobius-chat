@@ -234,6 +234,12 @@ class RoundState:
     min_importance: str = "normal"
     # Seeded from the question when the ledger is empty -- see seed_root_gap.
     question: str = ""
+    # Gap texts react reported CLOSED across the turn so far. Carried for the
+    # RECORD, not for the decision: nothing in select() reads it. It is here
+    # because "gaps closed" is the only recall measure this system has, and a
+    # row that reports what was opened and never what was closed cannot show
+    # whether a round bought anything.
+    gaps_closed: tuple[str, ...] = ()
 
 
 _IMPORTANCE_ORDER = {"low": 0, "normal": 1, "high": 2}
@@ -278,6 +284,15 @@ def trend(history: tuple[int, ...]) -> Trend:
     if len(history) < TREND_WINDOW:
         return Trend.FLAT
     now, prev = history[-1], history[-TREND_WINDOW]
+    # 0 -> 1 IS NOT A RISING TREND. It is the first gap being NAMED, which is
+    # what a first round is for. Counting it as "still discovering" fired
+    # trend_increasing on essentially every two-round turn in dev on
+    # 2026-09-11 -- history [0, 1] -- and asked for another round on turns
+    # that had just started to see their own question.
+    #
+    # A trend needs something to have been a trend FROM. Zero is not that.
+    if prev == 0:
+        return Trend.FLAT
     if now > prev:
         return Trend.INCREASING
     if now < prev:
@@ -496,7 +511,16 @@ def select(state: RoundState) -> Decision:
     # for it. This one is unreachable on purpose, says so, and has a test
     # asserting select() never returns it -- so it cannot come back silently.
 
-    if trend(state.gaps_open_history) is Trend.INCREASING:
+    if trend(state.gaps_open_history) is Trend.INCREASING and spendable(state):
+        # `and spendable(state)` added 2026-09-11. This branch returned
+        # "buy another round" BEFORE the budget was consulted -- every other
+        # spending branch reserves buy+act, this one reserved nothing. Live on
+        # q12/ab-c311023248 it asked for a round with 0.0s remaining and a
+        # 20.4s shortfall, and only the exit mode stopped it. The exit mode
+        # doing all the work is what kept it invisible.
+        #
+        # Same shape as the executor runaway, one level up: discovering that
+        # you are lost is not a reason you can afford to keep walking.
         return Decision(
             Posture.EXPLORE,
             "gaps increasing: still discovering, closure is 25.4% here",
@@ -679,6 +703,7 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
             for g in state.open_gaps
         ],
         "gaps_open_history": list(state.gaps_open_history),
+        "gaps_closed": list(state.gaps_closed),
         "trend": trend(state.gaps_open_history).value,
 
         # ── the arithmetic that actually decided it ─────────────────────────
@@ -728,5 +753,10 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
 # NOT fixed here. Moving it changes what every shadow row since 2026-09-11 has
 # meant, so it needs its own re-derivation against the recorded inputs -- which
 # is now possible for the first time, because those inputs are persisted.
-BRANCH_SKIPS_BUDGET = ("trend_increasing returns EXPLORE before spendable() is "
-                       "checked; every other spending branch reserves buy+act")
+# FIXED 2026-09-11 — `and spendable(state)` on the branch, and trend() no
+# longer reads 0 -> 1 as rising. Kept as a named record because the rows
+# recorded BEFORE this change were produced by the unguarded branch and must
+# not be pooled with rows after it.
+BRANCH_SKIPS_BUDGET = ("FIXED 2026-09-11: trend_increasing now requires "
+                       "spendable(); rows before this commit came from the "
+                       "unguarded branch and are a different population")

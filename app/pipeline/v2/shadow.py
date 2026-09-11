@@ -130,24 +130,44 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         open_texts: list[str] = []
         attempts_by_text: dict[str, list[Attempt]] = {}
 
+        closed_all: list[str] = []
         for r in rounds:
             enr = (r or {}).get("enrichment") or {}
             gaps = [g for g in (enr.get("gaps_open") or []) if isinstance(g, str)]
+            closed = [g for g in (enr.get("gaps_closed") or []) if isinstance(g, str)]
+            closed_all.extend(closed)
             history.append(len(gaps))
             open_texts = gaps  # the latest round's list is the live one
             tool = (r or {}).get("tool")
             query = (((r or {}).get("inputs") or {}).get("query"))
+            # ── THE PAYLOAD CHECK, wired 2026-09-11 ─────────────────────────
+            # This was hard-coded False, which made `converging()` unable to
+            # return True, which made `may_overrun()` unable to allow -- so the
+            # overrun Ananth asked for ("would you relax a constraint when one
+            # more round would close it") was STRUCTURALLY DEAD. Built, tested,
+            # reported, and never once reachable.
+            #
+            # What it must NOT be: the tool's own success flag. A tool can
+            # succeed and return nothing, and that is the exact case the check
+            # exists to catch.
+            #
+            # What it IS, and its basis: the round's enrichment recorded either
+            # a CLOSED gap or a non-empty running answer. Both are downstream
+            # of content actually coming back -- react cannot close a gap or
+            # extend the running answer from an empty result. It is a PROXY,
+            # not the raw payload, and it is named one: the raw result lives
+            # behind raw_result_ref, which state_from_ctx deliberately does not
+            # dereference because reading tool payloads on the decision path is
+            # how an observer starts costing what it observes.
+            _running = str(enr.get("running_answer") or "").strip()
+            returned = bool(closed) or bool(_running)
             for g in gaps:
                 attempts_by_text.setdefault(g, [])
                 if tool:
                     attempts_by_text[g].append(
                         Attempt(round_index=int((r or {}).get("round") or 0),
                                 tool=tool, query=query,
-                                # R0 cannot see the payload check yet, so this
-                                # stays False. It makes CAPABILITY reachable in
-                                # the shadow but never acted on -- and the
-                                # divergence it produces is itself informative.
-                                returned_payload=False))
+                                returned_payload=returned))
 
         opened_at: dict[str, int] = {}
         for r in rounds:
@@ -170,6 +190,7 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             next_round_cost_s=round_cost_s,
             acting_cost_s=acting_cost_s,
             validate_cost_s=9.6,
+            gaps_closed=tuple(dict.fromkeys(closed_all)),
         )
     except Exception as exc:
         logger.warning("[v2.shadow] state_from_ctx failed r%s: %s", round_index, exc)
@@ -224,9 +245,7 @@ def compare(v1_directive: str | None, state: RoundState,
         # found today, and the first one in a field I had already shipped to
         # another seat as evidence.
         "gaps_opened": [g.gap_id for g in state.open_gaps],
-        "gaps_closed": [],   # HONESTLY EMPTY: R0 has no close signal wired.
-                             # Not a zero -- a declared absence. Closing it is
-                             # the gap ledger's job and it is not built yet.
+        "gaps_closed": list(state.gaps_closed),
         # THE verdict, authored HERE and nowhere else. An earlier version
         # returned only the two booleans and let emit() derive the string as a
         # local -- so the persisted column read a key that never existed and
@@ -306,3 +325,29 @@ def divergence_rate(verdicts: list[str]) -> dict:
         "excluded_unmapped": unmapped,
         "unclassified": len(verdicts) - decided - unmapped,
     }
+
+
+# Fallback ONLY for a turn that has no promise -- enqueued before the promise
+# existed. Never a synthesised promise: one invented mid-turn would backfill
+# the exact gap the attestation measures.
+_NO_PROMISE_FALLBACK_S = 31.0
+
+
+def promise_seconds(ctx, contract) -> float:
+    """The budget v2 decides against: the PROMISE.
+
+    Not `contract.soft_target_s` -- that is v1's internal nudge (copilot 12.0s)
+    and the promise is the contract (copilot 31.0s). Deciding against the nudge
+    starved every round: `spendable` False, `worth_spending` None, and a NARROW
+    that read like a judgement and was arithmetic.
+
+    Order: the turn's own frozen promise, then the tier table, then a declared
+    fallback. Never the soft target.
+    """
+    p = getattr(ctx, "promise", None)
+    lat = getattr(p, "latency_s", None) if p is not None else None
+    if isinstance(lat, (int, float)) and lat > 0:
+        return float(lat)
+    logger.info("[v2] no promise on ctx; budget falls back to %.1fs",
+                _NO_PROMISE_FALLBACK_S)
+    return _NO_PROMISE_FALLBACK_S
