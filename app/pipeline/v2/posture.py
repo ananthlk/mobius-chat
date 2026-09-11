@@ -400,6 +400,10 @@ def spendable(state: RoundState) -> bool:
     # finds costs a round too -- reserve BOTH. next_round_cost_s, when the
     # caller supplied one, wins over the table so a tier-specific measurement
     # can override the global proxy.
+    # The SAME state select() decided on -- seeded root gap included. Without
+    # this, every row with an empty ledger reported gates computed on a state
+    # the decision never saw.
+    state = effective_state(state)
     buy = state.next_round_cost_s or round_cost(Posture.EXPLORE).p50_s
     act = state.acting_cost_s or round_cost(Posture.COMMUNICATE).p50_s
     return state.budget.remaining_s >= (buy + act)
@@ -419,7 +423,30 @@ def worth_spending(state: RoundState, *, allow_overrun: bool = False) -> Gap | N
 
 
 def _stuck_count(state: RoundState) -> int:
-    return sum(1 for g in state.open_gaps if stuck(g, state.round_index))
+    """Gaps that are UNREACHABLE — the same population alternatives_worth_it()
+    admits, not a narrower one.
+
+    It counted only stuck() — a gap that has resisted STUCK_AGE_ROUNDS — while
+    alternatives_worth_it() also admits a gap that was attempted and returned
+    nothing. So ALTERNATIVES fired on q12 of ab-e491c9a27a with the message
+    "0 gap(s) unreachable: offer a route rather than a shortfall". A posture
+    reporting zero instances of the thing it exists for.
+
+    Two populations of one list, counted by two functions, disagreeing about
+    the same state — the third instance of that shape today. One predicate,
+    named, called by both."""
+    return sum(1 for g in state.open_gaps if unreachable(g, state.round_index))
+
+
+def unreachable(gap: Gap, current_round: int) -> bool:
+    """A gap we cannot get to: resisted too long, OR tried and nothing came
+    back. Not merely unbought — a gap nobody has attempted is UNFUNDED, and
+    telling someone to go elsewhere for something we never tried is the
+    flattering error this distinction exists to prevent."""
+    return bool(
+        stuck(gap, current_round)
+        or (gap.attempted_by and not any(a.returned_payload for a in gap.attempted_by))
+    )
 
 
 def alternatives_worth_it(state: RoundState) -> bool:
@@ -439,11 +466,9 @@ def alternatives_worth_it(state: RoundState) -> bool:
         return False
     if state.budget.remaining_s < cost_of(Posture.ALTERNATIVES, state):
         return False
-    return any(
-        stuck(g, state.round_index)
-        or (g.attempted_by and not any(a.returned_payload for a in g.attempted_by))
-        for g in state.open_gaps
-    )
+    # The SAME predicate _stuck_count uses. They disagreed, and the posture
+    # announced "0 gap(s) unreachable" while firing.
+    return any(unreachable(g, state.round_index) for g in state.open_gaps)
 
 
 def validate_worth_it(state: RoundState) -> bool:
@@ -478,6 +503,29 @@ class Decision:
     # only "explore" cannot be argued with. Ananth, 2026-09-11: "I want to know
     # the rationale for why v2 made the decision it did."
     branch: str = ""
+
+
+
+def effective_state(state: "RoundState") -> "RoundState":
+    """The state the decision is ACTUALLY made on.
+
+    "The question is the gap." An empty ledger is an UNNAMED gap, not an absent
+    one, so the root gap stands in until react names something specific.
+
+    This was inline at the top of select(), which meant select() decided on a
+    SEEDED state while explain() reported the UNSEEDED one it was handed. The
+    rows showed `open gaps 0` and `worth_spending None` beside
+    `branch=gap_affordable` and `because="closing G0"` -- a gap the gap list did
+    not contain. The emit was faithful to its input and wrong about the
+    decision, which is worse than no emit: it invites you to argue with a state
+    that never decided anything.
+
+    One function, called by both, so the two cannot diverge again.
+    """
+    if not state.open_gaps and state.question:
+        root = seed_root_gap(state.question, round_index=state.round_index)
+        return replace(state, open_gaps=(root,))
+    return state
 
 
 def select(state: RoundState) -> Decision:
@@ -536,9 +584,7 @@ def select(state: RoundState) -> Decision:
     # absent one -- so the root gap stands in until react names something
     # specific. Without this the machine said COMMUNICATE on round 1 before it
     # had looked at anything: 50 of 87 divergences in the 2026-09-11 sample.
-    if not state.open_gaps and state.question:
-        root = seed_root_gap(state.question, round_index=state.round_index)
-        state = replace(state, open_gaps=(root,))
+    state = effective_state(state)
 
     gap = worth_spending(state)
     overran = False
@@ -673,6 +719,10 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
     called. If this disagreed with select(), it would be a second author of the
     decision -- so it calls, never reimplements.
     """
+    # The SAME state select() decided on -- seeded root gap included. Without
+    # this, every row with an empty ledger reported gates computed on a state
+    # the decision never saw.
+    state = effective_state(state)
     buy = state.next_round_cost_s or round_cost(Posture.EXPLORE).p50_s
     act = state.acting_cost_s or round_cost(Posture.COMMUNICATE).p50_s
     can_spend = spendable(state)
@@ -725,7 +775,7 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
         "may_overrun": {"allowed": over_ok, "why": over_why},
         "alternatives_worth_it": alternatives_worth_it(state),
         "validate_worth_it": validate_worth_it(state),
-        "stuck_gaps": _stuck_count(state),
+        "unreachable_gaps": _stuck_count(state),
         "exit_mode": exit_mode(state).value,
 
         # ── and only then, the conclusion ───────────────────────────────────

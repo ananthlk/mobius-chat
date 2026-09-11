@@ -285,3 +285,11 @@ def test_v1_rows_carry_no_v2_only_fields():
         H._q = orig
     for f in ("applied_directive", "v2_applied", "prompt_mismatch", "mismatch_kind"):
         assert f not in t, f
+
+
+def test_each_arm_names_the_turn_it_ran():
+    """Without correlation_id nothing can link a comparison back to its own
+    telemetry — the decision trace, the attestation, the logs. It was absent,
+    and reading my own traces meant joining ab_run_questions by hand."""
+    src = pathlib.Path("app/api/ab_harness.py").read_text()
+    assert '"correlation_id": cid,' in src

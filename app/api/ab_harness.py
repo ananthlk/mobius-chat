@@ -255,6 +255,10 @@ def get_comparison(run_id: str, qid: str) -> dict:
             # SNAPSHOT -- /chat/response is a Redis key with a TTL and returns
             # {"status":"processing"} forever once it expires. A comparison you
             # cannot re-open is not infrastructure.
+            # The turn this arm ran. Absent until now, so nothing could link a
+            # comparison back to its own telemetry -- I had to join
+            # ab_run_questions by hand to read my own decision traces.
+            "correlation_id": cid,
             "answer_envelope": a["answer_envelope"],
             "envelope_captured_at": str(a["envelope_captured_at"] or "") or None,
             "decision_trace": _trace(cid, a["arm_id"]) if cid else [],

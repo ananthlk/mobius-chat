@@ -780,3 +780,53 @@ def test_gap_age_accumulates_and_a_fresh_gap_is_age_zero():
     from app.pipeline.v2.posture import Gap
     assert Gap(gap_id="S1", text="x", opened_round=1).age(3) == 2
     assert Gap(gap_id="S2", text="y", opened_round=2).age(2) == 0
+
+
+def test_explain_reports_the_state_the_decision_was_MADE_on():
+    """select() seeded the root gap on a LOCAL variable, so explain() reported
+    the unseeded state it was handed. Rows showed `open gaps 0` and
+    `worth_spending None` beside `branch=gap_affordable` and
+    `because="closing G0"` — a gap the gap list did not contain.
+
+    An emit faithful to its input and wrong about the decision is worse than no
+    emit: it invites you to argue with a state that never decided anything.
+    """
+    from app.pipeline.v2.posture import (
+        ROOT_GAP_ID, Budget, RoundState, explain, select)
+    empty = RoundState(
+        round_index=1, open_gaps=(), gaps_open_history=(),
+        budget=Budget(remaining_s=31.0, remaining_c=0.0),
+        next_round_cost_s=10.4, acting_cost_s=10.0, validate_cost_s=9.6,
+        question="what are the timely filing deadlines")
+    d = select(empty)
+    e = explain(empty, d)
+    assert e["open_gaps"], "explain reports zero gaps on a decision made with G0"
+    assert e["open_gaps"][0]["id"] == ROOT_GAP_ID
+    # the gate it reports must match the branch that was taken
+    if d.branch == "gap_affordable":
+        assert e["worth_spending"] is not None, (d.branch, e["worth_spending"])
+
+
+def test_alternatives_never_announces_zero_unreachable_gaps():
+    """ALTERNATIVES fired on q12/ab-e491c9a27a saying "0 gap(s) unreachable:
+    offer a route rather than a shortfall" — a posture reporting zero instances
+    of the thing it exists for.
+
+    _stuck_count() counted only stuck(); alternatives_worth_it() also admitted
+    attempted-and-returned-nothing. Two populations of one list, counted by two
+    functions, disagreeing about the same state."""
+    from app.pipeline.v2.posture import (
+        Attempt, Budget, Gap, Posture, RoundState, explain, select)
+    tried_nothing_back = Gap(
+        gap_id="S1", text="a", opened_round=1,
+        attempted_by=(Attempt(round_index=1, tool="rag", query="q",
+                              returned_payload=False),))
+    st = RoundState(
+        round_index=2, open_gaps=(tried_nothing_back,), gaps_open_history=(1, 1),
+        budget=Budget(remaining_s=15.0, remaining_c=0.0),
+        next_round_cost_s=10.4, acting_cost_s=10.0, validate_cost_s=9.6,
+        alternatives_cost_s=5.0, question="q")
+    d = select(st)
+    assert d.posture is Posture.ALTERNATIVES, d.posture
+    assert "0 gap(s)" not in d.because, d.because
+    assert explain(st, d)["unreachable_gaps"] >= 1
