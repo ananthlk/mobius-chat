@@ -5542,7 +5542,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     acting_cost_s=10.3,
                                 )
                                 _v2s.emit(ctx.correlation_id,
-                                          _v2s.compare(_pp_directive, _v2_state))
+                                          _v2s.compare(_pp_directive, _v2_state,
+                                                       v1_reason=_pp_reason))
                             except Exception as _v2_exc:  # pragma: no cover
                                 logger.warning("[v2.shadow] hook failed: %s", _v2_exc)
 

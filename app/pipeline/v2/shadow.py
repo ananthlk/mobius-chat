@@ -26,16 +26,79 @@ from app.pipeline.v2.posture import (
 
 logger = logging.getLogger(__name__)
 
-# v1 directive -> the posture it corresponds to.
-# 'extend' maps to EXPLORE because buying another round to keep going IS
-# exploring; the extension is a budget act, not a different kind of work.
+# ── the mapping, and its relationship to the one v1 already uses ────────────
+#
+# CORRECTED 2026-09-11 on the chat seat's finding. The first version mapped
+# 'extend' -> EXPLORE alongside 'search', which contradicted
+# governor._DIRECTIVE_TO_AGENT_ROLE -- a mapping that is LIVE (react_loop.py
+# :4760-4761 calls directive_to_agent_role() to select the prompt composition)
+# and groups 'extend' with 'consolidate' as "synthesize". Two declarations of
+# one idea, disagreeing: the defect removed three times this week.
+#
+# BUT v1's mapping must not simply be copied, because governor.py:282-295
+# documents it as KNOWN LOSSY on exactly this pair:
+#
+#   'both "consolidate" (time pressure -- wrap up NOW) and "extend"
+#    (deliberately spending MORE budget on a groundedness problem, not
+#    time-pressured) collapse to "synthesize" ... Caught live 2026-08-04.'
+#
+# So aligning with it would inherit a mapping bug its own author named. The
+# resolution is to be EXPLICIT about the relationship rather than parallel to
+# it: agree where v1's bucket is sound, and where we deliberately diverge, say
+# so with a reason -- and let a test enforce that the divergence list is
+# exhaustive.
+#
+# 'extend' is two different pieces of work wearing one name:
+#   governor.py:197  proposes_complete AND groundedness failed
+#                    -> appends the critique to tool_results; the next round is
+#                       aimed at NAMED unsupported claims. That is remediation.
+#   governor.py:209  confidence bar not met AND base rounds exhausted
+#                    -> genuinely "keep gathering, just out of budget".
 DIRECTIVE_TO_POSTURE = {
     "search": Posture.EXPLORE,
-    "extend": Posture.EXPLORE,
     "consolidate": Posture.NARROW,
     "finalize": Posture.COMMUNICATE,
     "complete": Posture.COMMUNICATE,
+    # 'extend' is deliberately absent -- it is resolved by reason, below.
 }
+
+# Substrings of governor.py's own reason strings. Matched rather than
+# re-derived, and a drift test asserts they still exist in that file: if the
+# prose changes, the test fails loudly instead of this silently falling through
+# to the default.
+_EXTEND_REMEDIATION = "quality issue flagged"          # governor.py:197
+_EXTEND_OUT_OF_ROUNDS = "round budget exhausted"        # governor.py:209
+
+# Where this mapping deliberately disagrees with _DIRECTIVE_TO_AGENT_ROLE, and
+# why. A test asserts this covers every disagreement -- so a NEW divergence
+# cannot appear silently.
+DELIBERATE_DIVERGENCE = {
+    "extend": (
+        "v1 collapses extend into 'synthesize' with consolidate; governor.py"
+        ":282-295 documents that collapse as a known mapping bug caught live "
+        "2026-08-04. We split extend on its reason instead."
+    ),
+}
+
+_AGENT_ROLE_TO_POSTURE = {
+    "explore": Posture.EXPLORE,
+    "synthesize": Posture.NARROW,
+    "draft": Posture.COMMUNICATE,
+}
+
+
+def map_directive(directive: str | None, reason: str | None = None) -> Posture | None:
+    """v1 directive (+ its reason) -> v2 posture. None when unmapped."""
+    d = (directive or "").strip().lower()
+    if d == "extend":
+        r = (reason or "").lower()
+        if _EXTEND_REMEDIATION in r:
+            return Posture.NARROW        # aimed at named claims: remediation
+        if _EXTEND_OUT_OF_ROUNDS in r:
+            return Posture.EXPLORE       # keep gathering, just out of budget
+        return None                      # an extend we do not recognise is UNMAPPED,
+                                         # not silently bucketed
+    return DIRECTIVE_TO_POSTURE.get(d)
 
 
 def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
@@ -103,7 +166,8 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         return None
 
 
-def compare(v1_directive: str | None, state: RoundState) -> dict | None:
+def compare(v1_directive: str | None, state: RoundState,
+            v1_reason: str | None = None) -> dict | None:
     """Run v2's decision beside v1's. Returns the comparison, or None on failure.
 
     v1's answer is NOT passed into select(); v2 decides from state alone. If it
@@ -117,13 +181,14 @@ def compare(v1_directive: str | None, state: RoundState) -> dict | None:
                        getattr(state, "round_index", "?"), exc)
         return None
 
-    expected = DIRECTIVE_TO_POSTURE.get((v1_directive or "").strip().lower())
+    expected = map_directive(v1_directive, v1_reason)
     agrees = (expected is not None) and (expected is d.posture)
 
     return {
         "event": "v2_shadow",
         "round": state.round_index,
         "v1_directive": v1_directive,
+        "v1_reason": v1_reason,
         "v1_maps_to": expected.value if expected else None,
         "v2_posture": d.posture.value,
         "v2_directive": d.directive.value if d.directive else None,

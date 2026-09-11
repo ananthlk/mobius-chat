@@ -311,7 +311,70 @@ def test_v1s_answer_is_not_fed_into_v2s_decision():
 
 
 def test_every_v1_directive_is_mapped():
-    """The v1 vocabulary, read from governor.py: search, extend, consolidate,
-    finalize, complete. An unmapped one would silently inflate UNMAPPED."""
+    """The v1 vocabulary from governor.py: search, extend, consolidate,
+    finalize, complete. 'extend' is resolved by reason, not by the table."""
+    from app.pipeline.v2.shadow import map_directive
     assert set(DIRECTIVE_TO_POSTURE) == {
-        "search", "extend", "consolidate", "finalize", "complete"}
+        "search", "consolidate", "finalize", "complete"}
+    assert map_directive("extend", "quality issue flagged — going deeper") is not None
+    assert map_directive("extend", "confidence bar not yet met and round budget "
+                                   "exhausted — extending") is not None
+
+
+# ── the mapping vs v1's own live mapping ────────────────────────────────────
+
+def test_extend_splits_on_its_reason_not_its_name():
+    """governor.py:197 appends the critique to tool_results, so the next round
+    is aimed at NAMED unsupported claims -- remediation, not open search.
+    governor.py:209 genuinely is 'keep gathering, just out of base rounds'."""
+    from app.pipeline.v2.shadow import map_directive
+    assert map_directive("extend", "quality issue flagged — going deeper on "
+                                   "the unsupported claim(s)") is Posture.NARROW
+    assert map_directive("extend", "confidence bar not yet met and round budget "
+                                   "exhausted — extending") is Posture.EXPLORE
+
+
+def test_an_unrecognised_extend_is_UNMAPPED_not_bucketed():
+    """Silently bucketing it would make the shadow agree for the wrong reason --
+    green by construction, on the one directive we know is ambiguous."""
+    from app.pipeline.v2.shadow import map_directive
+    assert map_directive("extend", "some new reason nobody wrote down") is None
+
+
+def test_reason_substrings_still_exist_in_governor_py():
+    """DRIFT TEST. The mapping matches substrings of governor.py's own reason
+    prose. If that prose changes, this fails loudly -- instead of map_directive
+    silently returning None and every extend becoming UNMAPPED."""
+    from pathlib import Path
+    from app.pipeline.v2.shadow import _EXTEND_OUT_OF_ROUNDS, _EXTEND_REMEDIATION
+    src = Path("app/pipeline/react/governor.py").read_text()
+    for needle in (_EXTEND_REMEDIATION, _EXTEND_OUT_OF_ROUNDS):
+        assert needle in src, f"reason prose moved: {needle!r}"
+
+
+def test_divergence_from_v1s_live_mapping_is_declared_and_exhaustive():
+    """v1's _DIRECTIVE_TO_AGENT_ROLE is LIVE (react_loop.py:4761 selects the
+    prompt composition with it). Where we disagree it must be DECLARED, and the
+    declaration must cover every disagreement -- so a new one cannot appear
+    silently, which is how two mappings drift apart in the first place."""
+    from app.pipeline.react.governor import _DIRECTIVE_TO_AGENT_ROLE
+    from app.pipeline.v2.shadow import (
+        DELIBERATE_DIVERGENCE, _AGENT_ROLE_TO_POSTURE, map_directive,
+    )
+    undeclared = []
+    for directive, role in _DIRECTIVE_TO_AGENT_ROLE.items():
+        v1_posture = _AGENT_ROLE_TO_POSTURE.get(role)
+        v2_posture = map_directive(directive)          # no reason: table only
+        if v2_posture is None:                          # reason-resolved
+            assert directive in DELIBERATE_DIVERGENCE, directive
+            continue
+        if v1_posture is not v2_posture:
+            undeclared.append(f"{directive}: v1->{v1_posture} v2->{v2_posture}")
+    assert undeclared == [], f"undeclared divergence: {undeclared}"
+
+
+def test_compare_passes_the_reason_through():
+    st = _state(open_gaps=())                            # v2 -> COMMUNICATE
+    c = compare("extend", st, v1_reason="quality issue flagged — going deeper")
+    assert c["v1_reason"].startswith("quality issue")
+    assert c["v1_maps_to"] == "narrow"
