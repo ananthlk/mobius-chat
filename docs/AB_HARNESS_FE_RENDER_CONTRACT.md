@@ -88,24 +88,42 @@ A persistent top banner rendered from `harness:true`: **"A/B HARNESS — both ar
 Nobody was served. Production routes to exactly one orchestrator."** Governor §1: if a reader concludes
 production may fork, the harness has done damage — so the page says it can't, in the page.
 
+**Default = the near-production view; the machine internals expand (Ananth 2026-09-10).** A first-time reader
+must land on *what a user would actually see* — the two rendered answers side by side, clean, exactly the
+bubble — not a wall of postures and latencies. Everything diagnostic is **collapsed by default and expandable**,
+so the near-production comparison is the resting state and the machine detail is one click away.
+
 **Per comparison:**
 ```
-┌─ experiment header (from `experiment`): Held: question · copilot · 90d   |   Varied: orchestrator ─┐   ← Rule 5, on the page
-│  question text                                                                                     │
-├──────────────────────────── box 1: ARM A ────────────────┬──────────── box 2: ARM B ──────────────┤
-│  v1 answer, rendered via the PRODUCTION renderer          │  answer_envelope present → same renderer│
-│  (byte-for-byte the bubble)                               │  answer_envelope null    → decision trace│
-│                                                           │  (round-by-round, collapsible)          │
-├─────────────────────── divergences strip (where they disagreed, by round) ─────────────────────────┤
-│  ⚑ round 9 · exit: v1 "complete" vs v2 "gaps increasing" — v2 saw 2 gaps still open                 │
-├─────────────────────── the machine's terms (diagnostic, NOT judgement) ─────────────────────────────┤
-│  latency 17.5s vs — · cost $0.012 vs — · exit complete vs shadow · rounds 9 vs 12 · kept ✓ vs —     │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ [banner: NOT production — harness forks]                                                           ┐
+├─ experiment header (from `experiment`): Held: question · copilot · 90d   |   Varied: orchestrator ──┤   ← Rule 5, always on
+│  question text                                                                                      │
+├──────────────────── box 1: ARM A [▾] ────────────────────┬──────────── box 2: ARM B [▾] ───────────┤
+│  v1 answer, rendered via the PRODUCTION renderer          │  answer present → same renderer          │  ← DEFAULT view:
+│  (byte-for-byte the bubble)                               │  answer null    → decision trace         │    just the answers,
+│  [›] round-by-round trace  (collapsed)                    │  [›] round-by-round trace  (collapsed)   │    near-production
+├─────────────────────── [›] Divergences (collapsed) — where the two machines disagreed ──────────────┤   ← expand for detail
+├─────────────────────── [›] Terms (collapsed) — latency · cost · exit · rounds · kept ────────────────┤   ← diagnostic, subordinate
+└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**The rendering (box 1/2) is the judgement surface; the terms strip is diagnostic and clearly subordinate.**
-Never an aggregate score. 20 comparisons = **0** data points for v2's exit criteria and **20** for human
-judgement (Governor §2/§3); the page must not show a number that reads like the former.
+**Collapse/expand rules (FE-only — no endpoint change):**
+- **Each box `[▾]` collapses/expands independently** — collapse a long v1 answer to eyeball v2, or focus on one
+  arm. Same measured-max-height animation the bubble's other collapsibles use; keyboard-focusable, `aria-expanded`.
+- **On load, the resting state is near-production:** both answer boxes expanded (the answers ARE the point), and
+  the trace / divergences / terms all **collapsed**. A new user sees a clean side-by-side of two rendered answers
+  that looks like the product; a power reader expands the internals.
+- **R0 degradation:** while v2 has no answer (`answer_envelope:null`), box 2's *content* is the decision trace —
+  it isn't a collapsible extra there, it's what v2 has, so it shows. At R1 the answer becomes the box content and
+  the trace drops to the collapsed `[›]` under it, matching box 1. So the same layout carries both stages.
+- **A per-comparison "expand all / collapse all"** toggle in the experiment header, and the last choice is
+  remembered (localStorage, per the standard try/catch-guarded pattern) so a reviewer working through 20 questions
+  isn't re-collapsing on every one.
+
+**The rendering (box 1/2) is the judgement surface; the terms are diagnostic and clearly subordinate** — which
+is exactly why they collapse and the answers don't. Never an aggregate score. 20 comparisons = **0** data points
+for v2's exit criteria and **20** for human judgement (Governor §2/§3); the page must not show a number that
+reads like the former.
 
 ---
 
