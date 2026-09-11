@@ -225,11 +225,19 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     # the same reason gaps_opened needs it: db_execute
                     # JSON-serialises params for the transport, and a raw dict
                     # would arrive as a Postgres composite, not JSONB.
-                    "inputs": json.dumps(r.get("v2_decision_inputs") or None),
+                    # None, not json.dumps(None). json.dumps(None) is the
+                    # STRING "null", which CASTs to a JSONB null -- a legal
+                    # value that count() counts. It told me all 52 rounds had
+                    # framing data when 17 had none: absence dressed as a
+                    # plausible value, in the ledger that exists to stop
+                    # exactly that.
+                    "inputs": (json.dumps(r["v2_decision_inputs"])
+                               if r.get("v2_decision_inputs") else None),
                     # What the governor WOULD decide with round N's gaps in
                     # hand. Never replaces `inputs` -- the difference is the
                     # finding.
-                    "framing": json.dumps(r.get("v2_framing_inputs") or None),
+                    "framing": (json.dumps(r["v2_framing_inputs"])
+                                if r.get("v2_framing_inputs") else None),
                     "decl_ms": r.get("declared_latency_ms"),
                     "decl_ver": r.get("declared_version"),
                 },

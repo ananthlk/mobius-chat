@@ -383,7 +383,7 @@ def test_the_decision_inputs_are_emitted_written_and_read():
     ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
     api = pathlib.Path("app/api/ab_harness.py").read_text()
     assert '"v2_decision_inputs": explain(state, d)' in shadow, "no producer"
-    assert '"inputs": json.dumps(r.get("v2_decision_inputs")' in ledg, "not written"
+    assert '"v2_decision_inputs"]' in ledg and '"inputs":' in ledg, "not written"
     assert '"decision_inputs": r["decision_inputs"]' in api, "no reader"
     # and the two the ledger had been reading from nobody
     assert '"gaps_opened": [g.gap_id for g in state.open_gaps]' in shadow
@@ -479,7 +479,7 @@ def test_framing_never_overwrites_the_pre_round_decision():
     assert '_v2f_row["v2_framing_inputs"]' in block
     assert '"v2_decision_inputs"' not in block, "the framing hook clobbers the pre-round row"
     ledg = pathlib.Path("app/pipeline/v2/ledger.py").read_text()
-    assert '"framing": json.dumps(r.get("v2_framing_inputs")' in ledg
+    assert '"v2_framing_inputs"]' in ledg and '"framing":' in ledg
     api = pathlib.Path("app/api/ab_harness.py").read_text()
     assert '"framing_inputs": r["framing_inputs"]' in api
 
@@ -488,3 +488,32 @@ def test_the_framing_hook_shares_the_other_hooks_clock():
     """A third clock would make the three rows incomparable — the whole point
     is to diff two decisions about the same moment."""
     assert "_pp_time_mod.monotonic() - _pp_turn_start" in _framing_block()
+
+
+def test_absent_json_is_SQL_NULL_not_a_jsonb_null():
+    """json.dumps(None) is the STRING "null", which CASTs to a JSONB null — a
+    legal value that count() counts. It reported all 52 rounds as having
+    framing data when 17 had none.
+
+    A JSONB null and a missing row are indistinguishable to every aggregate,
+    which is the "could-not-check reported as checked-false" shape this
+    program has found eight times. In the ledger that exists to prevent it.
+    """
+    import json as _json
+    import app.pipeline.v2.ledger as L
+    captured = {}
+
+    def fake_execute(sql, db, params=None):
+        captured.update(params or {})
+        return {}
+
+    import app.db_client as dbc
+    orig = dbc.db_execute
+    dbc.db_execute = fake_execute
+    try:
+        L.write_rounds("cid", [{"round": 1}])          # nothing computed
+    finally:
+        dbc.db_execute = orig
+    assert captured.get("inputs") is None, captured.get("inputs")
+    assert captured.get("framing") is None, captured.get("framing")
+    assert captured.get("inputs") != _json.dumps(None)
