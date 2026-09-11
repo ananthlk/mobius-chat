@@ -96,8 +96,22 @@ def _react_block_specs() -> list[BlockSpec]:
         # hints now note "**Bold** the key fact" -- same formatting-for-
         # readability fix as react.critical_rules v2 below, applied to the
         # inline JSON-shape examples the model sees at generation time.
+        # v5 (2026-09-11, Governor work order docs/work-order-round1-
+        # decomposition.md): round 1 gets its own minimal evidence_review
+        # shape (gaps_open only) -- the governor's spendable() budget
+        # arithmetic was working off a wrong gap count on every multi-part
+        # question (measured: 6 of 20 production turns; every R1 had
+        # exactly 1 gap, up to 4 by round 3). Single-part case is the
+        # PRIMARY example (feedback_example_undermines_the_rule: whatever
+        # example is shown gets copied) -- a gap count too HIGH refuses
+        # rounds the turn could afford, same defect as today's undercount,
+        # opposite direction, harder to see. Traced before writing: no
+        # existing decomposition producer in react (app.planner.schemas.
+        # Plan/SubQuestion is a degenerate single-item shim via
+        # _make_react_plan, not real decomposition) -- this is genuinely
+        # new signal, not a duplicate of something already emitted.
         BlockSpec("react.response_shape", "static", "system", react_prompts.REACT_RESPONSE_SHAPE_TEXT,
-                  owner="react-agent", version=4),
+                  owner="react-agent", version=5),
         # react.output_intent_instruction (v1/v2/v3) REMOVED from the
         # composition (2026-07-30 revert, see react.response_shape's note
         # above) — no longer a member of any active composition. Its

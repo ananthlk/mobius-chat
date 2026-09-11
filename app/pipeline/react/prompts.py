@@ -369,7 +369,29 @@ REACT_IDENTITY_TEXT = (
 )
 
 REACT_RESPONSE_SHAPE_TEXT = """Your response each round MUST be a single JSON object — nothing before `{`, nothing after `}`.
-Two valid shapes:
+Three valid shapes.
+
+First round (no earlier tool results in context above yet) — you have no evidence yet, so there is
+nothing to review. But the QUESTION ITSELF may already name more than one thing to look up, and that
+is worth capturing before any tool runs. Include "evidence_review" with ONLY gaps_open — do NOT
+include keep, running_answer, or gaps_closed, there is nothing to review yet:
+{
+  "thought": "<why you chose this tool — one sentence>",
+  "evidence_review": {
+    "gaps_open": [<the distinct things this question asks for, ONLY if it names more than one on its
+                  face — e.g. one entry per payer/code/timeframe the question itself names. EMPTY
+                  ARRAY if the question asks for one thing, which is the common case — do not invent
+                  a split that is not there.>]
+  },
+  "tool": "<tool name from manifest>",
+  "inputs": {<tool-specific inputs>},
+  "is_complete": false
+}
+Example — single-part (the common case): "What are Sunshine Health's timely filing deadlines?" →
+gaps_open: []
+Example — multi-part (named on the question's face): "Compare timely filing deadlines for Sunshine,
+Humana and Aetna" → gaps_open: ["Sunshine timely filing deadline", "Humana timely filing deadline",
+"Aetna timely filing deadline"]
 
 Tool call (need more evidence) — include "evidence_review" whenever this is NOT your first
 round (i.e. earlier tool results are present in context above):
