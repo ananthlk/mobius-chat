@@ -321,6 +321,20 @@ class TestI7SwallowCount:
 
     _BASELINE = 21  # verified against react_loop.py 2026-09-08
 
+    # EXEMPT, not baselined up. The v2 shadow observer installs two handlers
+    # (pre-round and post-round) that log and continue ON PURPOSE: an observer
+    # that can break the thing it observes is not an observer, which is the
+    # same posture as the attestation write. Raising _BASELINE to 23 instead
+    # would buy their exemption at the price of the gate — an unrelated third
+    # swallow would then land inside the new headroom and never be seen.
+    #
+    # Narrow on purpose: only handlers whose log line carries this tag. When v2
+    # replaces the loop the hooks go, this exemption stops matching anything,
+    # and the count returns to the real baseline with no edit here. If it ever
+    # matches more than two, that is a finding.
+    _EXEMPT_TAG = "[v2.shadow]"
+    _EXEMPT_MAX = 2
+
     def _count_swallows(self) -> int:
         src = (
             Path(__file__).parent.parent.parent
@@ -328,6 +342,7 @@ class TestI7SwallowCount:
         ).read_text()
         tree = ast.parse(src)
         count = 0
+        exempt = [0]
         for node in ast.walk(tree):
             if not isinstance(node, (ast.ExceptHandler,)):
                 continue
@@ -341,9 +356,34 @@ class TestI7SwallowCount:
             )
             # Does it re-raise (bare ``raise`` or ``raise e``)?
             has_reraise = any(isinstance(n, ast.Raise) for n in ast.walk(node))
-            if has_log and not has_reraise:
-                count += 1
+            if not (has_log and not has_reraise):
+                continue
+            # Deliberate-observer exemption — see _EXEMPT_TAG above.
+            tagged = any(
+                isinstance(c, ast.Constant)
+                and isinstance(c.value, str)
+                and self._EXEMPT_TAG in c.value
+                for c in ast.walk(node)
+            )
+            if tagged:
+                exempt[0] += 1
+                continue
+            count += 1
         return count
+
+    def test_exempt_observers_have_not_multiplied(self):
+        """The exemption is for two named hooks, not a category to grow into."""
+        src = (
+            Path(__file__).parent.parent.parent
+            / "app" / "pipeline" / "react_loop.py"
+        ).read_text()
+        n = src.count(self._EXEMPT_TAG)
+        assert n <= self._EXEMPT_MAX, (
+            f"[I7] {self._EXEMPT_TAG} handlers: expected ≤ {self._EXEMPT_MAX}, got {n}. "
+            "The shadow observer is exempt from the swallow gate because it must "
+            "never break v1. That exemption covers the pre-round and post-round "
+            "hooks — if it now covers more, the exemption has become a hiding place."
+        )
 
     def test_swallow_count_has_not_risen(self):
         count = self._count_swallows()
