@@ -3975,7 +3975,7 @@ function renderAbShadowComparison(comparison) {
   const { shadowArm, shadowCid } = pickShadowArm(comparison, servedArm);
   const head = document.createElement("div");
   head.className = "chat-ab-shadow-head";
-  head.innerHTML = `<span class="chat-ab-badge">A/B compare</span> This thread ran <b>${servedArm}</b> (served, above). The shadow arm <b>${shadowArm ?? "\u2014"}</b> ran on a <b>fresh thread</b> \u2014 never served, no memory of earlier turns \u2014 and doubled this turn's cost.`;
+  head.innerHTML = `<span class="chat-ab-badge">A/B \xB7 block 2 of 2</span> The answer above is arm <b>${servedArm}</b> (served \u2014 it is your thread). This block is the shadow arm <b>${shadowArm ?? "\u2014"}</b>: a <b>fresh thread</b>, never served, no memory of earlier turns. Shown for comparison only.`;
   wrap.appendChild(head);
   if (!shadowArm || !shadowCid) {
     const note = document.createElement("div");
@@ -3993,7 +3993,7 @@ function renderAbShadowComparison(comparison) {
     if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
       const miss = document.createElement("div");
       miss.className = "chat-ab-shadow-note";
-      miss.textContent = "The shadow arm produced no renderable answer.";
+      miss.textContent = "The shadow arm didn't finish \u2014 this is a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
       body.appendChild(miss);
       return;
     }
@@ -4025,7 +4025,7 @@ function renderAbShadowComparison(comparison) {
     body.textContent = "";
     const err = document.createElement("div");
     err.className = "chat-ab-shadow-note";
-    err.textContent = "Could not load the shadow arm's answer (it ran, but the fetch failed \u2014 it is not part of this conversation).";
+    err.textContent = "Couldn't load the shadow arm \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
     body.appendChild(err);
   });
   return wrap;

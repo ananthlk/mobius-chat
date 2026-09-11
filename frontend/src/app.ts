@@ -618,8 +618,8 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
 
   const head = document.createElement("div");
   head.className = "chat-ab-shadow-head";
-  head.innerHTML = `<span class="chat-ab-badge">A/B compare</span> This thread ran <b>${servedArm}</b> (served, above). `
-    + `The shadow arm <b>${shadowArm ?? "—"}</b> ran on a <b>fresh thread</b> — never served, no memory of earlier turns — and doubled this turn's cost.`;
+  head.innerHTML = `<span class="chat-ab-badge">A/B · block 2 of 2</span> The answer above is arm <b>${servedArm}</b> (served — it is your thread). `
+    + `This block is the shadow arm <b>${shadowArm ?? "—"}</b>: a <b>fresh thread</b>, never served, no memory of earlier turns. Shown for comparison only.`;
   wrap.appendChild(head);
 
   if (!shadowArm || !shadowCid) {
@@ -640,9 +640,11 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
   void _pollShadowEnvelope(shadowCid).then((env) => {
     body.textContent = "";
     if (!env || !Array.isArray(env.blocks) || !env.blocks.length) {
+      // A lost/slow SHADOW is a degraded comparison, NOT a failed turn — the served answer
+      // above is complete and unaffected (Governor: the queueing can drop the shadow).
       const miss = document.createElement("div");
       miss.className = "chat-ab-shadow-note";
-      miss.textContent = "The shadow arm produced no renderable answer.";
+      miss.textContent = "The shadow arm didn't finish — this is a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
       body.appendChild(miss);
       return;
     }
@@ -675,7 +677,7 @@ function renderAbShadowComparison(comparison: NonNullable<ChatResponse["comparis
     body.textContent = "";
     const err = document.createElement("div");
     err.className = "chat-ab-shadow-note";
-    err.textContent = "Could not load the shadow arm's answer (it ran, but the fetch failed — it is not part of this conversation).";
+    err.textContent = "Couldn't load the shadow arm — a degraded comparison, not a failed question. Your answer above is complete and unaffected.";
     body.appendChild(err);
   });
 
