@@ -534,6 +534,11 @@ def post_chat(
                 _p = dict(payload)
                 _p["thread_id"] = _shadow_thread
                 _p["ab_arm"] = _arm
+                # Routes to the shadow lane. The served turn above already
+                # went to the front of the served lane; this one waits behind
+                # every real question, which is the correct priority for work
+                # nobody is waiting for.
+                _p["ab_shadow"] = True
                 # The promise is re-opened for the shadow turn rather than
                 # reused: an attestation keyed on the thread turn's promise
                 # would report two deliveries against one contract.

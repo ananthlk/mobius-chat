@@ -179,3 +179,34 @@ def test_the_shadow_arms_list_survives_a_new_string_field():
     # the stated rule picks exactly one, whatever else is added
     assert comparison["shadow_arms"] == ["v1"]
     assert comparison["arms"][comparison["shadow_arms"][0]]["served"] is False
+
+
+def test_shadows_go_to_a_LOWER_PRIORITY_lane():
+    """Observed live while Ananth was testing: served turn 586a74a6 emitted two
+    thinking events and never settled AT ALL, while its own shadow completed
+    27s later. The arm someone was waiting on is the arm that died.
+
+    The consumer is single-slot — it calls callback() synchronously — so on one
+    list a shadow occupies the worker for its whole duration and the next REAL
+    question queues behind work no person wants.
+    """
+    q = pathlib.Path("app/queue/redis_queue.py").read_text()
+    assert 'self._shadow_key = f"{self._request_key}:shadow"' in q
+    assert 'key = self._shadow_key if payload.get("ab_shadow") else self._request_key' in q
+    # BRPOP with keys in PRIORITY order — served first, always
+    assert "r.brpop([self._request_key, self._shadow_key]" in q, \
+        "the consumer does not drain the served lane first"
+    chat = _chat_src()
+    assert '_p["ab_shadow"] = True' in chat, "shadow turns are not marked"
+
+
+def test_the_SERVED_turn_is_never_marked_shadow():
+    """If the served arm were ever routed to the shadow lane, the person
+    waiting would queue behind every comparison — the exact inversion this
+    fixes, with the same symptom and the opposite cause."""
+    src = _chat_src()
+    i = src.index("A/B FORK, the kebab toggle")
+    block = src[i:src.index("return ChatResponse(", i)]
+    # ab_shadow is set ONLY on the copied shadow payload (_p), never on payload
+    assert 'payload["ab_shadow"]' not in block
+    assert '_p["ab_shadow"] = True' in block

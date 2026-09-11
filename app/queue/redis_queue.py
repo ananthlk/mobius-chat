@@ -32,6 +32,21 @@ class RedisQueue(QueueAdapter):
         cfg = get_config()
         self._redis_url = redis_url or cfg.redis_url
         self._request_key = request_key or cfg.redis_request_key
+        # ── SHADOW LANE (governor seat, 2026-09-11) ─────────────────────────
+        # A/B forks enqueue a SECOND turn that nobody is waiting for. The
+        # consumer below is single-slot -- it calls callback() synchronously --
+        # so on one list a shadow occupies the worker for its whole duration
+        # and the next REAL question queues behind work no person wants.
+        #
+        # Observed live while Ananth was testing: served turn 586a74a6 emitted
+        # two thinking events and never settled at all, while its OWN shadow
+        # completed 27s later. The arm someone was waiting on is the arm that
+        # died.
+        #
+        # BRPOP takes keys in PRIORITY order and drains the first non-empty
+        # one, so a second list gives served turns strict precedence with no
+        # scheduler and no extra process.
+        self._shadow_key = f"{self._request_key}:shadow"
         self._response_prefix = response_key_prefix or cfg.redis_response_key_prefix
         self._response_ttl = response_ttl_seconds if response_ttl_seconds is not None else cfg.redis_response_ttl_seconds
         self._client = None
@@ -87,11 +102,17 @@ class RedisQueue(QueueAdapter):
         return self._client
 
     def publish_request(self, correlation_id: str, payload: dict[str, Any]) -> None:
-        """Write chat request to Redis list (LPUSH). Worker consumes with BRPOP."""
+        """Write chat request to Redis list (LPUSH). Worker consumes with BRPOP.
+
+        A payload carrying `ab_shadow` goes to the SHADOW lane, which the
+        consumer drains only when the served lane is empty. Nobody is waiting
+        for a shadow; someone is always waiting for a served turn.
+        """
         item = {"correlation_id": correlation_id, **payload}
         r = self._get_client()
-        r.lpush(self._request_key, json.dumps(item))  # Redis list: left push
-        logger.debug("Published request %s to list %s", correlation_id, self._request_key)
+        key = self._shadow_key if payload.get("ab_shadow") else self._request_key
+        r.lpush(key, json.dumps(item))  # Redis list: left push
+        logger.debug("Published request %s to list %s", correlation_id, key)
 
     def flush_request_queue(self) -> int:
         """Delete the request list (clear backlog). Returns number of items removed. Staging debug only."""
@@ -112,7 +133,12 @@ class RedisQueue(QueueAdapter):
             try:
                 r = self._get_client()
                 # Redis list: BRPOP = block until item available (FIFO with LPUSH)
-                result = r.brpop(self._request_key, timeout=5)
+                # PRIORITY ORDER, not round-robin: Redis checks keys
+                # left-to-right and returns from the first non-empty one, so
+                # every served turn is taken before any shadow. A shadow can
+                # still block the turn AFTER it once started -- the consumer is
+                # synchronous -- but it can no longer be picked ahead of one.
+                result = r.brpop([self._request_key, self._shadow_key], timeout=5)
                 if result is None:
                     continue
                 _, raw = result
