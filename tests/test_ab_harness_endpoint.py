@@ -20,6 +20,8 @@ def test_the_routes_the_contract_names_exist():
         "POST /ab/runs/{run_id}/q/{qid}/arm/{arm}",
         "POST /ab/runs/{run_id}/q/{qid}/fork",
         "POST /ab/ask",
+        "POST /ab/runs/{run_id}/q/{qid}/prefer",
+        "GET /ab/runs/{run_id}/verdicts",
     }, paths
 
 
@@ -404,3 +406,61 @@ def test_ask_refuses_an_empty_question():
         raise AssertionError("ran on an empty question")
     except HTTPException as e:
         assert e.status_code == 400
+
+
+def test_prefer_rejects_an_arm_that_never_ran():
+    """A preference for an arm that was never executed is not a weak signal,
+    it is a data error — and accepting it puts a value in the column that no
+    read can distinguish from a real one."""
+    import app.api.ab_harness as H
+    from fastapi import HTTPException
+    orig = H._q
+    H._q = lambda sql, p=None: ([{"run_id": "r1"}] if "from ab_runs" in sql
+                                else [{"arm_id": "v1"}])
+    try:
+        try:
+            H.prefer("r1", "q01", H.Prefer(better="v2"))
+            raise AssertionError("accepted an arm that never ran")
+        except HTTPException as e:
+            assert e.status_code == 400 and "did not run" in str(e.detail)
+    finally:
+        H._q = orig
+
+
+def test_the_verdict_read_NEVER_returns_a_bare_rate():
+    """"v2 better: 13/20" is the sentence this table was designed to make
+    impossible. The moment a score exists it is quoted as an exit criterion and
+    the distinction between "zero data points for the criteria, twenty for
+    judgement" stops being observed.
+
+    Counts must arrive with what they are counts OF — and reason-free
+    preferences separated, not folded in: a correction lands further from the
+    truth than the original when the denominator quietly carries rows that were
+    never in scope.
+    """
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "verdicts")
+    # ast.Div NODES, not the "/" character. A first pass searched the text and
+    # matched the ROUTE DECORATOR's slash — the seventh time today a gate of
+    # mine matched something that merely looked like its subject. A rate cannot
+    # be computed without a division operator, so look for the operator.
+    divs = [n for n in ast.walk(fn)
+            if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Div, ast.FloorDiv))]
+    assert not divs, f"the verdict read computes a ratio: {[ast.unparse(d) for d in divs]}"
+    src = ast.unparse(fn)
+    for required in ("population", "compared", "of_those_with_a_reason",
+                     "of_those_reason_free", "read_this_as"):
+        assert required in src, f"the read does not state {required}"
+
+
+def test_a_reasonless_preference_is_recorded_AS_reasonless():
+    """A one-click choice is cheap on purpose — an unrecorded preference is
+    worth nothing, and so is a reason nobody had time to type. But a row with
+    no reason must be MARKED, not counted as though it had one."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "prefer")
+    assert "reason_given" in ast.unparse(fn)

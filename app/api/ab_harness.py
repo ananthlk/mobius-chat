@@ -593,3 +593,122 @@ def ask(body: Ask) -> dict:
     out["created_run"] = (body.run_id is None)
     out["view"] = f"/ab?run={run_id}&q={qid}"
     return out
+
+
+# ── which one did you prefer ────────────────────────────────────────────────
+
+class Prefer(BaseModel):
+    better: str                      # an arm id that actually ran, or "tie"
+    notes: str | None = None
+    created_by: str | None = None
+
+
+@router.post("/ab/runs/{run_id}/q/{qid}/prefer")
+def prefer(run_id: str, qid: str, body: Prefer) -> dict:
+    """Record which answer the person actually wanted.
+
+    Ananth, 2026-09-11: a "which option do you like" that can be stored.
+
+    🔴 THIS MEASURES PREFERENCE, NOT QUALITY, AND NOT ON A SAMPLE THAT SUPPORTS
+    EITHER. It is the human fixture the exit criteria are deliberately NOT made
+    of. Twenty comparisons are zero data points for any criterion and twenty
+    for human reading, and this endpoint will never say otherwise.
+
+    `notes` is the load-bearing column. WHY one answer was wanted is the thing
+    a later reader can act on; WHICH was wanted is a label. A one-click choice
+    is cheap on purpose -- an unrecorded preference is worth nothing and a
+    reason nobody had time to type is worth nothing either -- but a row with no
+    reason is marked as such rather than counted as if it had one. See
+    /ab/runs/{run_id}/verdicts.
+
+    The arm is VALIDATED against the arms that ran. A preference for an arm
+    that was never executed is not a weak signal, it is a data error, and
+    accepting it would put a value in the column that no read could
+    distinguish from a real one.
+    """
+    runs = _q("select * from ab_runs where run_id=:r", {"r": run_id})
+    if not runs:
+        raise HTTPException(404, f"run {run_id!r} not found")
+    run = runs[0]
+
+    ran = {r["arm_id"] for r in _q(
+        """select arm_id from ab_run_questions
+            where run_id=:r and question_id=:q and correlation_id is not null""",
+        {"r": run_id, "q": qid})}
+    choice = (body.better or "").strip()
+    if choice != "tie" and choice not in ran:
+        raise HTTPException(
+            400, f"arm {choice!r} did not run on {qid!r}; arms that ran: "
+                 f"{sorted(ran) or 'none'}")
+
+    _x("""INSERT INTO ab_verdicts (run_id, question_id, better, notes, created_by)
+          VALUES (:r,:q,:b,:n,:by)
+          ON CONFLICT (run_id, question_id) DO UPDATE SET
+              better     = EXCLUDED.better,
+              notes      = EXCLUDED.notes,
+              created_by = EXCLUDED.created_by,
+              updated_at = now()""",
+       {"r": run_id, "q": qid, "b": choice,
+        "n": (body.notes or "").strip() or None, "by": body.created_by})
+
+    got = _q("""select better, notes, updated_at from ab_verdicts
+                 where run_id=:r and question_id=:q""", {"r": run_id, "q": qid})
+    if not got:
+        raise HTTPException(500, "preference wrote no row")
+    return {"run_id": run_id, "question_id": qid,
+            "better": got[0]["better"],
+            "reason_given": bool(got[0]["notes"]),
+            "recorded_at": str(got[0]["updated_at"])}
+
+
+@router.get("/ab/runs/{run_id}/verdicts")
+def verdicts(run_id: str) -> dict:
+    """Every recorded preference on this run, with its population stated.
+
+    🔴 NO BARE RATE. Ever. "v2 better: 13/20" is the sentence this whole table
+    was designed to make impossible -- the moment a score exists it is quoted
+    as an exit criterion and the distinction between "zero data points for the
+    criteria, twenty for judgement" stops being observed.
+
+    So the counts here always arrive with what they are counts OF: how many
+    questions were compared at all, how many drew a preference, and how many of
+    those carried a REASON. A reasonless preference is a real signal about what
+    a person wanted and a poor one about why -- and Tool Selection's finding
+    from tonight is the reason it is separated rather than folded in: a
+    correction can land further from the truth than the original when the
+    denominator quietly carries rows that were never in scope.
+    """
+    runs = _q("select * from ab_runs where run_id=:r", {"r": run_id})
+    if not runs:
+        raise HTTPException(404, f"run {run_id!r} not found")
+    qset = _run_set(runs[0])
+    rows = _q("""select question_id, better, notes, created_by, updated_at
+                   from ab_verdicts where run_id=:r order by question_id""",
+              {"r": run_id})
+    compared = {r["question_id"] for r in _q(
+        """select question_id from ab_run_questions
+            where run_id=:r and correlation_id is not null
+            group by question_id having count(distinct arm_id) > 1""",
+        {"r": run_id})}
+    with_reason = sum(1 for r in rows if (r["notes"] or "").strip())
+    return {
+        "run_id": run_id,
+        "population": "questions on which MORE THAN ONE arm actually ran",
+        "questions_in_set": len(qset.get("questions") or []),
+        "compared": len(compared),
+        "preferences_recorded": len(rows),
+        "of_those_with_a_reason": with_reason,
+        "of_those_reason_free": len(rows) - with_reason,
+        "not_yet_judged": len(compared) - len(rows),
+        # The rows themselves, never a rate derived from them.
+        "verdicts": [
+            {"question_id": r["question_id"], "better": r["better"],
+             "notes": r["notes"], "by": r["created_by"],
+             "at": str(r["updated_at"])}
+            for r in rows
+        ],
+        "read_this_as": (
+            "preference, not quality — and on this sample, evidence for human "
+            "reading rather than for any exit criterion"
+        ),
+    }
