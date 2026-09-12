@@ -275,3 +275,58 @@ def test_a_round_with_no_ack_is_unobservable_not_disobedient():
     got = [x for x in r["acks"] if x["round"] == 2]
     assert got and all(x["verdict"] == "unobservable" for x in got)
     assert any("no ack" in (x.get("basis") or "") for x in got)
+
+
+# ── the fourth checker, built because it was claimed ────────────────────────
+
+def test_complete_ack_catches_an_internal_contradiction():
+    """The one failure mode where the ack and the decision cannot both be
+    right: "complete: false" in the ack beside is_complete=true in the same
+    object."""
+    r = C.check_complete({"complete": False}, {"is_complete": True})
+    assert r.verdict is C.Verdict.IGNORED
+    assert "is_complete=True" in r.basis
+
+    ok = C.check_complete({"complete": True}, {"is_complete": True})
+    assert ok.verdict is C.Verdict.FOLLOWED
+
+
+def test_a_round_without_is_complete_is_unobservable_not_a_pass():
+    """The comparison did not happen. Saying so is the difference between
+    could-not-check and checked-false -- and a silent pass here would report
+    perfect agreement on rounds where nothing was compared."""
+    r = C.check_complete({"complete": True}, {})
+    assert r.verdict is C.Verdict.UNOBSERVABLE
+    assert "did not record is_complete" in r.basis
+
+
+def test_every_ack_key_the_frame_asks_for_has_a_checker():
+    """I sent the prompt seat a table claiming four checkers and had built
+    three. They grepped, did not find the fourth, and said so -- to stop "four
+    checkers exist" becoming a fact. This asserts the count instead of a
+    memory of it.
+    """
+    checkers = {"parts": C.check_parts, "working_gap": C.check_working_gap,
+                "complete": C.check_complete, "dissent": C.check_dissent}
+    asked = {k for k, _ in F.ACK_KEYS}
+    unchecked = asked - set(checkers) - {"complete_why"}
+    assert not unchecked, f"asked for with no checker: {unchecked}"
+    for name, fn in checkers.items():
+        assert callable(fn), name
+
+
+def test_is_complete_reaches_the_round_record():
+    """check_complete compares against a field react_loop must carry. Without
+    the wiring the checker exists and is permanently unobservable -- a consumer
+    with no producer, which is the defect this whole contract exists to end."""
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    tree = ast.parse(src)
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant) and k.value == "is_complete":
+                    found = True
+    assert found, "react_loop no longer records is_complete on the round"

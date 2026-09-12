@@ -395,6 +395,7 @@ def evaluate_turn(ctx) -> dict:
         nxt = by_index.get(rn + 1)
         for chk in (check_parts(ack, cur, gaps),
                     check_working_gap(ack, cur, by_id),
+                    check_complete(ack, cur),
                     check_dissent(ack, nxt, dissent_gap, gaps)):
             acks.append({"round": rn, "key": chk.key, "verdict": chk.verdict.value,
                          "claimed": chk.claimed, "observed": chk.observed,
@@ -404,3 +405,36 @@ def evaluate_turn(ctx) -> dict:
             "rate": rate([Observation(s["id"], s["round"],
                                       Verdict(s["verdict"]), s["basis"])
                           for s in statements])}
+
+
+def check_complete(ack: dict, this_round: dict) -> AckCheck:
+    """`complete` against `is_complete` IN THE SAME RESPONSE.
+
+    The cheapest of the four and the only one that needs no other round: react
+    saying "complete: false" in its ack while setting is_complete=true in the
+    same object is an internal contradiction, and it is the one failure mode
+    where the ack and the decision cannot both be right.
+
+    BUILT BECAUSE IT WAS CLAIMED. I sent the prompt seat a table listing four
+    checkers and had built three; they grepped for the fourth, did not find it,
+    and said so -- explicitly to stop "four checkers exist" becoming a fact the
+    way "rag decomposes by entity" did earlier tonight. The correct response to
+    that is to build the missing one, not to trim the claim.
+    """
+    if "complete" not in ack:
+        return AckCheck("complete", Verdict.UNOBSERVABLE, "", "",
+                        "react did not ack a completion call")
+    if "is_complete" not in this_round:
+        # Not a pass. The round record predates this field, or the wiring is
+        # gone -- either way the comparison did not happen, and saying so is
+        # the difference between could-not-check and checked-false.
+        return AckCheck("complete", Verdict.UNOBSERVABLE, str(ack.get("complete")),
+                        "", "the round did not record is_complete")
+    claimed = bool(ack.get("complete"))
+    actual = bool(this_round.get("is_complete"))
+    if claimed == actual:
+        return AckCheck("complete", Verdict.FOLLOWED, str(claimed), str(actual),
+                        "the ack and the decision agree")
+    return AckCheck("complete", Verdict.IGNORED, str(claimed), str(actual),
+                    f"ack said complete={claimed} while the response set "
+                    f"is_complete={actual}")

@@ -5471,6 +5471,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         _evidence_review
                         and isinstance(_evidence_review.get("keep"), list)
                     ) else 0,
+                    # react's OWN completion call, carried so the ack's
+                    # `complete` can be checked against it in the SAME
+                    # response. Without it the ack claims something nothing
+                    # compares -- which is what the prompt seat caught in my
+                    # own table: I listed four checkers and had built three.
+                    "is_complete": bool(is_complete),
                     # THE ACK (governor-react frame v1). Carried through
                     # UNTOUCHED, including a malformed one: the checkers at
                     # turn end compare what react CLAIMED against what the
