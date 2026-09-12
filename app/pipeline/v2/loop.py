@@ -86,6 +86,35 @@ MAX_ROUNDS_HARD = 12          # [GUESS] — a fuse
 # is stuck" from "keep trying" is how a runaway starts.
 MAX_UNUSABLE_ROUNDS = 2
 
+# ── THE FALLBACK RESERVE ────────────────────────────────────────────────────
+#
+# v2's loop must never spend the turn's whole budget, because when it produces
+# nothing it hands the turn to v1 -- and v1 then needs time to run a full
+# pipeline of its own. Live on 2026-09-11 it did exactly the wrong thing:
+#
+#   01:16:36  round 1, remaining 95.0s
+#   01:20:01  round 2, remaining 0.0s      <- ONE round took 3m25s
+#   01:20:01  deferred to v1
+#   01:21:35  turn_deadline_exceeded (300s)
+#
+# The safety net spent the money the safety net needed. So the loop gets a
+# FRACTION of the promise and leaves the rest for the fallback: a v2 turn that
+# is going badly must fail EARLY and cheaply, while a v1 turn is still
+# affordable.
+#
+# 0.6 is a [GUESS] chosen so a v2 turn still gets the majority and the
+# remainder covers v1's measured p50 (rag rounds: p50 7.0s, p90 13.7s).
+V2_BUDGET_FRACTION = 0.6
+
+# A round can overrun regardless -- spendable() is checked BEFORE a round and
+# nothing stops one already running. This is the wall-clock backstop, checked
+# at the top of every round against the turn's own clock rather than against
+# the governor's arithmetic.
+def _budget_exhausted(elapsed_s: float, promise_s: float) -> tuple[bool, float]:
+    """(exhausted, seconds left for v2). Never lets v2 hold the whole turn."""
+    allowance = max(0.0, promise_s * V2_BUDGET_FRACTION)
+    return (elapsed_s >= allowance, max(0.0, allowance - elapsed_s))
+
 
 class V2LoopResult:
     """What the loop did, for the record. Never the answer itself."""
@@ -164,6 +193,19 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     while rn < max_rounds:
         rn += 1
         elapsed = time.monotonic() - t0
+
+        # WALL CLOCK, before anything else. The governor's own arithmetic is
+        # checked inside select(); this is the backstop for a round that
+        # already overran it -- a single tool call took 205s against a 95s
+        # promise and nothing noticed until the round ended.
+        _spent, _left = _budget_exhausted(elapsed, sh.promise_seconds(ctx, None))
+        if _spent:
+            res.stopped_by = "v2_budget_exhausted"
+            logger.warning(
+                "[v2.loop] cid=%s out of its allowance after %.1fs (round %s) "
+                "-- stopping so the fallback is still affordable",
+                (getattr(ctx, "correlation_id", "") or "")[:8], elapsed, rn)
+            break
 
         # ── 1. DECIDE, before spending anything ─────────────────────────────
         state = _round_state(ctx, rn, elapsed, extensions_used)

@@ -465,3 +465,42 @@ def test_a_tool_failure_is_not_silently_swallowed():
     i = code.index("_execute_tool_with_retry(")
     block = code[i:i + 900]
     assert "logger.warning" in block, "a tool failure leaves no trace"
+
+
+def test_v2_never_spends_the_whole_turn_budget():
+    """The safety net spent the money the safety net needed.
+
+        01:16:36  round 1, remaining 95.0s
+        01:20:01  round 2, remaining 0.0s      <- ONE round took 3m25s
+        01:20:01  deferred to v1
+        01:21:35  turn_deadline_exceeded (300s)
+
+    When the loop produces nothing it hands the turn to v1, and v1 then needs
+    time for a full pipeline. A v2 turn going badly must fail EARLY and
+    cheaply, while a v1 turn is still affordable.
+    """
+    promise = 95.0
+    assert L.V2_BUDGET_FRACTION < 1.0, "v2 may take the entire promise"
+    spent, left = L._budget_exhausted(0.0, promise)
+    assert not spent and left > 0
+    spent, _ = L._budget_exhausted(promise * L.V2_BUDGET_FRACTION + 1, promise)
+    assert spent, "the allowance does not bind"
+    # and there is always something left for the fallback
+    reserve = promise * (1 - L.V2_BUDGET_FRACTION)
+    assert reserve >= 30, f"only {reserve:.0f}s reserved for v1's whole pipeline"
+
+
+def test_the_wall_clock_is_checked_at_the_TOP_of_every_round():
+    """spendable() is checked inside select(), BEFORE a round; nothing stops a
+    round already running. A single tool call took 205s against a 95s promise
+    and nothing noticed until the round ended. This is the backstop, and it
+    must run before any spending in the iteration."""
+    code = _code()
+    i = code.index("while rn < max_rounds:")
+    body = code[i:]
+    assert "_budget_exhausted(elapsed" in body, "no wall-clock backstop"
+    # it must come before the model call and the tool call
+    assert body.index("_budget_exhausted(elapsed") < body.index("_call_llm_json("), \
+        "the budget check runs after the model call"
+    assert body.index("_budget_exhausted(elapsed") < body.index("_execute_tool_with_retry("), \
+        "the budget check runs after the tool call"
