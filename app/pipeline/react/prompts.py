@@ -740,7 +740,27 @@ def _call_llm_json(
 
     if (stage or "").startswith("react_"):
         # Reasoning rounds may return longer thoughts + final answer JSON; Flash sometimes truncated at 800.
-        max_tokens = max(max_tokens, 1400)
+        #
+        # 2026-09-12, raised 1400 -> 8000. Ananth: "be generous with the output
+        # token we want for now.. we will trim that too.. lets start being
+        # generous and we can pair it down based on what it uses".
+        #
+        # MEASURED on gemini-2.5-flash with the v2 critic prompt, whose visible
+        # reply is ~900 characters:
+        #     max_tokens=900   ->  166 chars, cut mid-word
+        #     max_tokens=3000  ->  936 chars, cut mid-word
+        #     max_tokens=8000  ->  complete
+        # The budget INCLUDES THINKING TOKENS, so a ceiling sized to the
+        # visible output truncates. react's rounds now also return facts[] with
+        # provenance on top of evidence_review, which is strictly more output
+        # than 1400 was set for -- and a truncated round reads downstream as
+        # "Could not parse model decision", which is what sends someone to look
+        # at the prompt for a reply that was already correct.
+        #
+        # THE CEILING IS NOT A COST. We pay for tokens PRODUCED, not offered;
+        # llm_calls.output_tokens is what the benchmark reads, and it measures
+        # what was used. Trim this against that data, not against a guess.
+        max_tokens = max(max_tokens, 8000)
     prompt = f"{system}\n\n{user}"
 
     def _run(p: str) -> tuple[str, object | None]:
