@@ -740,12 +740,17 @@ function _abLiveColumn(
   let streamShown = 0;
   let streamTimer: number | null = null;
   let streamMounted = false;
+  // Same cadence as regular mode's word-stream (Ananth: "the same speed as what we had in
+  // regular mode") — 50ms/step, words-per-step derived from the 14s duration target, recomputed
+  // each tick since the target text grows as chunks arrive.
   const pumpWords = (): void => {
-    const words = streamTarget.split(/(\s+)/);
+    const words = streamTarget.split(" ");
+    const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
+    const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
     if (streamShown < words.length) {
-      streamShown = Math.min(streamShown + 2, words.length);   // one word + its trailing space
-      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(""));
-      streamTimer = window.setTimeout(pumpWords, 26);
+      streamShown = Math.min(streamShown + wordsPerStep, words.length);
+      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(" "));
+      streamTimer = window.setTimeout(pumpWords, CARD_STREAM_STEP_MS);
     } else {
       streamTimer = null;
     }

@@ -4017,11 +4017,13 @@ function _abLiveColumn(col, tier, deps) {
   let streamTimer = null;
   let streamMounted = false;
   const pumpWords = () => {
-    const words = streamTarget.split(/(\s+)/);
+    const words = streamTarget.split(" ");
+    const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
+    const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
     if (streamShown < words.length) {
-      streamShown = Math.min(streamShown + 2, words.length);
-      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(""));
-      streamTimer = window.setTimeout(pumpWords, 26);
+      streamShown = Math.min(streamShown + wordsPerStep, words.length);
+      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(" "));
+      streamTimer = window.setTimeout(pumpWords, CARD_STREAM_STEP_MS);
     } else {
       streamTimer = null;
     }
