@@ -207,3 +207,76 @@ def test_whitespace_is_not_an_answer():
     put the loop into critic mode with nothing to critique."""
     f = Facts(**{**_draft().__dict__, "answer": "   \n  "})
     assert "role_critic" not in _roles(assemble(f)[1])
+
+
+# ── WIRED: frame.render must actually consume this registry ─────────────────
+
+def _ctx_for(round_index=2):
+    from app.pipeline.v2 import statements as ST
+    from app.pipeline.v2.posture import Budget, Gap, RoundState
+    g = Gap(gap_id="S1", text="UHC care management philosophy", opened_round=1)
+    st = RoundState(round_index=round_index, open_gaps=(g,),
+                    gaps_open_history=(1,),
+                    budget=Budget(remaining_s=30.0, remaining_c=3.0, band_s=25.0),
+                    next_round_cost_s=10.4, acting_cost_s=10.0,
+                    validate_cost_s=9.6, question=Q)
+    return ST.Ctx(state=st, round_index=round_index, max_rounds=6,
+                  tier="normal", model_proposes_complete=False, kept=0,
+                  gap_status="", preloaded=True, extensions_used=0, gap=g), st
+
+
+def test_frame_renders_the_role_stack_not_its_own_single_role():
+    """The consumer check. "[YOUR ROLE — JUDGE]" exists ONLY in blocks.py, so
+    frame emitting it proves the delegation happened -- unlike asserting the
+    text is non-empty, which frame's own §6 line would satisfy."""
+    from app.pipeline.v2 import frame as FR
+    from app.pipeline.v2.posture import Posture
+    c, _ = _ctx_for()
+    f = Facts(question=Q, preloaded=(("rag", True, "17 passages"),),
+              useful=("Molina_manual.pdf p5",),
+              discarded=("Exhibit_II-A.pdf (none useful)",))
+    txt, _ = FR.render(c, Posture.EXPLORE, preloaded=[{"tool": "rag", "ok": True,
+                       "summary": "17 passages"}], facts=f)
+    assert "[YOUR ROLE — JUDGE]" in txt
+    assert "[§6 ROLE this round]" not in txt, "frame kept its own role line too"
+
+
+def test_frame_carries_the_rejected_documents():
+    """The whole point of `discarded`: nothing has ever told react what it
+    already looked at and threw away, so each round re-retrieves it."""
+    from app.pipeline.v2 import frame as FR
+    from app.pipeline.v2.posture import Posture
+    c, _ = _ctx_for()
+    f = Facts(question=Q, preloaded=(("rag", True, "x"),),
+              discarded=("Exhibit_II-A_MMA.pdf (1 passage, none useful)",))
+    txt, _ = FR.render(c, Posture.EXPLORE,
+                       preloaded=[{"tool": "rag", "ok": True, "summary": "x"}],
+                       facts=f)
+    assert "Exhibit_II-A_MMA.pdf" in txt
+    assert "REJECTED" in txt
+
+
+def test_frame_without_facts_still_renders_a_role():
+    """A caller not yet passing facts must not lose §6 entirely -- that would
+    be a round with evidence and no instruction."""
+    from app.pipeline.v2 import frame as FR
+    from app.pipeline.v2.posture import Posture
+    c, _ = _ctx_for()
+    txt, _ = FR.render(c, Posture.EXPLORE,
+                       preloaded=[{"tool": "rag", "ok": True, "summary": "x"}])
+    assert "[§6 ROLE this round]" in txt
+
+
+def test_frame_sections_cannot_diverge_from_assemble():
+    """frame_sections is a PROJECTION of assemble, not a second selection. A
+    role assemble renders and the frame does not would only surface in a live
+    prompt."""
+    for f in (Facts(question=Q, preloaded=(("rag", True, "x"),)),
+              Facts(question=Q, useful=("d p1",)),
+              Facts(question=Q, answer="an answer", useful=("d p1",)),
+              Facts(question=Q, gaps=(("S1", "g"),), suggest=("web_scrape",),
+                    preloaded=(("rag", True, "x"),))):
+        from app.pipeline.v2.blocks import frame_sections
+        want = [i for i in assemble(f)[1] if i.startswith("role_")]
+        got = [i for i in frame_sections(f)[1] if i.startswith("role_")]
+        assert want == got, (want, got)

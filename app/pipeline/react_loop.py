@@ -4989,9 +4989,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             extensions_used=_pp_extension_rounds_used,
                             gap=_steer_gap,
                         )
+                        # THE ROLE STACK. blocks.facts_from reads the turn --
+                        # the question, who is asking, what react kept and what
+                        # it rejected across rounds -- and frame.render renders
+                        # the roles those facts support in place of its single
+                        # §6 line. Built HERE and not inside frame.render
+                        # because frame is pure: state in, text out, and ctx is
+                        # not state.
+                        from app.pipeline.v2 import blocks as _v2bl
+                        _v2_facts = _v2bl.facts_from(
+                            ctx, _steer_state,
+                            targeted_gap=(_steer_gap.text if _steer_gap else ""),
+                            preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
+                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
                             _v2_ctx, _v2ps_decision.posture,
                             directive=_v2ps_decision.directive,
+                            facts=_v2_facts,
                             # Preload evidence reaches the model HERE or not at
                             # all. Executed and never rendered would be the
                             # producer-with-no-consumer defect with a retrieval
@@ -5033,6 +5047,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 ",".join(x.id for x in _v2_sel.statements),
                                 ",".join(_v2_sel.dropped_by_conflict
                                          + _v2_sel.dropped_by_cap) or "-",
+                            )
+                            # The roles, logged separately from the statements.
+                            # Which roles a round carried is the thing to read
+                            # back when an answer judges but never writes, and
+                            # it is not recoverable from the statement ids.
+                            _v2_roles = [i for i in _v2bl.frame_sections(_v2_facts)[1]
+                                         if i.startswith("role_")]
+                            logger.info(
+                                "[v2.roles] cid=%s round=%s roles=%s kept=%s rejected=%s",
+                                (ctx.correlation_id or "")[:8], rn,
+                                ",".join(r.replace("role_", "") for r in _v2_roles) or "-",
+                                len(_v2_facts.useful), len(_v2_facts.discarded),
                             )
                 except Exception as _v2pe:  # pragma: no cover
                     logger.warning("[v2.shadow] pre-round hook failed: %s", _v2pe)

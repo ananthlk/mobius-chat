@@ -382,3 +382,32 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         discarded=tuple(discarded[-3:]),
         can_complete=True,
     )
+
+
+# ── WHAT THE LIVE FRAME TAKES FROM THIS REGISTRY ────────────────────────────
+
+# frame.py already owns §5 (gaps), §8 (complete), §9 (tools), §10 (preloaded),
+# and chat owns §3 (the question). Rendering those from here TOO would put two
+# authors on one section -- the defect frame.py's own docstring names. So the
+# frame takes exactly the parts nothing else renders:
+#
+#   ROLE        replaces frame's single §6 role string with the role STACK
+#   USEFUL      what react kept, carried across rounds
+#   NOT_USEFUL  what it saw and rejected -- which has never been told back to
+#               it, so every round is free to re-retrieve and re-read it
+FRAME_SLOTS: tuple[Slot, ...] = (Slot.ROLE, Slot.USEFUL, Slot.NOT_USEFUL)
+
+
+def frame_sections(f: Facts) -> tuple[list[str], tuple[str, ...]]:
+    """(lines, rendered_ids) for the slots the live frame delegates here.
+
+    Same `when` conditions and same ordering as assemble() -- this is a
+    PROJECTION of the registry, not a second selection with its own rules. A
+    role that assemble() would render and this would not is a divergence that
+    only shows up in production prompts.
+    """
+    text, rendered, _ = assemble(f)
+    keep = {b.id for b in REGISTRY if b.slot in FRAME_SLOTS}
+    ids = tuple(i for i in rendered if i in keep)
+    by_id = {b.id: b for b in REGISTRY}
+    return [by_id[i].render(f) for i in ids], ids

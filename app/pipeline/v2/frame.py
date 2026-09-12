@@ -121,7 +121,8 @@ def preload_sections(executed: list[dict], suggest: tuple[str, ...]) -> list[str
 
 def render(c: ST.Ctx, posture: Posture,
            directive=None, *, preloaded: list[dict] | None = None,
-           suggest: tuple[str, ...] = ()) -> tuple[str | None, ST.Selection]:
+           suggest: tuple[str, ...] = (),
+           facts=None) -> tuple[str | None, ST.Selection]:
     # NOTE: `preloaded` shadows nothing -- it is the executed-tool list, and
     # its truthiness is what makes this a judgement round.
     """The governor's sections, in execution order, plus the ack request."""
@@ -162,7 +163,25 @@ def render(c: ST.Ctx, posture: Posture,
         role = (DISCOVER_ROLE
                 if (directive is _Dir.DISCOVER or _no_named_part)
                 else ROLE.get(posture))
-    if role:
+    # THE ROLE STACK REPLACES THE SINGLE ROLE STRING, when the turn can supply
+    # facts for it (blocks.Facts). One round has more than one job -- judging
+    # what came back and writing what it supports are different instructions,
+    # and a single §6 line can only ever carry one of them. blocks.py decides
+    # WHICH roles this round has from what the round holds; see FRAME_SLOTS
+    # there for why only these slots come from it.
+    #
+    # Falls back to the single string when facts are absent, so a caller that
+    # has not been updated still renders a role rather than none.
+    _role_lines: list[str] = []
+    _memory_lines: list[str] = []
+    if facts is not None:
+        from app.pipeline.v2 import blocks as _BL
+        _lines, _ids = _BL.frame_sections(facts)
+        for _i, _ln in zip(_ids, _lines):
+            (_role_lines if _i.startswith("role_") else _memory_lines).append(_ln)
+    if _role_lines:
+        parts.extend(_role_lines)
+    elif role:
         parts.append(f"[§6 ROLE this round] {role}")
 
     # ── §8 COMPLETE? and the rest of the steering ───────────────────────────
@@ -178,6 +197,11 @@ def render(c: ST.Ctx, posture: Posture,
     # §10 and §9 render LAST in the block but describe work that already
     # happened -- they are the round's inputs, not its instructions, and the
     # model reads instructions first then the evidence they apply to.
+    # The cross-round memory: what was kept, and what was rejected getting
+    # there. Placed with the evidence sections because that is what they are --
+    # inputs describing work already done, not instructions for this round.
+    parts.extend(_memory_lines)
+
     parts.extend(preload_sections(preloaded or [], suggest))
 
     if not parts:
