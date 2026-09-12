@@ -1964,8 +1964,31 @@ def _execute_tool(
                 "not escalating, moving on."
             )
         _low_confidence_call_number = 1
+        # 🔴 v2 DOES NOT BLIND-RETRY. Ananth, 2026-09-12: "we sent rag (or any
+        # tool).. react (if not satisfied, it needs to provide real feedback in
+        # the form of gaps so that we can use that).. i dont think the logic we
+        # have is required".
+        #
+        # This loop is v1's answer to dissatisfaction: re-dispatch the SAME
+        # query string, in code, with the LLM never consulted, up to the call
+        # ceiling. v2's answer is a GAP -- react judges what came back and says
+        # what is missing, and the gap drives the next call. Running both means
+        # two mechanisms competing for one round's budget, and the code one
+        # wins because it runs first and silently.
+        #
+        # Left intact for v1: it is the arm whose behaviour is already known,
+        # and this loop is load-bearing there.
+        _v2_no_blind_retry = getattr(ctx, "orchestrator_version", "v1") == "v2"
+        if _v2_no_blind_retry and _corpus_telemetry.get(
+                "terminal_action") == "clarify_low_confidence":
+            # The user is told the result is thin AND that we are not simply
+            # asking again -- otherwise a quiet non-retry looks like a turn
+            # that gave up.
+            emit("  ↓ Low confidence — not re-asking the same question. "
+                 "Naming what is missing instead.")
         while (
-            not _lc_gap_priority_blocked
+            not _v2_no_blind_retry
+            and not _lc_gap_priority_blocked
             and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
             and _low_confidence_call_number < _rag_call_ceiling
         ):
@@ -4987,6 +5010,79 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                              if g.gap_id == _v2ps_decision.gap_targeted),
                             None,
                         )
+                        # ── THE GAP DRIVES THE NEXT CALL ────────────────
+                        # Ananth, 2026-09-12: "we sent rag (or any tool)..
+                        # react (if not satisfied, it needs to provide real
+                        # feedback in the form of gaps so that we can use
+                        # that).. this is the piece that is missing".
+                        #
+                        # It was missing literally. Preload ran ONCE, before
+                        # round 1, on the raw user message; gaps were rendered
+                        # into the prompt and consumed by nothing. React could
+                        # name what was missing and no tool call was ever
+                        # driven by it -- the gap reached the model as prose
+                        # and died there. That is what the code-level
+                        # blind-retry was standing in for: dissatisfaction had
+                        # a mechanism, and it was "ask the same thing again".
+                        #
+                        # Now the targeted gap IS the query. Same plan/execute
+                        # path as round 1, so there is one preload
+                        # implementation, not two.
+                        _regap_ran = False
+                        if (rn > 1 and _steer_gap is not None
+                                and _v2ps_decision.directive is not None):
+                            try:
+                                from app.pipeline.v2 import preload as _v2pre2
+                                # BUDGET FIRST. A re-preload is a real rag
+                                # call; spending it past the promise is the
+                                # failure this governor exists to prevent.
+                                # Uses the SAME elapsed clock the directive
+                                # was computed from -- not a second reading.
+                                _regap_left = (
+                                    (ctx.react_hard_ceiling_s or 0.0) - _pp_elapsed_s
+                                    if getattr(ctx, "react_hard_ceiling_s", None)
+                                    else 0.0)
+                                _regap_cost = float(
+                                    getattr(_steer_state, "acting_cost_s", 0.0) or 0.0)
+                                if _regap_left > _regap_cost > 0:
+                                    _re_plan = _v2pre2.PreloadPlan(
+                                        execute=("rag",),
+                                        suggest=tuple(
+                                            getattr(ctx, "_v2_suggest", None) or ()))
+                                    emit(f"  ◌ Going after: {_steer_gap.text}")
+                                    ctx._v2_preloaded = _v2pre2.execute(
+                                        _re_plan,
+                                        lambda _t, _i: _preload_runner(
+                                            _t, _i, ctx, emitter),
+                                        _steer_gap.text,
+                                    )
+                                    _regap_ran = True
+                                    for _r in ctx._v2_preloaded:
+                                        emit(f"  {'✓' if _r.get('ok') else '⊘'} "
+                                             f"{_r.get('tool')} → "
+                                             f"{_r.get('summary') or 'returned nothing'}")
+                                else:
+                                    # Said out loud. A silent skip on budget
+                                    # looks identical to a gap nobody worked.
+                                    emit("  ⊘ Not enough time left to search "
+                                         f"this gap — naming it instead: "
+                                         f"{_steer_gap.text}")
+                            except Exception as _regap_e:   # pragma: no cover
+                                logger.warning("[v2.regap] failed cid=%s: %s",
+                                               (ctx.correlation_id or "")[:8],
+                                               _regap_e)
+                        logger.info(
+                            "[v2.regap] cid=%s round=%s gap=%s ran=%s",
+                            (ctx.correlation_id or "")[:8], rn,
+                            (_steer_gap.gap_id if _steer_gap else None), _regap_ran)
+                        # RECOMPUTED, because the re-preload just changed it.
+                        # _v2_has_preload was read before this block and feeds
+                        # Ctx.preloaded, which suppresses FRM-2 and selects the
+                        # judging role. Leaving the stale value would render a
+                        # round that HAS evidence as one that does not -- the
+                        # frame would say "go and search" directly above the
+                        # search results.
+                        _v2_has_preload = bool(getattr(ctx, "_v2_preloaded", None))
                         # The machine's own DISCOVER/CLOSE call, not a second
                         # one: a block that decided for itself whether the
                         # round is for finding gaps or closing them would be a
