@@ -190,7 +190,8 @@ MAX_V2_EXTENSIONS = 6   # [GUESS] -- a fuse, not a target
 
 
 def decide(decision: Decision, exit: ExitMode | None = None,
-           extensions_used: int = 0) -> Action:
+           extensions_used: int = 0, *,
+           model_proposes_complete: bool = False) -> Action:
     """Posture -> the action v1's loop already knows how to take.
 
     `exit` splits COMMUNICATE, and only COMMUNICATE:
@@ -210,6 +211,52 @@ def decide(decision: Decision, exit: ExitMode | None = None,
     """
     posture = decision.posture
     directive = _POSTURE_TO_DIRECTIVE.get(posture)
+
+    # ── THE ACCELERATOR (2026-09-11) ────────────────────────────────────────
+    #
+    # Until now the governor could STOP a turn and not EXTEND one: a brake with
+    # no accelerator. On Ananth's three-payer question the model proposed
+    # complete after round 2 with two gaps open and 62.6s of a 95s promise
+    # left, and the answer shipped saying it could not find two of the three
+    # payers. v1, on the same question in the same seconds, ran to round 6 and
+    # found Sunshine Health. THE GOVERNOR'S ONLY CAPABILITY WAS THE ONE THAT
+    # MADE THAT WORSE.
+    #
+    # `model_proposes_complete` is the caller telling us the turn is ABOUT TO
+    # END. Overruling it is the single most dangerous thing in this module --
+    # it is how a 98-round runaway starts -- so it is allowed only when every
+    # one of these holds, and each is a real signal rather than a preference:
+    #
+    #   * the posture wants to continue (EXPLORE/VALIDATE, which select()
+    #     returns only after its own affordability check)
+    #   * there is a NAMED gap it intends to close -- not "more might exist"
+    #   * the exit mode is not CAPABILITY: a gap nothing can reach is not
+    #     bought by another round, and offering one would be the cruelty the
+    #     exit modes exist to prevent
+    #   * the extension fuse below still has room
+    #
+    # It does NOT relax the promise. spendable() has already been consulted by
+    # select(); if the budget were gone the posture would not be EXPLORE.
+    # THE FUSE IS CHECKED FIRST. My first version returned the overrule before
+    # reaching the ceiling below, so the accelerator could spend past
+    # MAX_V2_EXTENSIONS -- the one path in this module that must never bypass
+    # it, since overruling a finish is exactly how the 98-round runaway began.
+    # The test for it failed on the first run, which is the only reason this
+    # comment is not a post-mortem.
+    if (model_proposes_complete
+            and directive == EXTEND
+            and decision.gap_targeted
+            and exit is not ExitMode.CAPABILITY
+            and extensions_used < MAX_V2_EXTENSIONS):
+        return Action(
+            directive=EXTEND, posture=posture,
+            because=(f"OVERRULING an early finish: {decision.because} "
+                     f"[the model proposed complete with {decision.gap_targeted} "
+                     f"open and affordable]"),
+            exit_mode=exit, overran=decision.overran,
+            gap_targeted=decision.gap_targeted,
+            prompt_mismatch=PROMPT_MISMATCH.get(posture),
+        )
     if directive is None:
         # Not a silent default. An unmapped posture reaching an executor means
         # the posture machine grew a state and this table did not; shipping the

@@ -597,3 +597,71 @@ def test_the_v2_flags_have_a_home_ON_DISK_not_in_a_shell():
     # defaults are read after the values they are meant to supply.
     assert sh.index('source "${ENV_FILE}"') < sh.index("SET_ENV_VARS=("), \
         "dev.env is sourced after SET_ENV_VARS is built — the defaults cannot apply"
+
+
+# ── the accelerator ─────────────────────────────────────────────────────────
+
+def test_the_governor_can_OVERRULE_an_early_finish():
+    """Until now it could stop a turn and not extend one — a brake with no
+    accelerator.
+
+    Ananth's three-payer question: the model proposed complete after round 2
+    with two gaps open and 62.6s of a 95s promise left, and the answer shipped
+    saying it could not find two of the three payers. v1, on the same question
+    in the same seconds, ran to round 6 and found Sunshine Health. The
+    governor's only capability was the one that made that worse.
+    """
+    d = Decision(Posture.EXPLORE, "closing S1 (open 1 rounds, 1 levers spent)",
+                 gap_targeted="S1")
+    a = ex.decide(d, ExitMode.BUDGET, extensions_used=0,
+                  model_proposes_complete=True)
+    assert a.continues, "the model's completion still ends the turn"
+    assert "OVERRULING" in a.because
+
+
+def test_an_overrule_needs_a_NAMED_gap():
+    """"More might exist" is not a reason to spend a round. Only a gap the
+    machine can name and intends to close."""
+    d = Decision(Posture.EXPLORE, "something is missing", gap_targeted=None)
+    a = ex.decide(d, ExitMode.BUDGET, model_proposes_complete=True)
+    assert not a.continues
+
+
+def test_CAPABILITY_is_never_overruled():
+    """A gap nothing can reach is not bought by another round. Overruling here
+    would spend the person's time on an answer no amount of waiting produces —
+    the cruelty the exit modes exist to prevent."""
+    d = Decision(Posture.EXPLORE, "one more", gap_targeted="S1")
+    a = ex.decide(d, ExitMode.CAPABILITY, model_proposes_complete=True)
+    assert not a.continues, "CAPABILITY was overruled"
+
+
+def test_the_overrule_still_respects_the_extension_fuse():
+    """It is how a 98-round runaway starts. The fuse is checked for an
+    overrule exactly as for any other extend."""
+    d = Decision(Posture.EXPLORE, "one more", gap_targeted="S1")
+    a = ex.decide(d, ExitMode.BUDGET,
+                  extensions_used=ex.MAX_V2_EXTENSIONS,
+                  model_proposes_complete=True)
+    assert not a.continues
+    assert "CEILING" in a.because
+
+
+def test_a_wrapup_posture_is_not_turned_into_an_overrule():
+    """NARROW/ALTERNATIVES are reached only when nothing is worth buying.
+    model_proposes_complete must not resurrect them into another round —
+    that would invert the decision they just made."""
+    for posture in (Posture.NARROW, Posture.ALTERNATIVES, Posture.COMMUNICATE):
+        a = ex.decide(Decision(posture, "nothing worth buying", gap_targeted="S1"),
+                      ExitMode.BUDGET, model_proposes_complete=True)
+        assert not a.continues, posture
+
+
+def test_the_call_site_TELLS_decide_the_model_proposed_complete():
+    """The branch only runs when the model proposed complete — which is exactly
+    the moment the governor needs to say "not yet". A default of False here
+    would leave the accelerator permanently unreachable: built, tested, and
+    never once able to fire. That shape has appeared three times today."""
+    src = _react_src()
+    i = src.index("_v2x.decide(")
+    assert "model_proposes_complete=True" in src[i:i + 400]

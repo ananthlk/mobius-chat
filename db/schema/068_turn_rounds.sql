@@ -191,3 +191,15 @@ ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS decision_inputs JSONB;
 -- at all. No prompt change could have fixed that; the hook was in the wrong
 -- place, and this column is how we find out whether the right place is better.
 ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS framing_inputs JSONB;
+
+-- ── executor_inputs: the state the EXECUTOR decided on ─────────────────────
+-- decision_inputs is written by the PRE-round hook, which fires first and wins
+-- the COALESCE merge. So a row could read "1 gap (G0)" while the executor --
+-- which runs AFTER the round's enrichment is written -- decided on three.
+-- Ananth found the symptom before the cause was visible: "either RAG did not
+-- create 3 gaps in R1 or you missed it." Three records now, and they are
+-- different questions:
+--   decision_inputs   what the governor saw BEFORE the model spoke
+--   framing_inputs    what it would decide the instant the round's gaps exist
+--   executor_inputs   what it ACTUALLY decided on, at the branch that acts
+ALTER TABLE turn_rounds ADD COLUMN IF NOT EXISTS executor_inputs JSONB;

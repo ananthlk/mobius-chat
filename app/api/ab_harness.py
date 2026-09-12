@@ -160,7 +160,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         gaps_opened, gaps_closed, v1_directive, v1_reason,
                         v1_maps_to, shadow_verdict, tool_called, tools_offered,
                         overran, round_duration_s, applied_directive,
-                        v2_applied, prompt_mismatch, decision_inputs, framing_inputs
+                        v2_applied, prompt_mismatch, decision_inputs, framing_inputs, executor_inputs
                    from turn_rounds where correlation_id=:c
                   order by round_index""", {"c": correlation_id})
     out = []
@@ -205,6 +205,7 @@ def _trace(correlation_id: str, arm: str) -> list[dict]:
                         # exist — the same round, one moment later, before its
                         # tool runs. Null until the framing hook has data.
                         "framing_inputs": r["framing_inputs"],
+                        "executor_inputs": r["executor_inputs"],
                         # ...and the two mismatches are NOT the same event,
                         # which the single prose field could not tell anyone:
                         #
@@ -254,6 +255,27 @@ def get_comparison(run_id: str, qid: str) -> dict:
                            delivered_cost_c, outcome, worker_latency_s
                       from turn_attestations where correlation_id=:c""",
                  {"c": cid})[0] if cid else {}
+        # ── QUALITY, the promise's third term ──────────────────────────────
+        # turn_attestations.delivered_quality is NULL on 487 of 487 rows -- the
+        # term has never been measured. But the post-run adjudicator DOES score
+        # every turn and writes chat_turns.qc_audit (500 of 515 recent turns),
+        # with sub-scores, flags and a written reason. A quality signal exists
+        # and the comparison could not see it.
+        #
+        # Read, never recomputed: a second scorer would disagree with the
+        # production one exactly where it mattered, and the charter already
+        # says the judge must equal the production scorer.
+        #
+        # It arrives 30-70s AFTER publish (a fire-and-forget thread), so on a
+        # freshly-forked turn it is legitimately absent -- `null` means NOT YET
+        # SCORED, never "scored badly". The page must render those differently.
+        qc = _q("""select qc_audit from chat_turns where correlation_id=:c""",
+                {"c": cid})[0].get("qc_audit") if cid else None
+        if isinstance(qc, str):
+            try:
+                qc = json.loads(qc)
+            except Exception:
+                qc = None
         delivered_s = att.get("delivered_latency_s")
         promised_s = att.get("promised_latency_s")
         arms[a["arm_id"]] = {
@@ -293,6 +315,18 @@ def get_comparison(run_id: str, qid: str) -> dict:
                          "tier": att.get("tier")},
             # null renders "—", never "false" or "0". Unset is not false.
             "kept": (delivered_s <= promised_s) if (delivered_s is not None and promised_s is not None) else None,
+            # The whole promise, not a third of it. Every number I reported
+            # tonight was latency; "v2 was faster" on the three-payer question
+            # meant v2 answered one payer of three.
+            "quality": ({
+                "verdict": qc.get("adjudication_verdict"),
+                "score": qc.get("automated_score"),
+                "flags": qc.get("adjudication_flags") or [],
+                "reason": qc.get("reason"),
+                "sub_scores": qc.get("sub_scores") or {},
+                "scored_by": qc.get("adjudicator_model"),
+                "scored_at": qc.get("audited_at"),
+            } if isinstance(qc, dict) else None),
             "status": a["status"], "error": a["error"],
         }
 

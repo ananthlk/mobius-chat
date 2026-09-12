@@ -240,21 +240,21 @@ def test_mismatch_kind_separates_the_two_mismatches():
          "shadow_verdict": "diverge", "applied_directive": "extend",
          "v2_applied": True, "prompt_mismatch": "gathering round receives...",
          "tool_called": None, "round_duration_s": None, "overran": False,
-         "decision_inputs": None, "framing_inputs": None},
+         "decision_inputs": None, "framing_inputs": None, "executor_inputs": None},
         {"round_index": 2, "posture": "alternatives", "directive": None,
          "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
          "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
          "shadow_verdict": "diverge", "applied_directive": "complete",
          "v2_applied": True, "prompt_mismatch": "routes decided, never generated",
          "tool_called": None, "round_duration_s": None, "overran": False,
-         "decision_inputs": None, "framing_inputs": None},
+         "decision_inputs": None, "framing_inputs": None, "executor_inputs": None},
         {"round_index": 3, "posture": "communicate", "directive": None,
          "gap_targeted": None, "rationale": "", "gaps_opened": [], "gaps_closed": [],
          "v1_directive": "complete", "v1_reason": "", "v1_maps_to": None,
          "shadow_verdict": "agree", "applied_directive": "complete",
          "v2_applied": True, "prompt_mismatch": None,
          "tool_called": None, "round_duration_s": None, "overran": False,
-         "decision_inputs": None, "framing_inputs": None},
+         "decision_inputs": None, "framing_inputs": None, "executor_inputs": None},
     ]
     orig = H._q
     H._q = lambda sql, p=None: rows
@@ -280,7 +280,7 @@ def test_v1_rows_carry_no_v2_only_fields():
              "applied_directive": None, "v2_applied": False,
              "prompt_mismatch": None, "tool_called": "rag",
              "round_duration_s": 6.0, "overran": False,
-             "decision_inputs": None, "framing_inputs": None}]
+             "decision_inputs": None, "framing_inputs": None, "executor_inputs": None}]
     orig = H._q
     H._q = lambda sql, p=None: rows
     try:
@@ -464,3 +464,56 @@ def test_a_reasonless_preference_is_recorded_AS_reasonless():
     fn = next(f for f in ast.walk(tree)
               if isinstance(f, ast.FunctionDef) and f.name == "prefer")
     assert "reason_given" in ast.unparse(fn)
+
+
+def test_quality_is_READ_from_the_adjudicator_never_recomputed():
+    """The promise's third term. turn_attestations.delivered_quality is NULL on
+    487 of 487 rows — quality has never been measured on the promise. But the
+    post-run adjudicator scores every turn into chat_turns.qc_audit (500 of 515
+    recent), with sub-scores, flags and a written reason. The signal existed
+    and the comparison could not see it.
+
+    READ, never recomputed: a second scorer would disagree with the production
+    one exactly where it mattered, and the charter says the judge must equal
+    the production scorer.
+    """
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "get_comparison")
+    src = ast.unparse(fn)
+    assert "qc_audit" in src, "the comparison has no quality axis"
+    # ast.unparse NORMALISES QUOTES — a first version asserted the
+    # double-quoted literal and failed on the single-quoted output. Ninth gate
+    # of mine today matching a surface form rather than the thing. Assert over
+    # the DICT KEYS the function builds, which no formatter can change.
+    keys = {n.value for n in ast.walk(fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "quality" in keys, "the payload has no quality key"
+    for field in ("verdict", "score", "flags", "reason", "sub_scores"):
+        assert field in keys, f"quality omits {field}"
+    # it must not score anything itself
+    for scorer in ("_call_llm_json", "adjudicate", "score(", "grade("):
+        assert scorer not in src, f"the endpoint computes a quality score ({scorer})"
+
+
+def test_an_unscored_turn_is_NULL_not_a_bad_score():
+    """The adjudicator runs 30–70s AFTER publish, as a fire-and-forget thread.
+    On a freshly-forked turn quality is legitimately absent, and `null` must
+    mean NOT YET SCORED — never "scored badly". Rendering those the same way
+    would make every fast comparison look like a quality failure."""
+    import ast
+    tree = ast.parse(pathlib.Path("app/api/ab_harness.py").read_text())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "get_comparison")
+    src = ast.unparse(fn)
+    # The guard is a conditional expression whose orelse is a literal None —
+    # checked structurally, not by matching formatted text.
+    ifexps = [n for n in ast.walk(fn) if isinstance(n, ast.IfExp)]
+    guarded = [n for n in ifexps
+               if isinstance(n.orelse, ast.Constant) and n.orelse.value is None
+               and "isinstance" in ast.unparse(n.test) and "qc" in ast.unparse(n.test)]
+    assert guarded, "an unscored turn does not read as null"
+    # ...and no numeric default is substituted for an absent score
+    for n in guarded:
+        assert "0.0" not in ast.unparse(n.orelse), "a default score replaces an absent one"

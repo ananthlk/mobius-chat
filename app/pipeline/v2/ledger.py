@@ -139,7 +139,7 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     gaps_opened, gaps_closed, overran,
                     tools_offered, tool_called, round_duration_s,
                     applied_directive, v2_applied, prompt_mismatch, decision_inputs,
-                    framing_inputs,
+                    framing_inputs, executor_inputs,
                     declared_latency_ms, declared_version
                 ) VALUES (
                     :cid, :rn, :ver, :posture, :directive, :gap, :rationale,
@@ -147,7 +147,7 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     CAST(:opened AS JSONB), CAST(:closed AS JSONB), :overran,
                     CAST(:offered AS JSONB), :tool_called, :dur_s,
                     :applied, :v2_applied, :mismatch, CAST(:inputs AS JSONB),
-                    CAST(:framing AS JSONB),
+                    CAST(:framing AS JSONB), CAST(:execin AS JSONB),
                     :decl_ms, :decl_ver
                 )
                 ON CONFLICT (correlation_id, round_index, orchestrator_version)
@@ -180,6 +180,7 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     prompt_mismatch   = COALESCE(EXCLUDED.prompt_mismatch, turn_rounds.prompt_mismatch),
                     decision_inputs   = COALESCE(EXCLUDED.decision_inputs, turn_rounds.decision_inputs),
                     framing_inputs    = COALESCE(EXCLUDED.framing_inputs, turn_rounds.framing_inputs),
+                    executor_inputs   = COALESCE(EXCLUDED.executor_inputs, turn_rounds.executor_inputs),
                     -- booleans: OR, never overwrite. A round that overran or
                     -- was executed by v2 cannot become one that wasn't.
                     overran           = turn_rounds.overran OR EXCLUDED.overran,
@@ -238,6 +239,8 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
                     # finding.
                     "framing": (json.dumps(r["v2_framing_inputs"])
                                 if r.get("v2_framing_inputs") else None),
+                    "execin": (json.dumps(r["v2_executor_inputs"])
+                               if r.get("v2_executor_inputs") else None),
                     "decl_ms": r.get("declared_latency_ms"),
                     "decl_ver": r.get("declared_version"),
                 },

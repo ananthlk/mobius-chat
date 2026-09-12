@@ -5791,9 +5791,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     # the fuse real -- a ceiling the caller
                                     # never supplies is a constant 0, and the
                                     # guard would be decorative.
+                                    # This branch only runs when the model
+                                    # proposed complete -- which is exactly the
+                                    # moment the governor needs to be able to
+                                    # say "not yet". Telling decide() so is
+                                    # what turns a brake into a brake AND an
+                                    # accelerator.
                                     _v2_act = _v2x.decide(
                                         _v2_dec, _v2p.exit_mode(_v2_state),
                                         extensions_used=_pp_extension_rounds_used,
+                                        model_proposes_complete=True,
                                     )
                                     logger.info(
                                         "[v2.exec] cid=%s round=%s v1=%s -> v2=%s "
@@ -5824,6 +5831,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                         _v2_cmp["v2_applied"] = True
                                         _v2_cmp["v2_directive_applied"] = _v2_act.directive
                                         _v2_cmp["v2_prompt_mismatch"] = _v2_act.prompt_mismatch
+                                        # THE STATE THE EXECUTOR ACTUALLY
+                                        # DECIDED ON. The row's
+                                        # decision_inputs is written by the
+                                        # PRE-round hook, which fires first and
+                                        # wins the COALESCE -- so a row could
+                                        # show "1 gap (G0)" while the executor
+                                        # decided on three. Ananth found the
+                                        # symptom before I could see the cause:
+                                        # "either RAG did not create 3 gaps in
+                                        # R1 or you missed it."
+                                        _v2_cmp["v2_executor_inputs"] = _v2p.explain(
+                                            _v2_state, _v2_dec)
                             except Exception as _v2_exc:  # pragma: no cover
                                 # A v2 turn whose hook raised has ALREADY fallen
                                 # back to v1's directive, because _pp_directive
