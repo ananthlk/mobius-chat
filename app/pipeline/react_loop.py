@@ -1348,7 +1348,25 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
                           + ", ".join(_uncovered[:4]))
         summary = " | ".join(_parts)
         ok = ok and n > 0
-    return {"ok": ok, "summary": summary, "asked": _asked}
+    # 🔴 THE PAYLOAD, NOT ONLY THE SUMMARY.
+    #
+    # This function's docstring said "returns a SUMMARY, never the payload --
+    # react already receives tool results through its own channel". That is
+    # TRUE for tools react called and FALSE for preload: react never made these
+    # calls, so nothing carries their text. Round 1 therefore received
+    # "15 passage(s) across 5 doc(s)" -- names and page numbers -- and no
+    # evidence at all.
+    #
+    # Measured, and it is worse than slow: react wrote a confident description
+    # of Molina's philosophy from its own priors, then declared United
+    # Healthcare undocumented while UHC's manual sat in the preload it could
+    # not read. A summary of evidence is an invitation to invent it.
+    #
+    # The text is returned here and seeded as a virtual tool result by the
+    # caller, which is the channel build_reasoning_context already renders.
+    return {"ok": ok, "summary": summary, "asked": _asked,
+            "payload": res.get("result") or res.get("answer") or "",
+            "sources": res.get("sources") or []}
 
 
 def _execute_tool(
@@ -4718,6 +4736,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     t.tool_key: (getattr(t, "reason", "") or "")[:90]
                     for t in getattr(_off, "tools", None) or []
                 }
+                # SEED THE EVIDENCE ITSELF. The frame's §10 summary tells
+                # react WHAT was retrieved; this puts the retrieved text where
+                # react can actually read it. Both are needed: the summary is
+                # the judgement prompt, the seed is the evidence being judged.
+                #
+                # Virtual tool results are an existing channel
+                # (orchestrator.py:351 seeds cached answers the same way) and
+                # build_reasoning_context already renders them, so round 1 gets
+                # the evidence with no change to prompt assembly.
+                if not getattr(ctx, "seed_tool_results", None):
+                    ctx.seed_tool_results = []
+                for _r in ctx._v2_preloaded:
+                    if _r.get("ok") and _r.get("payload"):
+                        ctx.seed_tool_results.append({
+                            "tool": _r.get("tool"),
+                            "success": True,
+                            "result": _r["payload"],
+                            "result_summary": _r.get("summary") or "",
+                            # round_virtual=0: retrieved BEFORE round 1 spoke.
+                            # Not round 1's own work, and the trace must not
+                            # credit a round for evidence it did not fetch.
+                            "round_virtual": 0,
+                            "sources": _r.get("sources") or [],
+                        })
                 for _r in ctx._v2_preloaded:
                     _r["role"] = ctx._v2_tool_reasons.get(_r.get("tool"), "")
                     # Round 1 is spent on the QUESTION, not on a gap -- there
@@ -4967,6 +5009,29 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # body needs to change or re-indent. When the flag is off, `max_it`
     # never changes, so this is byte-for-byte equivalent to the original
     # `for iteration in range(max_it)`.
+    # 🔴 BOUND BEFORE THE LOOP, not at :5474 inside it.
+    #
+    # The pre-round hook reads _gap_status; the assignment sits ~370 lines
+    # BELOW that read, at the END of the round body. So on ROUND 1 it was
+    # unbound, the hook raised UnboundLocalError, and the `except Exception`
+    # that exists to keep a telemetry failure from killing a turn swallowed it
+    # -- taking the ENTIRE governor block with it. Round 1 received no
+    # preloaded evidence, no role stack, no gap ledger: 1,902 characters and
+    # the question. It then had no choice but to search, which is the round
+    # this preload exists to remove.
+    #
+    # Found by instrumenting the prompts the model actually receives and
+    # noticing the blocks were absent from round 1 while present in round 2.
+    # Nothing in the logs said "governor absent" -- the warning said
+    # "pre-round hook failed" and nobody reads that as "the prompt lost its
+    # instructions".
+    #
+    # FOURTH instance of this shape tonight (_keep_raw, _pp_time_mod, _off).
+    # The empty string is what round 1 genuinely has: no two rag calls have
+    # been made, so nothing can be stagnant yet -- _compute_gap_status returns
+    # "fresh" for an empty history and that is a CLAIM about history, whereas
+    # "" is the absence of one.
+    _gap_status = ""
     for iteration in _itertools.count():
         if iteration >= max_it:
             break
@@ -5307,8 +5372,51 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # WORKING GAP is the load-bearing one: it is the
                             # only thing that explains why a second search is
                             # not a repeat of the first.
-                            if _steer_gap is not None:
-                                emit(f"  → This round: {_steer_gap.text}")
+                            # ── THE STANDARD ROUND REPORT ───────────────
+                            # Ananth, 2026-09-12: "this is the standard ..
+                            # output.. rag posture assumed: summary of the
+                            # request .. running answer (summary unless this is
+                            # communicate):: open gaps :; next tools ::"
+                            #
+                            # One shape every round, so a reader can diff round
+                            # N against round N+1 and see what moved. Before
+                            # this, the running answer existed only in the logs
+                            # and the final message -- a user watching a 187s
+                            # turn saw rag narrate and react say nothing, and
+                            # could not tell a round that advanced from one
+                            # that did not.
+                            emit(f"  ┌ posture: {_v2ps_decision.posture.value}"
+                                 + (f" · gap: {_steer_gap.text}"
+                                    if _steer_gap is not None else ""))
+                            emit(f"  │ asking:  {(_v2_facts.targeted_gap or _v2_facts.question)[:120]}")
+                            # The running answer, carried from the previous
+                            # round's evidence_review. SUMMARISED unless the
+                            # round's job is to communicate -- on a COMMUNICATE
+                            # round the full text is the deliverable, not a
+                            # progress note.
+                            _ra = str(_prev_enr.get("running_answer") or "").strip()
+                            if _ra:
+                                _communicating = (
+                                    "role_communicate"
+                                    in _v2bl.frame_sections(_v2_facts)[1])
+                                emit("  │ answer:  "
+                                     + (_ra if _communicating else _ra[:220]
+                                        + ("…" if len(_ra) > 220 else "")))
+                            else:
+                                emit("  │ answer:  nothing yet")
+                            _open_now = [g.text for g in _steer_state.open_gaps]
+                            emit("  │ open:    "
+                                 + ("; ".join(_open_now[:4]) if _open_now
+                                    else "none"))
+                            # NEXT TOOLS: what the next round may ask for. Empty
+                            # is said out loud -- an absent line reads as "no
+                            # tools needed" when it means "the selector never
+                            # answered", which is what happens when toolreg is
+                            # unreachable.
+                            _nx = tuple(getattr(ctx, "_v2_suggest", None) or ())
+                            emit("  └ next:    "
+                                 + (" · ".join(_nx) if _nx
+                                    else "(no suggestions — selector unavailable)"))
                             # Roles in the user's language, not the registry's
                             # ids. "role_summarise" means nothing to a reader.
                             _ROLE_WORDS = {
