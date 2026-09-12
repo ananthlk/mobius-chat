@@ -1218,6 +1218,38 @@ def _compute_gap_status(rag_call_history: list[dict]) -> str:
 # own callers and for tests/test_rag_call_ceiling.py's existing import path.
 
 
+def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
+    """Bridge preload.execute() to the real tool dispatch.
+
+    Returns {ok, summary} -- a SUMMARY, never the payload. The frame renders a
+    line per tool; putting raw chunks there would put the whole retrieval into
+    the prompt twice, since react already receives tool results through its own
+    channel.
+
+    Sequential by construction: see preload.execute's comment. _execute_tool
+    assigns ctx.sources / ctx.plan / ctx.react_bypass_integrate, so two of
+    these in flight on one ctx race.
+    """
+    res = _execute_tool(tool, inputs, ctx, emitter) or {}
+    # The shape _execute_tool returns varies by tool; read defensively and
+    # report what we could not read rather than calling it a failure.
+    ok = not res.get("error")
+    n = None
+    for key in ("chunks", "passages", "results", "sources"):
+        v = res.get(key)
+        if isinstance(v, list):
+            n = len(v)
+            break
+    if n is None:
+        body = res.get("result") or res.get("summary") or ""
+        summary = (str(body)[:140] if body else "no result field recognised")
+        ok = ok and bool(body)
+    else:
+        summary = "%d passage(s)" % n
+        ok = ok and n > 0
+    return {"ok": ok, "summary": summary}
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -4458,6 +4490,69 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         return
     _t_react_pf = _react_pf("preflight_round0_check", _t_react_pf)
 
+    # ── PRELOAD (governor v2) ───────────────────────────────────────────────
+    #
+    # Run the tools BEFORE react speaks, so round 1 JUDGES evidence instead of
+    # choosing a search blind. Measured over 1000 turns: round 1 opens zero
+    # gaps and closes zero gaps in 382 of 382 rounds while calling a tool 87%
+    # of the time.
+    #
+    # Placed AFTER the round-0 short-circuit on purpose: a turn answerable from
+    # caller-supplied system_context should not pay for retrieval at all.
+    #
+    # FAIL-SOFT IN EVERY DIRECTION. A missing toolreg, a failed estimate, a
+    # raising tool -- all leave ctx._v2_preloaded empty, and an empty preload
+    # renders no frame sections, which is exactly today's behaviour. This must
+    # be a no-op when anything is wrong, never a broken turn.
+    ctx._v2_preloaded = []
+    ctx._v2_suggest = ()
+    if (os.environ.get("MOBIUS_V2_PRELOAD", "").strip() == "1"
+            and getattr(ctx, "orchestrator_version", "v1") == "v2"
+            and not _is_task_mode):
+        try:
+            from app.pipeline.v2 import preload as _v2pre
+
+            _pre_q = (getattr(ctx, "message", None) or "").strip()
+            _offer_keys: list[str] = []
+            try:
+                from toolreg.estimate import estimate as _tr_estimate
+
+                _off = _tr_estimate(
+                    _pre_q, caller_mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
+                    correlation_id=getattr(ctx, "correlation_id", None),
+                    thread_id=getattr(ctx, "thread_id", None), arm="v2",
+                )
+                _offer_keys = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
+            except Exception as _tr_e:
+                # toolreg is not in the image yet. rag alone is the floor and
+                # is where the value is -- NOT a silent skip, because a preload
+                # that quietly does nothing is indistinguishable from one that
+                # ran and found nothing.
+                logger.info("[v2.preload] estimate unavailable (%s); rag only", _tr_e)
+                _offer_keys = ["rag"]
+
+            _plan = _v2pre.plan(_offer_keys)
+            if not _plan.is_empty:
+                _t_pre = _pp_time_mod.monotonic()
+                ctx._v2_preloaded = _v2pre.execute(
+                    _plan,
+                    lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter),
+                    _pre_q,
+                )
+                ctx._v2_suggest = _plan.suggest
+                logger.info(
+                    "[v2.preload] cid=%s ran=%s ok=%d suggest=%s elapsed=%.1fs",
+                    (ctx.correlation_id or "")[:8],
+                    ",".join(_plan.execute),
+                    sum(1 for r in ctx._v2_preloaded if r.get("ok")),
+                    ",".join(_plan.suggest),
+                    _pp_time_mod.monotonic() - _t_pre,
+                )
+        except Exception as _pre_e:      # pragma: no cover
+            logger.warning("[v2.preload] failed cid=%s: %s",
+                           (getattr(ctx, "correlation_id", "") or "")[:8], _pre_e)
+            ctx._v2_preloaded = []
+
     # Emit jurisdiction
     active = (ctx.merged_state or {}).get("active") or {}
     reset_reason = (ctx.merged_state or {}).get("_reset_reason")
@@ -4850,7 +4945,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         )
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
                             _v2_ctx, _v2ps_decision.posture,
-                            directive=_v2ps_decision.directive)
+                            directive=_v2ps_decision.directive,
+                            # Preload evidence reaches the model HERE or not at
+                            # all. Executed and never rendered would be the
+                            # producer-with-no-consumer defect with a retrieval
+                            # bill attached.
+                            preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
+                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
                         # Fires ONCE. Leaving it set would re-ask the dissent
                         # every round after a single proposal -- nagging, and
                         # it would make the compliance signal meaningless.

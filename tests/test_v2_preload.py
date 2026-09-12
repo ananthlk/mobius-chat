@@ -176,3 +176,46 @@ def test_execution_is_sequential_and_stays_that_way():
             f"{banned} appeared in preload: concurrent _execute_tool on one "
             f"shared ctx races on ctx.sources and ctx.react_bypass_integrate"
         )
+
+
+# ── the wiring: preload must REACH the model ────────────────────────────────
+
+def test_preload_results_reach_the_frame():
+    """Executed and never rendered is the producer-with-no-consumer defect with
+    a retrieval bill attached. AST, because a substring search matches the
+    comment explaining it."""
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    tree = ast.parse(src)
+    passed = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "render"):
+            continue
+        kw = {k.arg for k in node.keywords}
+        if {"preloaded", "suggest"} <= kw:
+            passed = True
+    assert passed, "frame.render is never called with preloaded/suggest"
+
+
+def test_preload_is_flag_gated_and_arm_scoped():
+    """Running tools speculatively on the v1 arm would vary BOTH arms and the
+    A/B could no longer attribute anything. And a change that spends real
+    retrieval needs an off switch that is not a rollback."""
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    code = "\n".join(l.split("#")[0] for l in src.splitlines())
+    i = code.index("MOBIUS_V2_PRELOAD")
+    window = code[i:i + 320]
+    assert "orchestrator_version" in window, "preload is not arm-scoped"
+    assert "_is_task_mode" in window, "task mode must not preload"
+
+
+def test_preload_failure_leaves_todays_behaviour():
+    """Ships dark: a missing toolreg, a failed estimate or a raising tool must
+    leave ctx._v2_preloaded empty, and an empty preload renders no sections."""
+    from app.pipeline.v2.frame import preload_sections
+    assert preload_sections([], ()) == []

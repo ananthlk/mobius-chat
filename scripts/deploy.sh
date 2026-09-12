@@ -259,6 +259,9 @@ SET_ENV_VARS=(
     # the governor decides and says nothing, which is what it did for its
     # first 417 decisions. Off takes ~90s, same as FRAME_DECIDES.
     "MOBIUS_V2_STEER=${MOBIUS_V2_STEER:-}"
+    "MOBIUS_V2_PRELOAD=${MOBIUS_V2_PRELOAD:-}"
+    "TOOLREG_DATABASE_URL=${TOOLREG_DATABASE_URL:-}"
+    "TOOLREG_ENV=${TOOLREG_ENV:-}"
     # Enables the A/B harness fork: honours a per-turn arm pin so both arms
     # run in the SAME SECONDS. Empty default = off, and the fork endpoint
     # returns 409 rather than silently degrading to a single arm.
