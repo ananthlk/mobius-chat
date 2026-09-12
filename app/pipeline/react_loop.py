@@ -4909,8 +4909,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                "falling back to unfiltered preload", _sch_e)
                 _tool_schemas = {}
 
+            # DECLARED WORST CASE, per tool, from the offer itself.
+            # Tool Manifest, 2026-09-12: 46 of 49 declared tools have NO
+            # ceiling, and estimate() prices worst case as `ceiling or p50` --
+            # so those 46 are budget-checked against their TYPICAL cost.
+            # healthcare_query declared 800ms and took 30s. The governor will
+            # not spend unbounded unpriced time before react has spoken.
+            _tool_ceilings: dict = {}
+            try:
+                for _t in (getattr(_off, "tools", None) or []):
+                    _tool_ceilings[_t.tool_key] = getattr(
+                        _t, "declared_ceiling_ms", None)
+            except Exception:      # pragma: no cover
+                _tool_ceilings = {}
+
             _plan = _v2pre.plan(_offer_keys,
-                                schemas=_tool_schemas or None)
+                                schemas=_tool_schemas or None,
+                                ceilings=_tool_ceilings or None)
             # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
             # dev turn with no preload looked identical in the logs to a turn
             # where the block never executed -- and I spent a chase on exactly

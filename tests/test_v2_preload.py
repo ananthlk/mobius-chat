@@ -526,3 +526,55 @@ def test_no_schemas_supplied_leaves_behaviour_unchanged():
     every tool would be worse than the bug it fixes."""
     pl = plan(["rag", "web_scrape"], schemas=None)
     assert "web_scrape" in pl.execute or "web_scrape" in pl.suggest
+
+
+# ── unpriced time is not spent speculatively ────────────────────────────────
+#
+# Tool Manifest, 2026-09-12, after healthcare_query timed out in this set:
+#     declared 49 tools — 46 of them have NO CEILING AT ALL; estimate() prices
+#     worst case as `ceiling or p50`, so those 46 are budget-checked against
+#     their TYPICAL cost. healthcare_query declared 800ms and took 30s.
+#
+# A SPEND decision, not a selection decision — which is what makes it the
+# governor's. Tool Manifest ranks; this does not reorder, and an excluded tool
+# is still offered to react in `suggest`.
+
+from app.pipeline.v2.preload import affordable_to_preload
+
+
+def test_unknown_worst_case_is_not_treated_as_cheap():
+    """`ceiling or p50` silently substitutes the typical cost. That is how a
+    30-second tool passed a budget check priced at 800ms."""
+    ok, why = affordable_to_preload(None)
+    assert not ok and "unknown" in why
+
+
+def test_a_declared_30s_ceiling_is_refused():
+    ok, why = affordable_to_preload(30000)
+    assert not ok and "30000" in why
+
+
+def test_a_normal_tool_is_allowed():
+    assert affordable_to_preload(3000)[0]
+
+
+def test_an_unreadable_ceiling_is_refused_not_coerced():
+    assert not affordable_to_preload("soon")[0]
+
+
+def test_an_excluded_tool_is_still_offered_to_react():
+    """Not removed from the turn — removed from the speculative spend before
+    the turn starts. react may still call it, where the spend follows a
+    decision instead of preceding one."""
+    pl = plan(["rag", "slow_tool", "other_tool"],
+              schemas={k: {"properties": {"query": {}}}
+                       for k in ("rag", "slow_tool", "other_tool")},
+              ceilings={"rag": 20000, "slow_tool": None, "other_tool": 2000})
+    assert "slow_tool" not in pl.execute
+    assert any(k == "slow_tool" for k, _ in pl.excluded)
+
+
+def test_no_ceilings_supplied_leaves_behaviour_unchanged():
+    pl = plan(["rag", "x"], schemas={k: {"properties": {"query": {}}} for k in ("rag", "x")},
+              ceilings=None)
+    assert "x" in pl.execute or "x" in pl.suggest

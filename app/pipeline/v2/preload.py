@@ -268,6 +268,50 @@ class PreloadPlan:
 # a skill changed its inputs.
 QUESTION_KEYS = ("query", "question")
 
+# 🔴 A TOOL WITH NO KNOWN WORST CASE IS NOT PRELOADABLE.
+#
+# Tool Manifest, 2026-09-12, after healthcare_query timed out in this set:
+#     declared    49 tools  <- 46 of them have NO CEILING AT ALL
+#     placeholder  8
+#     observed     1        <- rag, and only since last night
+#     "estimate.py computes worst case as `ceiling or p50`, so 46 offerable
+#      tools are budget-checked against their TYPICAL cost, never their worst."
+#
+# healthcare_query declared p50=800ms against an actual 30s timeout. It was not
+# an outlier; it was the one that failed while we were watching.
+#
+# THIS IS A SPEND DECISION, NOT A SELECTION DECISION, and that distinction is
+# what makes it mine. I am not saying a tool is unhelpful — Tool Manifest ranks,
+# and I do not reorder. I am saying the governor will not spend UNBOUNDED,
+# UNPRICED time speculatively, before react has said anything, on the critical
+# path of a turn with a latency promise. react may still call any of these
+# mid-turn, where the spend follows a decision instead of preceding one.
+#
+# The bound is generous on purpose: this exists to exclude the 30-second
+# failure mode, not to tune latency.
+PRELOAD_MAX_CEILING_MS = int(
+    os.environ.get("MOBIUS_V2_PRELOAD_MAX_CEILING_MS", "20000") or 0)
+
+
+def affordable_to_preload(ceiling_ms) -> tuple[bool, str]:
+    """(ok, why_not) from the tool's DECLARED WORST CASE.
+
+    UNKNOWN IS NOT CHEAP. A missing ceiling means nobody has measured the
+    failure mode, and `ceiling or p50` quietly substitutes the typical cost —
+    which is how a 30-second tool passed a budget check priced at 800ms.
+    """
+    if ceiling_ms in (None, ""):
+        return False, ("worst case unknown (no declared ceiling) — "
+                       "not spent speculatively before react")
+    try:
+        ms = int(ceiling_ms)
+    except (TypeError, ValueError):
+        return False, f"worst case unreadable ({ceiling_ms!r})"
+    if PRELOAD_MAX_CEILING_MS and ms > PRELOAD_MAX_CEILING_MS:
+        return False, (f"worst case {ms}ms exceeds the {PRELOAD_MAX_CEILING_MS}ms "
+                       "preload bound")
+    return True, ""
+
 
 def preloadable(schema: dict | None) -> tuple[bool, str]:
     """Can this tool run on the question alone? (ok, why_not)
@@ -303,7 +347,8 @@ def question_input(schema: dict | None, question: str) -> dict:
 
 
 def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
-         suggest_n: int = SUGGEST_N, schemas: dict | None = None) -> PreloadPlan:
+         suggest_n: int = SUGGEST_N, schemas: dict | None = None,
+         ceilings: dict | None = None) -> PreloadPlan:
     """Rank-ordered offer -> (execute, suggest, excluded).
 
     `offer_tool_keys` is Offer.tools in the order estimate() returned them --
@@ -327,6 +372,14 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
             ok, why = preloadable(schemas.get(key))
             if not ok:
                 excluded.append((key, f"cannot run on the question alone: {why}"))
+                continue
+        # Only when the caller supplied ceilings. A tool EXCLUDED here is still
+        # offered to react in `suggest` — it is not being removed from the
+        # turn, only from the speculative spend before the turn starts.
+        if ceilings is not None:
+            ok, why = affordable_to_preload(ceilings.get(key))
+            if not ok:
+                excluded.append((key, why))
                 continue
         ranked.append(key)
 
