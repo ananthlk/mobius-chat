@@ -85,8 +85,43 @@ def _gap_line(g: Gap, current_round: int) -> list[str]:
     return out
 
 
+def preload_sections(executed: list[dict], suggest: tuple[str, ...]) -> list[str]:
+    """§10 PRIOR RESULTS and §9 TOOLS, for a round whose evidence already exists.
+
+    `executed` is [{tool, ok, summary}] -- what ran and what came back, INCLUDING
+    the ones that returned nothing. A tool that ran and found nothing is
+    evidence; omitting it would let react assume it was never tried, which is
+    the never-searched / searched-and-empty collapse this whole contract exists
+    to end.
+
+    §9 is the ESCAPE HATCH. Without it preload is a capability removal: react
+    could previously call anything in the manifest and would now get only what
+    we chose.
+    """
+    out: list[str] = []
+    if executed:
+        out.append("[§10 ALREADY RETRIEVED — this round's evidence, judge it]")
+        for e in executed:
+            tool = e.get("tool")
+            if e.get("ok"):
+                out.append(f"  {tool} -> {e.get('summary')}")
+            else:
+                # Said plainly. "Ran and found nothing" and "was never run" are
+                # different facts and carry opposite advice.
+                out.append(f"  {tool} -> ran, returned nothing"
+                           + (f" ({e['summary']})" if e.get("summary") else ""))
+    if suggest:
+        out.append("[§9 TOOLS you may request next]")
+        out.append("  " + " · ".join(suggest))
+        out.append("  Name one in your gap report if you need it; the next "
+                   "preload will run it. You are not choosing a tool this "
+                   "round.")
+    return out
+
+
 def render(c: ST.Ctx, posture: Posture,
-           directive=None) -> tuple[str | None, ST.Selection]:
+           directive=None, *, preloaded: list[dict] | None = None,
+           suggest: tuple[str, ...] = ()) -> tuple[str | None, ST.Selection]:
     """The governor's sections, in execution order, plus the ack request."""
     sel = ST.select(c, posture)
     gaps = c.state.open_gaps
@@ -129,6 +164,11 @@ def render(c: ST.Ctx, posture: Posture,
     if other:
         parts.append("[Governor — this round]")
         parts.extend(f"  - {ST.text_of(s, c)[0]}" for s in other)
+
+    # §10 and §9 render LAST in the block but describe work that already
+    # happened -- they are the round's inputs, not its instructions, and the
+    # model reads instructions first then the evidence they apply to.
+    parts.extend(preload_sections(preloaded or [], suggest))
 
     if not parts:
         return None, sel

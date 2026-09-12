@@ -1,0 +1,109 @@
+"""Preload: run the tools BEFORE react speaks, so round 1 judges instead of guessing.
+
+Ananth, 2026-09-12: *"tool manifest select the top x tools, preload the top 2 +
+rag in the prompt... load the tool outputs + leave a generalized list of the
+next 3 tool choices for react to suggest."*
+
+WHY. Measured over 1000 turns: round 1 opens ZERO gaps and closes ZERO gaps, in
+382 of 382 rounds, while calling a tool 87% of the time. It is a blind first
+shot whose only product is evidence for round 2 to reason about. An LLM call
+and 10-139s of wall clock spent deciding which search to run.
+
+THE CONTRACT, three parts, and the third is the one that keeps this honest:
+
+  EXECUTE   the top-N ranked tools plus rag, concurrently
+  RENDER    their outputs as evidence react judges (frame §10)
+  SUGGEST   the next few ranked tools react may ASK FOR (frame §9)
+
+WITHOUT THE THIRD PART THIS IS A CAPABILITY REMOVAL. Today react may call
+anything in the manifest; under preload it gets what we chose. The suggestion
+list plus "name one in your gap report" is the escape hatch, and this session
+has already shipped one capability removal that cost 50 turns -- the governor's
+unilateral stop, 0 additions against 50 subtractions.
+
+RAG IS ALWAYS EXECUTED, regardless of rank. Ananth: "no we will always do rag".
+It is `tier=default` in the offer -- offered unconditionally, never ranked --
+and it is the tool that answers payer-policy questions. On the three-payer
+question it ranks 12th of 13 while being the only tool that finds the answer.
+
+PURE. Offer in, plan out. Execution lives in the caller, so this module can be
+tested without a network.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+# How many RANKED tools to execute alongside rag. Two, not three: each costs
+# tokens in the prompt whether or not it returned anything, and the ranked tools
+# are cheap-but-not-free. Deliberately small until the measurement says
+# otherwise -- 57 tools at 14,271 tokens is what this product already learned.
+EXECUTE_RANKED = 2
+
+# How many further tools to NAME for react. Three is enough to offer a real
+# alternative without becoming a manifest again.
+SUGGEST_N = 3
+
+# Never preload these, whatever they rank. `refuse` is a gate token, not a
+# retrieval tool; the write/ingest skills have side effects and must never run
+# speculatively on a question nobody asked them to act on.
+NEVER_PRELOAD = frozenset({
+    "refuse", "ingest_url", "document_upload_skill", "transform_previous_answer",
+})
+
+ALWAYS_PRELOAD = ("rag",)
+
+
+@dataclass(frozen=True)
+class PreloadPlan:
+    """What to run, and what to offer react instead."""
+    execute: tuple[str, ...] = ()
+    suggest: tuple[str, ...] = ()
+    # Why each excluded tool was excluded. Recorded, not dropped: a preload
+    # that ran the wrong tools and a preload that ran nothing look identical in
+    # an answer, and "we never asked the right tool" must be a visible verdict.
+    excluded: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.execute
+
+
+def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
+         suggest_n: int = SUGGEST_N) -> PreloadPlan:
+    """Rank-ordered offer -> (execute, suggest, excluded).
+
+    `offer_tool_keys` is Offer.tools in the order estimate() returned them --
+    rank order, which this module does NOT recompute. estimate() ranks; the
+    governor supplies gaps and budget. Two rankers would be two authors, and
+    tonight has already produced one silent disagreement between a decision and
+    a re-derivation of it.
+    """
+    excluded: list[tuple[str, str]] = []
+    ranked: list[str] = []
+    for key in offer_tool_keys:
+        if key in ALWAYS_PRELOAD:
+            continue                      # handled below, never counted as ranked
+        if key in NEVER_PRELOAD:
+            excluded.append((key, "never preloaded: gate token or has side effects"))
+            continue
+        ranked.append(key)
+
+    # ALWAYS means "whatever it ranks", NOT "whether or not it was offered".
+    #
+    # estimate() withholds rag when the time budget cannot carry it -- measured:
+    # at budget_ms=18000 the offer comes back without rag and says so
+    # ("worst case 20s against a 18s envelope"). That refusal is BINDING. Adding
+    # rag back here would execute a tool the selector declined to offer, which
+    # is the governor overruling Tool Manifest's own budget arithmetic with
+    # nothing but a constant.
+    #
+    # Caught by a test asserting an empty offer plans nothing; it planned rag.
+    offered = set(offer_tool_keys)
+    always = [k for k in ALWAYS_PRELOAD if k in offered]
+    execute = always + ranked[:execute_ranked]
+    suggest = ranked[execute_ranked:execute_ranked + suggest_n]
+    for key in ranked[execute_ranked + suggest_n:]:
+        excluded.append((key, "ranked below the suggestion window"))
+
+    return PreloadPlan(tuple(execute), tuple(suggest), tuple(excluded))
