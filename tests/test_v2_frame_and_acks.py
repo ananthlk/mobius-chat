@@ -208,3 +208,70 @@ def test_a_narrowed_round_is_not_an_ignored_instruction():
     assert r1.verdict is C.Verdict.IGNORED, (
         "scoping the check must not disarm it on the round it exists for"
     )
+
+
+# ── turn-end evaluation ─────────────────────────────────────────────────────
+
+class _Ctx:
+    pass
+
+
+def _turn():
+    c = _Ctx()
+    c.react_trace_rounds = [
+        {"round": 1, "tool": "rag", "inputs": {"query": MOL},
+         "ack": {"parts": [MOL, SUN, UHC], "working_gap": None, "complete": False}},
+        {"round": 2, "tool": "rag", "inputs": {"query": MOL},
+         "ack": {"parts": [MOL, SUN, UHC], "working_gap": "S2", "complete": False}},
+        {"round": 3, "tool": "rag", "inputs": {"query": "Sunshine Health care management"},
+         "ack": {"parts": [MOL, SUN, UHC], "working_gap": "S2", "complete": True,
+                 "dissent": "accepted"}},
+    ]
+    c.v2_statements_sent = {
+        1: [{"id": "FRM-2", "gaps": [MOL, SUN, UHC]}],
+        2: [{"id": "EVD-4", "gaps": [MOL, SUN, UHC], "target": SUN}],
+        3: [{"id": "CTL-1", "gaps": [MOL, SUN, UHC], "target": UHC}],
+    }
+    c.v2_gap_ids = {"S1": MOL, "S2": SUN, "S3": UHC}
+    return c
+
+
+def test_the_ack_catches_a_lie_the_statement_observer_would_let_pass():
+    """THE ARGUMENT FOR ACKS, in one turn.
+
+    At round 3 react said "accepted" to the dissent and then ended the turn
+    without searching UnitedHealthcare. The STATEMENT observer sees no next
+    round and reads it as a legitimate DECLINED -- which is correct on the
+    evidence it has, and is why declining is never disobedience. The ACK sees
+    the claim and the absence together and reads IGNORED.
+
+    Without the ack, an accepted-in-words/declined-in-fact is indistinguishable
+    from an honest refusal.
+    """
+    r = C.evaluate_turn(_turn())
+    stmt = {(x["round"], x["id"]): x["verdict"] for x in r["statements"]}
+    acks = {(x["round"], x["key"]): x["verdict"] for x in r["acks"]}
+    assert stmt[(3, "CTL-1")] == "declined"
+    assert acks[(3, "dissent")] == "ignored"
+
+
+def test_unobservable_and_declined_stay_out_of_the_rate():
+    """Folding them in lets an instruction nobody can measure drag down one
+    that is being obeyed, and counts a legitimate refusal as disobedience."""
+    r = C.evaluate_turn(_turn())
+    assert r["rate"]["CTL-1"]["follow_rate"] is None
+    assert r["rate"]["CTL-1"]["declined"] == 1
+    assert r["rate"]["FRM-2"]["follow_rate"] == 0.0
+
+
+def test_a_round_with_no_ack_is_unobservable_not_disobedient():
+    """The frame ASKS for an ack. react not returning one is a fact about the
+    PROMPT, not about the round -- scoring it as disobedience blames the wrong
+    thing, and would make the metric look worst exactly when the prompt change
+    has not landed yet."""
+    c = _turn()
+    c.react_trace_rounds[1].pop("ack")
+    r = C.evaluate_turn(c)
+    got = [x for x in r["acks"] if x["round"] == 2]
+    assert got and all(x["verdict"] == "unobservable" for x in got)
+    assert any("no ack" in (x.get("basis") or "") for x in got)

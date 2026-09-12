@@ -345,3 +345,62 @@ def check_dissent(ack: dict, next_round: dict | None,
                         "accepted and the next round searched it")
     return AckCheck("dissent", Verdict.IGNORED, said, q,
                     "accepted in words; the next round searched something else")
+
+
+# ── TURN-END EVALUATION ─────────────────────────────────────────────────────
+
+def evaluate_turn(ctx) -> dict:
+    """Judge every statement and every ack for one turn. Called at turn end.
+
+    WHY TURN END AND NOT INLINE: a statement sent at round N is judged by
+    round N+1's behaviour, which does not exist when the statement is sent.
+    Evaluating inline would need a retroactive update, and a row rewritten
+    later is a row nobody can trust.
+
+    Returns a plain dict so the caller can persist it without this module
+    knowing anything about storage -- it stays pure and testable.
+    """
+    rounds = [r or {} for r in (getattr(ctx, "react_trace_rounds", None) or [])]
+    sent = dict(getattr(ctx, "v2_statements_sent", None) or {})
+    by_index = {int(r.get("round") or 0): r for r in rounds}
+
+    statements = [
+        {"id": o.statement_id, "round": o.round_index,
+         "verdict": o.verdict.value, "basis": o.basis}
+        for o in observe_turn(rounds, sent)
+    ]
+
+    acks: list[dict] = []
+    for rn, items in sorted(sent.items()):
+        cur = by_index.get(rn)
+        if cur is None:
+            continue
+        ack = cur.get("ack")
+        if not isinstance(ack, dict):
+            # NOT a failure verdict. The frame asks for an ack; react not
+            # returning one is a fact about the PROMPT, not about the round,
+            # and scoring it as disobedience would blame the wrong thing.
+            acks.append({"round": rn, "key": "*", "verdict": Verdict.UNOBSERVABLE.value,
+                         "basis": "react returned no ack this round"})
+            continue
+        gaps = [g for g in (items[0].get("gaps") or []) if isinstance(g, str)] if items else []
+        # id -> text, so `working_gap` is checked against the REAL ledger
+        # rather than against the ack's own claim about it. Recorded when the
+        # frame is built; an empty map makes the check UNOBSERVABLE, which is
+        # the correct answer when we cannot see the ledger, not a pass.
+        by_id = dict(getattr(ctx, "v2_gap_ids", None) or {})
+        dissent_gap = next(
+            (it.get("target") for it in items
+             if it.get("id") == "CTL-1" and it.get("target")), None)
+        nxt = by_index.get(rn + 1)
+        for chk in (check_parts(ack, cur, gaps),
+                    check_working_gap(ack, cur, by_id),
+                    check_dissent(ack, nxt, dissent_gap, gaps)):
+            acks.append({"round": rn, "key": chk.key, "verdict": chk.verdict.value,
+                         "claimed": chk.claimed, "observed": chk.observed,
+                         "basis": chk.basis})
+
+    return {"statements": statements, "acks": acks,
+            "rate": rate([Observation(s["id"], s["round"],
+                                      Verdict(s["verdict"]), s["basis"])
+                          for s in statements])}

@@ -261,3 +261,59 @@ def write_rounds(correlation_id: str, rows: list[dict]) -> None:
     except Exception as exc:
         logger.warning("[v2.ledger] write_rounds raised cid=%s: %s",
                        str(correlation_id)[:8], exc)
+
+
+def write_compliance(correlation_id: str, result: dict) -> None:
+    """Persist one turn's compliance verdicts. Fail-soft, like write_rounds.
+
+    A telemetry write that can break a turn is not telemetry -- and this one
+    runs AFTER the answer is published, so a raise here would fail a turn the
+    user has already been served.
+    """
+    rows: list[tuple] = []
+    for s in (result.get("statements") or []):
+        rows.append(("statement", int(s.get("round") or 0), s.get("id"),
+                     s.get("verdict"), None, None, s.get("basis")))
+    for a in (result.get("acks") or []):
+        rows.append(("ack", int(a.get("round") or 0), a.get("key"),
+                     a.get("verdict"), a.get("claimed"), a.get("observed"),
+                     a.get("basis")))
+    if not rows:
+        # Said out loud. A write that does nothing and logs nothing is
+        # indistinguishable from one that never ran.
+        logger.info("[v2.compliance] cid=%s nothing to record",
+                    str(correlation_id)[:8])
+        return
+    written = 0
+    for kind, rn, item, verdict, claimed, observed, basis in rows:
+        if not item or not verdict:
+            continue
+        try:
+            from app.db_client import db_execute
+
+            db_execute(
+                """
+                INSERT INTO turn_compliance
+                    (correlation_id, round_index, kind, item, verdict,
+                     claimed, observed, basis)
+                VALUES (:cid, :rn, :kind, :item, :verdict, :claimed,
+                        :observed, :basis)
+                ON CONFLICT (correlation_id, round_index, kind, item)
+                DO UPDATE SET
+                    verdict  = EXCLUDED.verdict,
+                    claimed  = EXCLUDED.claimed,
+                    observed = EXCLUDED.observed,
+                    basis    = EXCLUDED.basis
+                """,
+                _DB,
+                params={"cid": correlation_id, "rn": rn, "kind": kind,
+                        "item": item, "verdict": verdict,
+                        "claimed": (claimed or None), "observed": (observed or None),
+                        "basis": (basis or None)},
+            )
+            written += 1
+        except Exception as e:                      # pragma: no cover
+            logger.warning("[v2.compliance] row failed cid=%s %s/%s: %s",
+                           str(correlation_id)[:8], kind, item, e)
+    logger.info("[v2.compliance] cid=%s wrote %d/%d verdicts",
+                str(correlation_id)[:8], written, len(rows))

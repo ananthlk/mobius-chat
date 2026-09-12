@@ -4862,6 +4862,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # author of the record.
                             if not hasattr(ctx, "v2_statements_sent"):
                                 ctx.v2_statements_sent = {}
+                            # id -> text for the whole turn. check_working_gap
+                            # needs it to test an acked id against the LEDGER
+                            # rather than against the ack's own claim. Union
+                            # across rounds: a gap closed at round 4 must still
+                            # be resolvable when judging round 3's ack.
+                            if not hasattr(ctx, "v2_gap_ids"):
+                                ctx.v2_gap_ids = {}
+                            ctx.v2_gap_ids.update(
+                                {g.gap_id: g.text for g in _steer_state.open_gaps})
                             ctx.v2_statements_sent[rn] = [
                                 {"id": _s.id,
                                  "gaps": [g.text for g in _steer_state.open_gaps],
@@ -5462,6 +5471,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         _evidence_review
                         and isinstance(_evidence_review.get("keep"), list)
                     ) else 0,
+                    # THE ACK (governor-react frame v1). Carried through
+                    # UNTOUCHED, including a malformed one: the checkers at
+                    # turn end compare what react CLAIMED against what the
+                    # round DID, and react_loop cleaning it up on the way past
+                    # would be tidying the evidence.
+                    "ack": (decision.get("ack")
+                            if isinstance(decision.get("ack"), dict) else None),
                     # Per-gap closure (governor-react closure contract v1).
                     # ABSENT until the prompt seat lands the field; carried
                     # through untouched so the governor sees exactly what the

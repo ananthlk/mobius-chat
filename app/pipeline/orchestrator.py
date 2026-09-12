@@ -1132,6 +1132,34 @@ def run_pipeline(
                     "[v2] round-record flush cid=%s rows=%d ctx_id=%s",
                     str(correlation_id)[:8], len(_v2_rows or []), id(ctx),
                 )
+                # ── COMPLIANCE (governor-react frame v1) ───────────────────
+                #
+                # Turn end, not inline: a statement sent at round N is judged by
+                # round N+1's behaviour, which does not exist when it is sent.
+                # Evaluating inline would need a retroactive update, and a row
+                # rewritten later is a row nobody can trust.
+                #
+                # Runs AFTER the answer is published and is wrapped, because a
+                # telemetry write that can break a served turn is not telemetry.
+                try:
+                    if getattr(ctx, "v2_statements_sent", None):
+                        from app.pipeline.v2.compliance import evaluate_turn as _v2_ev
+                        from app.pipeline.v2.ledger import write_compliance as _v2_wc
+
+                        _v2_comp = _v2_ev(ctx)
+                        _v2_wc(correlation_id, _v2_comp)
+                        for _sid, _r in sorted((_v2_comp.get("rate") or {}).items()):
+                            logger.info(
+                                "[v2.compliance] cid=%s %-6s followed=%d "
+                                "ignored=%d unobservable=%d declined=%d rate=%s",
+                                str(correlation_id)[:8], _sid, _r["followed"],
+                                _r["ignored"], _r["unobservable"], _r["declined"],
+                                _r["follow_rate"],
+                            )
+                except Exception as _v2_ce:       # pragma: no cover
+                    logger.warning("[v2.compliance] evaluation failed cid=%s: %s",
+                                   str(correlation_id)[:8], _v2_ce)
+
                 if _v2_rows:
                     # Enrich with what each round actually RAN, joined from the
                     # trace by round number. Done HERE and not in the hook
