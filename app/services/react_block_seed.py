@@ -110,8 +110,29 @@ def _react_block_specs() -> list[BlockSpec]:
         # Plan/SubQuestion is a degenerate single-item shim via
         # _make_react_plan, not real decomposition) -- this is genuinely
         # new signal, not a duplicate of something already emitted.
+        # v6 (2026-09-12, Governor seat live finding): round-1 gaps_open
+        # made explicit as a REPORT, not a plan. Confirmed on 3/3 live runs
+        # (cb12d328, 285de562, Ananth's UI turn): a three-payer question
+        # opened three gaps correctly at round 1, then the model narrowed
+        # its own tool call to just the first entity, stating out loud
+        # "starting with Molina" -- reading its own enumeration as a work
+        # queue. Measured cost on the same corpus/hour: a broad query
+        # naming all three had rag's own slot decomposition search all
+        # three in ~30s; the narrowed single-payer query took ~73s to
+        # cover one (rag expanded it into 3 same-payer variants instead).
+        # Governor confirmed the mechanism in mobius-rag (orchestrator.py:
+        # 786-828): every named entity becomes its own slot, run
+        # concurrently -- rag is already the better decomposer, it only
+        # needs a query that names everything the question asks for.
+        # Not a revert -- Ananth's own ruling was against round-1
+        # sequencing the SEARCH, not against naming the parts; the gaps
+        # list is what feeds the governor's round-2+ closure ledger with
+        # real gaps instead of a seeded root. Added an explicit instruction
+        # plus a positive worked example (the multi-part example's inputs
+        # now name all three payers in one query, not "starting with" one)
+        # rather than relying on the gaps_open field alone to imply it.
         BlockSpec("react.response_shape", "static", "system", react_prompts.REACT_RESPONSE_SHAPE_TEXT,
-                  owner="react-agent", version=5),
+                  owner="react-agent", version=6),
         # react.output_intent_instruction (v1/v2/v3) REMOVED from the
         # composition (2026-07-30 revert, see react.response_shape's note
         # above) — no longer a member of any active composition. Its
