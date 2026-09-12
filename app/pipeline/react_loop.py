@@ -1218,6 +1218,82 @@ def _compute_gap_status(rag_call_history: list[dict]) -> str:
 # own callers and for tests/test_rag_call_ceiling.py's existing import path.
 
 
+_SUMMARY_STOPWORDS = frozenset("""
+a an and are as at be by для for from has have how in into is it its of on or
+that the their there they this to was what when where which who why will with
+你 do does did can could should would may might must not no yes please tell me
+about across between during under over per each any all some more most other
+""".split())
+
+
+def _preload_doc_spread(res: dict) -> list[str]:
+    """Which documents, and which pages of them. Names+pages ONLY -- never
+    chunk text: the frame renders one line per tool, and the payload already
+    reaches react through its own channel."""
+    seen: dict[str, list] = {}
+    for key in ("chunks", "passages", "results", "sources"):
+        v = res.get(key)
+        if not isinstance(v, list):
+            continue
+        for c in v:
+            if not isinstance(c, dict):
+                continue
+            name = str(c.get("document_name") or c.get("title") or "").strip()
+            if not name:
+                continue
+            pg = c.get("page_number")
+            seen.setdefault(name[:44], [])
+            if pg is not None and pg not in seen[name[:44]]:
+                seen[name[:44]].append(pg)
+        break
+    out = []
+    for name, pages in seen.items():
+        out.append(f"{name} p{'/'.join(str(p) for p in sorted(pages)[:3])}"
+                   if pages else name)
+    return out
+
+
+def _terms_not_returned(asked: str, res: dict) -> list[str]:
+    """Content words in the ASK that appear nowhere in what came back.
+
+    CRUDE ON PURPOSE and reported as an observation, never a verdict.
+
+    It is a SUBSTRING check, which decides the failure directions. "united"
+    IS reached by "UnitedHealthcare" -- the direction that matters most, since
+    the unspaced form is exactly this week's payer-lexicon defect. The false
+    lead runs the OTHER way: an unspaced term in the ask ("UnitedHealthcare")
+    is not reached by spaced text ("United Health Care"), and is reported as
+    unmentioned when it was there.
+
+    Which is why the summary says "not mentioned in anything returned" and
+    never "missing from the corpus". Absence from THIS result is not absence
+    from the corpus, and collapsing the two is the never-searched /
+    searched-empty defect wearing a new coat.
+    """
+    if not asked:
+        return []
+    hay = []
+    for key in ("chunks", "passages", "results", "sources"):
+        v = res.get(key)
+        if isinstance(v, list):
+            for c in v:
+                if isinstance(c, dict):
+                    hay.append(str(c.get("text") or ""))
+                    hay.append(str(c.get("document_name") or ""))
+            break
+    blob = " ".join(hay).lower()
+    if not blob:
+        return []
+    out = []
+    for raw in asked.split():
+        w = "".join(ch for ch in raw if ch.isalnum()).lower()
+        if len(w) < 4 or w in _SUMMARY_STOPWORDS or w in out:
+            continue
+        if w not in blob:
+            out.append(w)
+    return out
+
+
 def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     """Bridge preload.execute() to the real tool dispatch.
 
@@ -1231,6 +1307,7 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     these in flight on one ctx race.
     """
     res = _execute_tool(tool, inputs, ctx, emitter) or {}
+    _asked = str(inputs.get("query") or "").strip()
     # The shape _execute_tool returns varies by tool; read defensively and
     # report what we could not read rather than calling it a failure.
     ok = not res.get("error")
@@ -1245,9 +1322,33 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
         summary = (str(body)[:140] if body else "no result field recognised")
         ok = ok and bool(body)
     else:
-        summary = "%d passage(s)" % n
+        # 🔴 A COUNT IS NOT A SUMMARY. "17 passage(s)" tells react nothing it
+        # can judge: not which documents, not whether its ask was covered, not
+        # what is still missing. Ananth, 2026-09-12: "we need a real good
+        # summary from rag.. which should include its role, what it is trying
+        # to solve, what it found and the new gap it is trying to close".
+        #
+        # Four parts, and the fourth is the one that changes behaviour: the
+        # terms in the ask that appear in NOTHING that came back. On the
+        # three-payer question that is the whole defect -- 17 passages, two
+        # payers, and a count that reads like success.
+        _docs = _preload_doc_spread(res)
+        _uncovered = _terms_not_returned(_asked, res)
+        _parts = []
+        if _docs:
+            _parts.append("%d passage(s) across %d doc(s): %s"
+                          % (n, len(_docs), "; ".join(_docs[:4])))
+        else:
+            _parts.append("%d passage(s)" % n)
+        if _uncovered:
+            # Said as an OBSERVATION, not a verdict: absence from the returned
+            # text is not proof the corpus lacks it, and react must be able to
+            # tell those apart. It is a lead, and it is labelled as one.
+            _parts.append("not mentioned in anything returned: "
+                          + ", ".join(_uncovered[:4]))
+        summary = " | ".join(_parts)
         ok = ok and n > 0
-    return {"ok": ok, "summary": summary}
+    return {"ok": ok, "summary": summary, "asked": _asked}
 
 
 def _execute_tool(
@@ -4567,6 +4668,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
             _pre_q = (getattr(ctx, "message", None) or "").strip()
             _offer_keys: list[str] = []
+            # BOUND BEFORE THE TRY. The except branch below sets _offer_keys
+            # but not _off, so the role stamping further down would raise
+            # UnboundLocalError on exactly the path where estimate() failed --
+            # a crash reachable only when something else already went wrong.
+            # Twice tonight (_keep_raw, _pp_time_mod) this same shape shipped.
+            _off = None
             try:
                 from toolreg.estimate import estimate as _tr_estimate
 
@@ -4603,6 +4710,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _pre_q,
                 )
                 ctx._v2_suggest = _plan.suggest
+                # ROLE comes from Tool Manifest's own `reason` for offering the
+                # tool -- not a map maintained here. A second description of a
+                # tool is a second author, and it drifts the moment the
+                # manifest changes and this file does not.
+                ctx._v2_tool_reasons = {
+                    t.tool_key: (getattr(t, "reason", "") or "")[:90]
+                    for t in getattr(_off, "tools", None) or []
+                }
+                for _r in ctx._v2_preloaded:
+                    _r["role"] = ctx._v2_tool_reasons.get(_r.get("tool"), "")
+                    # Round 1 is spent on the QUESTION, not on a gap -- there
+                    # are no gaps yet, and saying "for: <the question>" is
+                    # honest where naming a gap would be invented.
+                    _r["for"] = "the question as asked (no gaps named yet)"
                 # THE USER MUST BE TOLD THIS RAN. Preload retrieves evidence
                 # BEFORE round 1 speaks; without a line here the next search
                 # looks like a duplicate with no explanation, and the whole
@@ -5056,6 +5177,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                             _t, _i, ctx, emitter),
                                         _steer_gap.text,
                                     )
+                                    for _r in ctx._v2_preloaded:
+                                        _r["role"] = (getattr(
+                                            ctx, "_v2_tool_reasons", {}) or {}
+                                        ).get(_r.get("tool"), "")
+                                        _r["for"] = _steer_gap.text
                                     _regap_ran = True
                                     for _r in ctx._v2_preloaded:
                                         emit(f"  {'✓' if _r.get('ok') else '⊘'} "

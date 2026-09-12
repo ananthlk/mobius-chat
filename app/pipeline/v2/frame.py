@@ -104,7 +104,23 @@ def preload_sections(executed: list[dict], suggest: tuple[str, ...]) -> list[str
         for e in executed:
             tool = e.get("tool")
             if e.get("ok"):
-                out.append(f"  {tool} -> {e.get('summary')}")
+                # FOUR PARTS, not a count. Ananth, 2026-09-12: "we need a real
+                # good summary from rag.. its role, what it is trying to solve,
+                # what it found and the new gap it is trying to close".
+                #
+                # role   why this tool was offered, in Tool Manifest's words
+                # for    the gap this call was spent on
+                # asked  the exact query -- so react can see whether a later
+                #        query would be the same one, which is the repeat it
+                #        has no other way to detect
+                # found  documents, pages, and what the ask did not reach
+                out.append(f"  {tool} — {e['role']}" if e.get("role")
+                           else f"  {tool}")
+                if e.get("for"):
+                    out.append(f"      for:   {e['for']}")
+                if e.get("asked"):
+                    out.append(f"      asked: {e['asked']!r}")
+                out.append(f"      found: {e.get('summary')}")
             else:
                 # Said plainly. "Ran and found nothing" and "was never run" are
                 # different facts and carry opposite advice.

@@ -118,7 +118,11 @@ def test_a_tool_that_ran_and_found_nothing_is_reported_as_such():
         [{"tool": "rag", "ok": True, "summary": "17 chunks"},
          {"tool": "healthcare_query", "ok": False, "summary": ""}], ()))
     assert "healthcare_query -> ran, returned nothing" in txt
-    assert "rag -> 17 chunks" in txt
+    # THE PROPERTY, not the layout: rag's summary reaches the frame, attached
+    # to rag. Pinned to "rag -> 17 chunks" this passed on the arrow format and
+    # would have gone red on any re-layout that still carried the fact.
+    _rag_line = txt[txt.index("rag"):]
+    assert "17 chunks" in _rag_line
 
 
 def test_the_suggestion_list_tells_react_how_to_ask():
