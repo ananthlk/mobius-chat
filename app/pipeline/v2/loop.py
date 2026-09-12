@@ -282,12 +282,19 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             # emit_fn, not the positional shape I first assumed. Checked with
             # inspect.signature rather than from memory, because every
             # positional guess in this codebase today has been wrong.
+            # SIX required parameters, not five. `tool_emitter` is the
+            # RAW emitter react passes alongside emit_fn -- two different
+            # channels, and omitting it raised TypeError on the live turn,
+            # which my except swallowed into "tool failed".
+            #
+            # Fourth signature/shape error today. Every one came from calling
+            # a function I had read the NAME of rather than the SIGNATURE, and
+            # every one was four seconds of inspect.signature away. Copied
+            # from react's own call site (react_loop.py:6344) rather than
+            # assembled from the parameter list.
             result = _execute_tool_with_retry(
-                tool=tool,
-                inputs=decision_json.get("inputs") or {},
-                ctx=ctx,
-                round_num=rn,
-                emit_fn=emit,
+                tool, decision_json.get("inputs") or {}, ctx, rn, emit, emitter,
+                skip_retry=(mode == "quick"),
                 open_gaps=_open_gap_texts(state),
             )
         except Exception as exc:

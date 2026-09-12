@@ -433,3 +433,35 @@ def test_allowed_tools_reaches_every_prompt_path():
     assert "resolve_react_system_prompt_v2(" in body
     assert "allowed_tools, agent_role)" in body, "the composition path drops allowed_tools"
     assert "allowed_tools=allowed_tools" in body, "the legacy path drops allowed_tools"
+
+
+def test_the_tool_call_matches_the_REAL_signature():
+    """`_execute_tool_with_retry` has SIX required parameters. I passed five —
+    omitting `tool_emitter`, the raw emitter react passes alongside emit_fn —
+    and the TypeError was swallowed by my own except into "tool failed". The
+    loop then produced no answer at all.
+
+    Fourth signature/shape error today. Every one came from calling a function
+    whose NAME I had read rather than whose SIGNATURE, and every one was four
+    seconds of inspect.signature away. Bound against the live function so a
+    change there fails here rather than at runtime.
+    """
+    import inspect
+    from app.pipeline.react_loop import _execute_tool_with_retry
+    required = [n for n, p in inspect.signature(_execute_tool_with_retry).parameters.items()
+                if p.default is inspect.Parameter.empty]
+    assert required == ["tool", "inputs", "ctx", "round_num", "emit_fn", "tool_emitter"]
+    code = _code()
+    assert "_execute_tool_with_retry(\n                tool, decision_json" in code \
+        or "tool, decision_json.get(\"inputs\") or {}, ctx, rn, emit, emitter," in code, \
+        "the call does not pass all six positionally, as react's own call site does"
+
+
+def test_a_tool_failure_is_not_silently_swallowed():
+    """My except turned a TypeError — a programming error — into
+    {"success": False}, indistinguishable from a tool that ran and found
+    nothing. The log line is what made it findable at all."""
+    code = _code()
+    i = code.index("_execute_tool_with_retry(")
+    block = code[i:i + 900]
+    assert "logger.warning" in block, "a tool failure leaves no trace"
