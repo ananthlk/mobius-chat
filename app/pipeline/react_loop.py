@@ -5580,6 +5580,56 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # itself is typed/deduped per family (e.g. appeals.playbook
         # collapses repeated calls to the winning one), not a flat
         # indexable list per tool name.
+        # Kept vs rejected document identities for the governor's
+        # useful / not-useful blocks. `keep` carries 1-based chunk numbers
+        # from the LAST tool result's [N] headers (see response_shape), so the
+        # mapping is positional and must be bounds-checked -- a model naming
+        # [99] of 20 must not raise on the decision path.
+        _kept_docs: list[str] = []
+        _rejected_docs: list[str] = []
+        try:
+            _chunks = (tool_results[-1].get("chunks") if tool_results else None)
+            if isinstance(_chunks, list) and _chunks:
+                _keep_nums = {int(k) for k in (_evidence_review or {}).get("keep") or []
+                              if isinstance(k, int)}
+
+                def _ident(_c):
+                    _n = str((_c or {}).get("document_name") or "?")[:70]
+                    _p = (_c or {}).get("page_number")
+                    return f"{_n} p{_p}" if _p is not None else _n
+
+                # KEPT is page-level: "p111 had the answer" is precise and
+                # useful. REJECTED is DOCUMENT-level, and only for documents
+                # that contributed NOTHING.
+                #
+                # Page-level rejection was the first version and rendering it
+                # against real data killed it: react kept p5 and p38 of the FL
+                # provider manual and the reject list named p37, p39 and p51 of
+                # THE SAME MANUAL. "Do not re-read" a document it is actively
+                # using is noise, and worse if a later gap lives on p39.
+                #
+                # A document with zero kept chunks is the real signal -- it is
+                # what the AHCA enrollment tables are in the co-occurrence bug:
+                # retrieved repeatedly, never useful.
+                _kept_names = set()
+                _seen_names = {}
+                for _i, _c in enumerate(_chunks, start=1):
+                    _nm = str((_c or {}).get("document_name") or "?")[:70]
+                    _seen_names.setdefault(_nm, 0)
+                    if _i in _keep_nums:
+                        _kept_docs.append(_ident(_c))
+                        _kept_names.add(_nm)
+                    else:
+                        _seen_names[_nm] += 1
+                _kept_docs = list(dict.fromkeys(_kept_docs))[:6]
+                _rejected_docs = [
+                    f"{_nm} ({_n} passage(s), none useful)"
+                    for _nm, _n in _seen_names.items()
+                    if _nm not in _kept_names and _n
+                ][:6]
+        except Exception:       # never break a turn to build a prompt hint
+            _kept_docs, _rejected_docs = [], []
+
         _raw_result_ref: dict | None = None
         if tool_results:
             _ref_tool = tool_results[-1].get("tool")
@@ -5614,6 +5664,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # and this dict is also built on the (thought and no
                     # review) path -- where referencing it raises
                     # UnboundLocalError and takes the whole round with it.
+                    # WHICH DOCUMENTS were kept and which were rejected.
+                    #
+                    # Names and pages ONLY -- never chunk text. The decision
+                    # path deliberately does not dereference tool payloads
+                    # (raw_result_ref exists so it does not have to), and that
+                    # rule stands: an observer that reads payloads starts
+                    # costing what it observes. But a COUNT is not actionable.
+                    # "20 passages were read and not kept" cannot stop react
+                    # re-retrieving them, because it never learns WHICH 20 --
+                    # an instruction it physically cannot follow.
+                    #
+                    # Bounded on purpose: identities, deduped, capped. This is
+                    # the smallest thing that makes "do not re-read these"
+                    # a rule rather than a gesture.
+                    "kept_docs": _kept_docs,
+                    "rejected_docs": _rejected_docs,
+                    # HOW MANY PASSAGES THE ROUND ACTUALLY RETURNED.
+                    #
+                    # Without it `kept` is a numerator with no denominator, and
+                    # "kept 5 of 5" cannot be told from "kept 5 of 50". It is
+                    # also the only way to compute what react SAW AND REJECTED
+                    # -- which nothing in this system has ever recorded, so a
+                    # later round re-retrieves and re-reads the same unhelpful
+                    # material. There is no memory of a negative result here.
+                    "seen": (len(tool_results[-1].get("chunks") or [])
+                             if tool_results and isinstance(
+                                 tool_results[-1].get("chunks"), list) else None),
                     "kept": len(_evidence_review.get("keep") or []) if (
                         _evidence_review
                         and isinstance(_evidence_review.get("keep"), list)
