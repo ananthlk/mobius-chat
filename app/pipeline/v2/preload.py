@@ -32,6 +32,7 @@ tested without a network.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 # How many RANKED tools to execute alongside rag. Two, not three: each costs
@@ -52,6 +53,43 @@ NEVER_PRELOAD = frozenset({
 })
 
 ALWAYS_PRELOAD = ("rag",)
+
+# How many TOKENS of retrieval preload may ask rag for.
+#
+# Ananth, 2026-09-12: "it is really a problem now with 146K prompt largely
+# because of RAG.. we can limit the K on RAG and get lower chunks".
+#
+# Preload inherits compute_token_budget_for_retrieval(ctx), which sizes
+# retrieval to the entire context window -- correct for a round react ASKED
+# for, wrong for a round nobody has asked for yet. Measured: 15 chunks,
+# 141,074 characters, a 145,894-character round-1 prompt and 45.4s against a
+# 31±8s promise, with rag's own retrieval the overwhelming majority of it.
+#
+# MEASURED, three-payer question, real rag, one run per cell:
+#
+#   budget   chunks  payload   rounds  elapsed  payers answered
+#   2,000       1     18,592     2      75.9s   incomplete
+#   6,000       3     24,081     2        --    Molina only
+#  16,000      12     54,031     1      33.6s   Molina + UHC, no Sunshine
+#   0 (full)   15    141,074     1      48.2s   all three
+#
+# CUTTING K CUTS PAYERS, not detail. At 16,000 the answer reads complete and
+# confident with Sunshine Health simply absent -- the exact failure this whole
+# session has been chasing, reintroduced as a performance optimisation.
+#
+# And it does not even save the tokens. At 6,000 react saw thin evidence and
+# searched again itself, and ITS call inherits the full context-window budget:
+# round 1 carried 24,081 chars, round 2 carried 143,646. The cost is displaced
+# into an extra round, which is why 2,000 produced the SLOWEST turn in the set.
+#
+# So the default is 0: inherit the computed budget, no cap, no behaviour
+# change. The knob exists to keep measuring -- a cap that is right for a
+# single-entity question ("what is the timely filing limit") is wrong for a
+# three-entity one, and the number that actually wants tuning is per-QUESTION,
+# not per-deployment. Setting this globally trades a latency win on easy
+# questions for silent omissions on hard ones.
+PRELOAD_TOKEN_BUDGET = int(os.environ.get("MOBIUS_V2_PRELOAD_TOKENS", "0")
+                           or 0)
 
 
 @dataclass(frozen=True)
@@ -156,7 +194,12 @@ def execute(pl: PreloadPlan, runner, question: str) -> list[dict]:
     out: list[dict] = []
     for tool in pl.execute:
         try:
-            res = runner(tool, {"query": question}) or {}
+            _inputs = {"query": question}
+            # Only rag reads this; passing it to every tool would be a
+            # parameter that means nothing to most of them.
+            if tool == "rag" and PRELOAD_TOKEN_BUDGET > 0:
+                _inputs["token_budget_for_retrieval"] = PRELOAD_TOKEN_BUDGET
+            res = runner(tool, _inputs) or {}
             ok = bool(res.get("ok", True)) and not res.get("error")
             out.append({
                 "tool": tool, "ok": ok,

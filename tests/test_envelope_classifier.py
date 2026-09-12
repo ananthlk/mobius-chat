@@ -443,3 +443,95 @@ class TestCrossPathAgreement:
             assert card["sections"] == []
         else:
             assert [s["format"] for s in card["sections"]] == [expected_format]
+
+
+class TestContiguousPairs:
+    """A ceiling that guards against regex over-match must not also cap how
+    many real facts a block can hold. Found stress-testing long drafts:
+    nine genuine appeal deadlines in a contiguous run abstained to prose."""
+
+    def test_scattered_pairs_above_the_band_still_abstain(self):
+        payload = ContentPayload(pairs=_pairs(PAIRS_MAX_ITEMS + 3), contiguous=False)
+        assert classify_envelope(payload).rule_id == "abstain.no_match"
+
+    def test_a_contiguous_run_above_the_band_becomes_a_table(self):
+        payload = ContentPayload(pairs=_pairs(PAIRS_MAX_ITEMS + 3), contiguous=True)
+        verdict = classify_envelope(payload)
+        assert verdict.format == "table"
+        assert verdict.rule_id == "shape.table.pairs"
+
+    def test_contiguity_does_not_bypass_the_stats_caps(self):
+        """Contiguity lifts the ceiling on the pairs BAND, not on stats tiles
+        -- the frontend still only draws STATS_MAX_ITEMS of them."""
+        payload = ContentPayload(pairs=_pairs(STATS_MAX_ITEMS + 1), contiguous=True)
+        assert classify_envelope(payload).format == "table"
+
+    def test_contiguity_does_not_rescue_a_single_pair(self):
+        assert classify_envelope(
+            ContentPayload(pairs=_pairs(1), contiguous=True)
+        ).rule_id == "abstain.single_fact"
+
+
+class TestMultiSection:
+    """Long answers carry more than one shape; the single-section path keeps
+    the winner and drops the rest. These pin the segmented path."""
+
+    MIXED = (
+        "Sunshine Health's 2026 timely filing changes affect three claim types.\n\n"
+        "- Initial claims move to 180 days\n"
+        "- COB claims remain at 90 days\n"
+        "- Corrected claims are unchanged\n\n"
+        "| Claim type | 2025 | 2026 |\n"
+        "| --- | --- | --- |\n"
+        "| Initial | 365 days | 180 days |\n\n"
+        "Effective date: January 1, 2026\n"
+        "Grace period: 60 days\n"
+    )
+
+    def test_single_section_path_keeps_only_the_winner(self):
+        sections = deterministic_format(self.MIXED, multi_section=False)["sections"]
+        assert [s["format"] for s in sections] == ["table"]
+
+    def test_multi_section_path_keeps_every_block(self):
+        sections = deterministic_format(self.MIXED, multi_section=True)["sections"]
+        assert [s["format"] for s in sections] == ["bullets", "table", "stats"]
+
+    def test_blocks_keep_their_source_order(self):
+        sections = deterministic_format(self.MIXED, multi_section=True)["sections"]
+        assert sections[0]["bullets"][0].startswith("Initial claims")
+        assert sections[1]["data"]["headers"] == ["Claim type", "2025", "2026"]
+
+    def test_prose_between_blocks_is_not_a_section(self):
+        sections = deterministic_format(self.MIXED, multi_section=True)["sections"]
+        assert all(s["format"] != "prose" for s in sections)
+        assert len(sections) == 3
+
+    def test_the_budget_caps_rich_blocks_on_long_drafts(self):
+        """Table + steps + pairs is three rich blocks; the third degrades to
+        bullets rather than being dropped."""
+        draft = (
+            "| Claim type | Deadline |\n| --- | --- |\n| Primary | 180 days |\n\n"
+            "Step 1: Obtain the primary EOP\n"
+            "Step 2: Populate loop 2320\n\n"
+            "Payer ID: 68069\n"
+            "Clearinghouse: Availity\n"
+            "Escalation: provider.services@sunshinehealth.com\n"
+        )
+        formats = [s["format"] for s in deterministic_format(draft, multi_section=True)["sections"]]
+        assert formats == ["table", "steps", "bullets"]
+
+    def test_the_raw_excerpt_gate_still_covers_every_block(self):
+        draft = (
+            "[1] Sunshine Provider Manual\n"
+            "- Submit within 90 days\n"
+            "- Include a cover letter\n"
+            "- Attach medical records\n"
+        )
+        assert deterministic_format(draft, multi_section=True)["sections"] == []
+
+    def test_multi_section_is_off_by_default(self):
+        """Single-section is what ships; the segmented path is opt-in until
+        Phase 2 wires and A/Bs it."""
+        default = deterministic_format(self.MIXED)["sections"]
+        explicit_single = deterministic_format(self.MIXED, multi_section=False)["sections"]
+        assert default == explicit_single

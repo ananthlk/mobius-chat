@@ -138,3 +138,49 @@ def test_the_summary_cap_does_not_cut_a_document_name_in_half():
     out = execute(PreloadPlan(execute=("rag",)),
                   lambda t, i: {"ok": True, "summary": summ, "payload": "x"}, "q")
     assert out[0]["summary"] == summ, "summary truncated mid-name"
+
+
+# ── the retrieval budget knob ───────────────────────────────────────────────
+
+def test_the_budget_is_only_sent_to_rag():
+    """No other preloaded tool knows what a retrieval token budget is; sending
+    it to all of them is a parameter that means nothing to most."""
+    import app.pipeline.v2.preload as P
+    from app.pipeline.v2.preload import PreloadPlan, execute
+    seen = {}
+    def runner(tool, inputs):
+        seen[tool] = dict(inputs)
+        return {"ok": True, "summary": "s", "payload": "p"}
+    old = P.PRELOAD_TOKEN_BUDGET
+    try:
+        P.PRELOAD_TOKEN_BUDGET = 6000
+        execute(PreloadPlan(execute=("rag", "healthcare_query")), runner, "q")
+    finally:
+        P.PRELOAD_TOKEN_BUDGET = old
+    assert seen["rag"]["token_budget_for_retrieval"] == 6000
+    assert "token_budget_for_retrieval" not in seen["healthcare_query"]
+
+
+def test_zero_means_inherit_not_zero_tokens():
+    """0 must mean "no cap, use the computed budget". Sent literally it would
+    ask rag for zero tokens of retrieval -- an off switch that reads as a
+    setting."""
+    import app.pipeline.v2.preload as P
+    from app.pipeline.v2.preload import PreloadPlan, execute
+    seen = {}
+    old = P.PRELOAD_TOKEN_BUDGET
+    try:
+        P.PRELOAD_TOKEN_BUDGET = 0
+        execute(PreloadPlan(execute=("rag",)),
+                lambda t, i: (seen.update(i) or {"ok": True, "payload": "p"}), "q")
+    finally:
+        P.PRELOAD_TOKEN_BUDGET = old
+    assert "token_budget_for_retrieval" not in seen
+
+
+def test_the_default_does_not_cap():
+    """Measured: every cap tried dropped a payer from a three-payer answer, and
+    the tightest one produced the SLOWEST turn. A default that silently omits
+    entities is the defect this session exists to remove."""
+    import app.pipeline.v2.preload as P
+    assert P.PRELOAD_TOKEN_BUDGET == 0 or P.PRELOAD_TOKEN_BUDGET >= 16000

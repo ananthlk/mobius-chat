@@ -1733,7 +1733,16 @@ def _execute_tool(
                             # clarify_low_confidence) is a clean continuation,
                             # not a mid-sequence jump.
                             "call_number": 1,
-                            "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
+                            # CALLER OVERRIDE WINS. compute_token_budget_for_
+                            # retrieval(ctx) sizes retrieval to the whole
+                            # context window, which is right for a round react
+                            # asked for and wrong for preload: preload runs
+                            # before anyone has decided the question needs
+                            # 141,074 characters. Explicit input, else the
+                            # computed budget -- nothing is inferred.
+                            "token_budget_for_retrieval": (
+                                inputs.get("token_budget_for_retrieval")
+                                or compute_token_budget_for_retrieval(ctx)),
                         },
                         question=query,
                         user_message=ctx.message,
