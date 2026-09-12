@@ -864,9 +864,35 @@ def run_pipeline(
         try:
             from app.pipeline.react_loop import run_react
             from app.telemetry.spans import span as _span
+            # ── ROUTE TO A LOOP (governor seat, 2026-09-11) ────────────────
+            # Ananth: "so you don't have your own loop -- why not start that,
+            # so that we can really have a real A/B where both can complete."
+            #
+            # v2 now owns its round SEQUENCE rather than substituting one
+            # decision into v1's. Everything else is the same code both arms
+            # run: prompts, manifest, model roster, retry, publish, renderer.
+            #
+            # ROUTE, NEVER FORK: one turn, one loop. A turn handled by both
+            # would be the two-writer defect at maximum scale -- two loops
+            # sharing ctx, tool_results and the publish path. The A/B harness
+            # forks by running TWO TURNS, which is a different thing.
+            #
+            # Gated separately from MOBIUS_V2_PCT so the arm assignment and the
+            # decision to give v2 its own loop can be turned on independently:
+            # a v2 turn with the flag off still runs v1's loop with v2's
+            # substituted decision, which is the behaviour verified all day.
+            _v2_own_loop = (
+                os.environ.get("MOBIUS_V2_OWN_LOOP", "").strip() == "1"
+                and getattr(ctx, "orchestrator_version", "v1") == "v2"
+            )
+            _loop_fn = run_react
+            if _v2_own_loop:
+                from app.pipeline.v2.loop import run_react_v2 as _loop_fn
+                logger.info("[v2] routing cid=%s to the GOVERNOR LOOP",
+                            correlation_id[:8])
             with _span(ctx, "react_loop"):
                 try:
-                    run_react(ctx, emitter=on_thinking)
+                    _loop_fn(ctx, emitter=on_thinking)
                 finally:
                     # The last round has no successor to close it, so record
                     # it here — inside the span, before it closes.

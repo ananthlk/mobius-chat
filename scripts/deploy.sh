@@ -258,6 +258,10 @@ SET_ENV_VARS=(
     # run in the SAME SECONDS. Empty default = off, and the fork endpoint
     # returns 409 rather than silently degrading to a single arm.
     "MOBIUS_V2_AB_FORK=${MOBIUS_V2_AB_FORK:-}"
+    # Gives a v2-routed turn the GOVERNOR'S OWN LOOP instead of v1's loop
+    # with a substituted decision. Separate from MOBIUS_V2_PCT on purpose:
+    # the arm split and the loop choice turn on independently.
+    "MOBIUS_V2_OWN_LOOP=${MOBIUS_V2_OWN_LOOP:-}"
     # The fork calls its own /chat; dev auth is optional so this is empty, but
     # the var exists so a hosted env can supply a token rather than the fork
     # silently 401ing and reporting an empty launch.
