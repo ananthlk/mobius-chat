@@ -5670,6 +5670,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             ctx.v2_round_reports = list(
                                 getattr(ctx, "v2_round_reports", None) or [])
                             ctx.v2_round_reports.append(_v2rep.to_dict(_report))
+                            # WHICH BLOCKS WERE LOADED, IN WHICH ORDER.
+                            # Ordering defects in this module have twice been
+                            # invisible in output and obvious here.
+                            _blk_text, _blk_rendered, _blk_skipped = (
+                                _v2bl.assemble(_v2_facts))
+                            _v2tr.emit_step(
+                                emitter, (ctx.correlation_id or ""),
+                                _v2tr.prompt_step(
+                                    blocks=_blk_rendered,
+                                    skipped=_blk_skipped,
+                                    statements=tuple(x.id for x in _v2_sel.statements),
+                                    dropped=tuple(_v2_sel.dropped_by_conflict
+                                                  + _v2_sel.dropped_by_cap),
+                                    chars=len(ctx._v2_governor_block or ""),
+                                    round_index=rn),
+                                round=rn,
+                                thread_id=getattr(ctx, "thread_id", None))
                             # The roles, logged separately from the statements.
                             # Which roles a round carried is the thing to read
                             # back when an answer judges but never writes, and
@@ -5911,6 +5928,34 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if str(getattr(ctx, "orchestrator_version", "v1")) == "v2":
             from app.pipeline.v2 import prompts as _v2pr
             _v2_round_tokens = _v2pr.round_max_tokens(ctx)
+            # HOW REACT IS BEING INVOKED — everything decided before the model
+            # answers. Ananth: "i want to know how react was invoked.. a whole
+            # series of which model etc." The MODEL is deliberately absent
+            # here: the roster and bandit choose it inside the call, so naming
+            # one now would be a guess. It is reported after, from ctx.usages,
+            # which records what actually answered.
+            try:
+                from app.pipeline.v2 import trace as _v2tr_i
+                _v2tr_i.emit_step(
+                    emitter, (ctx.correlation_id or ""),
+                    _v2tr_i.invoke_step(
+                        stage=f"react_{rn}",
+                        system_chars=len(reasoning_system or ""),
+                        user_chars=len(reasoning_context or ""),
+                        evidence_chars=sum(len(str(t.get("result") or ""))
+                                           for t in tool_results),
+                        max_tokens=_v2_round_tokens or 0,
+                        reasoning_depth=_bandit_reasoning_depth,
+                        latency_budget_ms=_bandit_latency_budget_ms,
+                        composition_id=_reasoning_composition_id,
+                        composition_hash=_reasoning_composition_hash,
+                        round_index=rn,
+                        roles=tuple(
+                            (getattr(ctx, "v2_round_reports", None) or [{}])[-1]
+                            .get("roles", ()) or ())),
+                    round=rn, thread_id=getattr(ctx, "thread_id", None))
+            except Exception:   # pragma: no cover
+                pass
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,
@@ -6197,8 +6242,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _v2mem.remember(ctx, facts=_v2_resp.facts,
                                 not_useful=_v2_resp.not_useful)
                 from app.pipeline.v2 import trace as _v2tr
+                # WHAT REACT SHARED — everything except the expanded answer,
+                # plus the model that actually answered (ctx.usages is appended
+                # by _call_llm_json; the LAST entry is this round's call).
+                _v2_usage = (getattr(ctx, "usages", None) or [{}])[-1]
                 _v2tr.emit_step(emitter, (ctx.correlation_id or ""),
-                                _v2tr.reply_step(_v2_resp), round=rn,
+                                _v2tr.shared_step(_v2_resp, usage=_v2_usage,
+                                                  round_index=rn),
+                                round=rn,
                                 thread_id=getattr(ctx, "thread_id", None))
                 _v2tr.emit_step(
                     emitter, (ctx.correlation_id or ""),
