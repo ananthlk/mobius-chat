@@ -181,6 +181,36 @@ def _react_block_specs() -> list[BlockSpec]:
         # -- superseded here rather than left as the served version.)
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
                   owner="chat-architecture", version=8),
+        # react.grounding_contract (2026-09-11, Governor seat, Ananth's
+        # direct ask: "do not hallucinate or answer from your knowledge",
+        # explicitly requested MODULAR -- a separate block, not an edit to
+        # critical_rules, so it composes into v1 and v2 alike and can be
+        # versioned/measured on its own. Confirmed a real gap before
+        # writing this: grepped all 20 active react.* blocks for "your own
+        # knowledge"/"prior knowledge"/"general knowledge" -- zero matches.
+        # critical_rules v8's "NEVER fabricate specifics: no invented
+        # deadlines, codes, rates, or amounts" only catches a WRONG specific
+        # inside an otherwise-grounded answer; it says nothing about a
+        # fully ungrounded answer that invents no specifics to be wrong
+        # about. Confirmed live on a real turn (correlation_id 403d0e59,
+        # dev): a three-payer comparison ran planner->enricher->integrator
+        # with ZERO retrieval tool calls and ZERO sources, and still
+        # returned a fluent, structured comparison naming Sunshine Health
+        # as "a subsidiary of Centene" -- true, but recalled from the
+        # model's own training, not retrieved, and delivered in the exact
+        # voice a sourced answer would use. Deliberately does NOT gate on
+        # "was a tool called" (product_help_search answers, the clarifying-
+        # question path, and arithmetic over already-kept evidence all
+        # legitimately produce a final answer without a NEW tool call this
+        # round) -- gates on "is this factual claim traceable to something
+        # a tool actually returned," which is the seam that doesn't break
+        # any of those three paths. Leads with the PARTIAL-grounding case
+        # as the primary worked example (per feedback_example_undermines_
+        # the_rule: whatever example is shown gets copied) -- a full-miss
+        # refusal is the same rule at its edge, not a separate template.
+        BlockSpec("react.grounding_contract", "static", "system",
+                  react_prompts.REACT_GROUNDING_CONTRACT_TEXT,
+                  owner="chat-architecture", version=1),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",
@@ -235,10 +265,25 @@ _REACT_TOOLS_MEMBERS_V4 = [
     "react.user_profile",
 ]
 
+# v5 (2026-09-11, Governor seat): + react.grounding_contract, right after
+# critical_rules -- same "substantive rule blocks together" grouping,
+# ahead of user_profile (authority-adjacent ordering unaffected; neither
+# block is is_authority).
+_REACT_TOOLS_MEMBERS_V5 = [
+    "react.identity",
+    "react.mode_quality_bar",
+    "react.tool_manifest",
+    "react.response_shape",
+    "react.format_rules",
+    "react.critical_rules",
+    "react.grounding_contract",
+    "react.user_profile",
+]
+
 COMPOSITIONS: dict[str, dict] = {
-    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
-    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
-    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
+    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V5, "version": 5},
+    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V5, "version": 5},
+    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V5, "version": 5},
     "react_no_tools": {"prompt_address": "react.no_tools", "members": ["react.no_tools_body"], "version": 1},
     "critic_audit": {"prompt_address": "critic.audit",
                       "members": ["critic.audit_rules", "react.user_profile"], "version": 1},
