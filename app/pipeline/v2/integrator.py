@@ -340,7 +340,35 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
     problems: list[str] = []
     ran = dict(base.ran)
 
+    # 🔴 NO FACTS MEANS THE CRITIC CANNOT CHECK ANYTHING — SO IT MUST NOT RUN.
+    #
+    # Measured live: react returned a v1-shaped response (no facts[]), the
+    # critic was handed an empty fact list, and concluded "none of these claims
+    # can be supported as no facts were provided" — marking all three payers
+    # UNSUPPORTED on an answer that was correctly grounded with citations
+    # [1][3][7][9] from real passages.
+    #
+    # That is COULD-NOT-CHECK RENDERED AS CHECKED-FALSE: this module's own
+    # first rule, broken by this module's own prompt. An absent fact list is
+    # not evidence of an unsupported claim, it is the absence of the thing that
+    # would settle it — and a false "unsupported" is worse than no critique,
+    # because it reads as a check that happened and failed.
+    #
+    # assemble() already reports those parts as `unobservable`, which is the
+    # honest verdict. next_steps still runs: "what would close what is open" is
+    # answerable from the gaps alone and needs no facts.
+    _grounded = [f for f in (facts or ()) if getattr(f, "grounded", False)]
+    if not _grounded:
+        ran["critique"] = "skipped"
+        problems.append(
+            "critique skipped: no grounded facts to check the answer against — "
+            "an empty fact list cannot make a claim unsupported, only "
+            "unverifiable (see coverage, which reports those parts as "
+            "unobservable)")
+
     def _critic():
+        if not _grounded:
+            return ""
         sys_p, user_p = _critic_prompt(question, answer, facts, open_gaps)
         return _call(runner, sys_p, user_p, CRITIC_MAX_TOKENS, "v2_critic")
 
@@ -354,7 +382,8 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
     # fifteen ctx attributes; that hazard does not exist here.
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_critic, f_next = pool.submit(_critic), pool.submit(_next)
-        critic_raw = _settle(f_critic, "critique", ran, problems)
+        critic_raw = ("" if not _grounded
+                      else _settle(f_critic, "critique", ran, problems))
         next_raw = _settle(f_next, "next_steps", ran, problems)
 
     critique, summary = _parse_critique(critic_raw, problems)

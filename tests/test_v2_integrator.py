@@ -248,3 +248,67 @@ def test_empty_string_evidence_does_not_count_as_evidence():
               decision=_decision(),
               runner=_runner(critic='{"parts":[{"part":"UHC","status":"supported","evidence":[""]}]}'))
     assert out.critique[0].status == "unobservable"
+
+
+# ── an empty fact list cannot make a claim unsupported ─────────────────────
+
+def test_the_critic_does_not_run_without_grounded_facts():
+    """🔴 MEASURED LIVE. react returned a v1-shaped response (no facts[]), the
+    critic was handed an empty list, and concluded "none of these claims can be
+    supported as no facts were provided" — marking all three payers UNSUPPORTED
+    on an answer that WAS grounded, with citations [1][3][7][9] from real
+    passages.
+
+    That is could-not-check rendered as checked-false: this module's own first
+    rule, broken by this module's own prompt. A false "unsupported" is worse
+    than no critique, because it reads as a check that happened and failed."""
+    called = []
+
+    def runner(system, user, *, max_tokens, stage=None):
+        called.append(stage)
+        return '{"parts":[{"part":"x","status":"unsupported","why":"no facts"}]}'
+
+    out = run(question="q", answer="Molina uses ICM [1]", facts=(),
+              open_gaps=GAPS, decision=_decision(facts=()), runner=runner)
+    assert "v2_critic" not in called, "the critic ran with nothing to check"
+    assert out.critique == ()
+    assert out.ran["critique"] == "skipped"
+    assert any("cannot make a claim unsupported" in p for p in out.problems)
+
+
+def test_next_steps_still_runs_without_facts():
+    """"What would close what is still open" is answerable from the gaps alone
+    and needs no facts. Skipping it too would lose a section for an unrelated
+    reason."""
+    out = run(question="q", answer="a", facts=(), open_gaps=GAPS,
+              decision=_decision(facts=()),
+              runner=_runner(steps='{"next_steps":["Search the UHC manual"]}'))
+    assert out.ran["next_steps"] == "ok"
+    assert out.next_steps == ("Search the UHC manual",)
+
+
+def test_an_ungrounded_fact_does_not_count_as_something_to_check_against():
+    """A fact with no document cannot support anything, so a list of only
+    those is still nothing to check against."""
+    called = []
+
+    def runner(system, user, *, max_tokens, stage=None):
+        called.append(stage)
+        return "{}"
+
+    run(question="q", answer="a", facts=(Fact("floating", "", None),),
+        open_gaps=GAPS, decision=_decision(facts=()), runner=runner)
+    assert "v2_critic" not in called
+
+
+def test_the_critic_DOES_run_when_there_is_evidence():
+    """The guard is about absence, not about disabling the critic."""
+    called = []
+
+    def runner(system, user, *, max_tokens, stage=None):
+        called.append(stage)
+        return '{"summary":"ok","parts":[]}'
+
+    run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
+        decision=_decision(), runner=runner)
+    assert "v2_critic" in called
