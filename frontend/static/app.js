@@ -3377,56 +3377,6 @@ function stripCitationMarkers(container) {
     n.nodeValue = (n.nodeValue ?? "").replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
   }
 }
-function renderSourcesList(sources, onSourceClick) {
-  if (!sources || sources.length === 0)
-    return null;
-  const wrap = document.createElement("div");
-  wrap.className = "ac-sources-footnotes";
-  const heading = document.createElement("div");
-  heading.className = "ac-sources-footnotes-heading";
-  heading.textContent = "Sources";
-  wrap.appendChild(heading);
-  const ol = document.createElement("ol");
-  ol.className = "ac-sources-list";
-  sources.forEach((src, i) => {
-    const li = document.createElement("li");
-    li.className = "ac-source-item";
-    li.setAttribute("data-cite-src", String(i + 1));
-    const clickable = !!(src.document_id && onSourceClick);
-    if (clickable) {
-      li.classList.add("ac-source-item--clickable");
-      li.setAttribute("role", "button");
-      li.setAttribute("tabindex", "0");
-      const open = () => onSourceClick(src.document_id, src.page_number ?? null, src.snippet ?? null);
-      li.addEventListener("click", open);
-      li.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          open();
-        }
-      });
-    }
-    const title = document.createElement("span");
-    title.className = "ac-source-title";
-    title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
-    li.appendChild(title);
-    if (src.locator) {
-      const loc = document.createElement("span");
-      loc.className = "ac-source-locator";
-      loc.textContent = src.locator;
-      li.appendChild(loc);
-    }
-    if (src.snippet) {
-      const snip = document.createElement("span");
-      snip.className = "ac-source-snippet";
-      snip.textContent = src.snippet;
-      li.appendChild(snip);
-    }
-    ol.appendChild(li);
-  });
-  wrap.appendChild(ol);
-  return wrap;
-}
 function retainStreamedDraftAsFirstPass(panel, streamedDraftHTML) {
   if (panel.querySelector(".ac-first-pass"))
     return null;
@@ -3991,7 +3941,7 @@ function _abTierWindowMs(tier) {
       return (31 + 8) * 1e3;
   }
 }
-function startAbLiveSplit(turnWrap, thinkingBlockEl, comparison, tier) {
+function startAbLiveSplit(turnWrap, thinkingBlockEl, comparison, tier, deps) {
   thinkingBlockEl.remove();
   turnWrap.querySelectorAll(".answer-card, .assistant-message, .answer-card-bubble").forEach((n) => n.remove());
   const cols = abColumns(comparison);
@@ -4005,12 +3955,12 @@ function startAbLiveSplit(turnWrap, thinkingBlockEl, comparison, tier) {
   grid.className = "chat-ab-split-grid";
   grid.style.setProperty("--ab-cols", String(cols.length || 1));
   for (const c of cols)
-    grid.appendChild(_abLiveColumn(c, tier));
+    grid.appendChild(_abLiveColumn(c, tier, deps));
   split.appendChild(grid);
   turnWrap.appendChild(split);
   turnWrap.scrollIntoView({ block: "nearest" });
 }
-function _abLiveColumn(col, tier) {
+function _abLiveColumn(col, tier, deps) {
   const box = document.createElement("section");
   box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
   const head = document.createElement("div");
@@ -4060,11 +4010,47 @@ function _abLiveColumn(col, tier) {
   const answer = document.createElement("div");
   answer.className = "chat-ab-col-answer";
   bodyWrap.appendChild(answer);
+  const stream = document.createElement("div");
+  stream.className = "chat-ab-col-stream";
+  let streamTarget = "";
+  let streamShown = 0;
+  let streamTimer = null;
+  let streamMounted = false;
+  const pumpWords = () => {
+    const words = streamTarget.split(/(\s+)/);
+    if (streamShown < words.length) {
+      streamShown = Math.min(streamShown + 2, words.length);
+      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(""));
+      streamTimer = window.setTimeout(pumpWords, 26);
+    } else {
+      streamTimer = null;
+    }
+  };
+  const feedStream = (text) => {
+    if (!text)
+      return;
+    if (!streamMounted) {
+      answer.className = "chat-ab-col-answer chat-ab-col-answer--draft";
+      answer.textContent = "";
+      answer.appendChild(stream);
+      streamMounted = true;
+    }
+    streamTarget = text;
+    if (streamTimer == null)
+      pumpWords();
+  };
+  const stopStream = () => {
+    if (streamTimer != null) {
+      window.clearTimeout(streamTimer);
+      streamTimer = null;
+    }
+  };
   if (!col.cid) {
     pushLine("no correlation id for this arm \u2014 treat as a bug, not an empty answer");
     return box;
   }
   let settled = false;
+  let messageSoFar = "";
   const es = new EventSource(`${API_BASE}/chat/stream/${encodeURIComponent(col.cid)}`);
   const finish = () => {
     try {
@@ -4092,19 +4078,24 @@ function _abLiveColumn(col, tier) {
         else if (d.note != null)
           pushLine(String(d.note));
         break;
-      case "draft_ready":
-        if (d.text != null) {
-          answer.className = "chat-ab-col-answer chat-ab-col-answer--draft";
-          answer.innerHTML = _inlineMd(String(d.text));
+      case "message":
+        if (d.chunk != null) {
+          messageSoFar += String(d.chunk);
+          feedStream(messageSoFar);
         }
+        break;
+      case "draft_ready":
+        if (d.text != null)
+          feedStream(String(d.text));
         break;
       case "completed":
         settled = true;
         finish();
+        stopStream();
         pushLine("composing answer\u2026");
-        void _fetchEnvelopeOnce(col.cid).then((env) => {
-          if (env && Array.isArray(env.blocks) && env.blocks.length)
-            _renderAbAnswerInto(answer, env);
+        void _fetchFullAbResponse(col.cid).then((resp) => {
+          if (resp)
+            _renderAbAnswerInto(answer, resp, col.cid, deps);
           else {
             answer.className = "chat-ab-col-answer";
             answer.textContent = "(no renderable answer)";
@@ -4115,6 +4106,7 @@ function _abLiveColumn(col, tier) {
       case "error":
         settled = true;
         finish();
+        stopStream();
         answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
         answer.textContent = col.served ? `This arm errored: ${String(d.message ?? "unknown")}` : "The shadow arm errored \u2014 a degraded comparison, not a failed question.";
         break;
@@ -4136,46 +4128,49 @@ function _abLiveColumn(col, tier) {
   }, _abTierWindowMs(tier));
   return box;
 }
-function _renderAbAnswerInto(answer, env) {
+function _renderAbAnswerInto(answer, resp, cid, deps) {
   answer.className = "chat-ab-col-answer";
   answer.textContent = "";
-  const card = envelopeToAnswerCard(env.blocks || []);
+  const env = resp.assistant_envelope;
+  const blocks = env?.blocks || [];
+  const card = envelopeToAnswerCard(blocks, tryParseAnswerCard(resp.message ?? ""));
   if (card) {
-    answer.appendChild(renderAnswerCard(card, false, {}));
-    return;
-  }
-  const { answerBody, sources } = renderEnvelope(env.blocks || [], {
-    renderExtraBlock: (b) => {
-      if (b.type === "tool_attribution") {
-        const chip = document.createElement("div");
-        chip.className = "envelope-tool-chip";
-        chip.setAttribute("data-icon", String(b.icon || "search"));
-        chip.textContent = String(b.label || "Research");
-        return chip;
+    const cardEl = renderAnswerCard(card, false, {
+      onFollowupClick: deps.onFollowup,
+      qcAudit: resp.qc_audit,
+      sourceConfidenceStrip: (resp.source_confidence_strip ?? "").trim() || void 0,
+      onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page ?? void 0, cite ?? void 0)
+    });
+    answer.appendChild(cardEl);
+    const bubble = cardEl.querySelector(".answer-card-bubble");
+    if (bubble)
+      deps.injectDiagnostics(bubble, resp, cid);
+  } else {
+    const { answerBody } = renderEnvelope(blocks, {
+      renderExtraBlock: (b) => {
+        if (b.type === "tool_attribution") {
+          const chip = document.createElement("div");
+          chip.className = "envelope-tool-chip";
+          chip.setAttribute("data-icon", String(b.icon || "search"));
+          chip.textContent = String(b.label || "Research");
+          return chip;
+        }
+        return null;
       }
-      return null;
-    }
-  });
-  answer.appendChild(answerBody);
-  if (sources && Array.isArray(sources.refs)) {
-    const refs = sources.refs.map((r) => ({
-      doc_title: r.title,
-      page_number: r.page ?? null,
-      snippet: r.snippet,
-      document_id: r.document_id
-    }));
-    const srcEl = renderSourcesList(refs);
-    if (srcEl)
-      answer.appendChild(srcEl);
+    });
+    answer.appendChild(answerBody);
   }
+  const srcs = resp.sources ?? [];
+  if (srcs.length)
+    answer.appendChild(renderSourceCiter(srcs, resp.cited_source_indices ?? [], cid));
 }
-async function _fetchEnvelopeOnce(cid) {
+async function _fetchFullAbResponse(cid) {
   try {
     const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
     if (!r.ok)
       return null;
     const d = await r.json();
-    return d.status === "completed" && d.assistant_envelope ? d.assistant_envelope : null;
+    return d.status === "completed" ? d : null;
   } catch {
     return null;
   }
@@ -13830,7 +13825,26 @@ ${message}`;
         onRequestCorrelationId();
       }
       if (activeComparison) {
-        startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode);
+        const abDeps = {
+          onFollowup: (q) => sendMessage(q),
+          injectDiagnostics: (bubble, resp, cid) => {
+            if (!getShowLlmPerformance(cachedProfile) || resp.status !== "completed")
+              return;
+            _injectDiagnosticsTab(bubble, {
+              insightRows: Array.isArray(resp.usage_breakdown) ? resp.usage_breakdown : [],
+              perfMeta: resp.llm_performance,
+              thinkingLog: resp.thinking_log,
+              qc: resp.qc_audit ?? null,
+              sourceConfidenceStrip: resp.source_confidence_strip ?? null,
+              correlationId: cid,
+              totalCostFallback: resp.cost_usd,
+              inputTokens: Number(resp.tokens_used?.input_tokens) || 0,
+              outputTokens: Number(resp.tokens_used?.output_tokens) || 0,
+              routingFeedback: resp.technical_feedback?.llm_performance ?? null
+            });
+          }
+        };
+        startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode, abDeps);
         loadSidebarHistory();
         throw AB_SPLIT_SENTINEL;
       }

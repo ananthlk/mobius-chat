@@ -6729,7 +6729,11 @@ body.landing-state .composer-landing-chips {
 .chat-ab-trace-line { padding: 1px 0; }
 .chat-ab-trace-line::before { content: "› "; color: #a78bfa; }
 .chat-ab-col-answer { padding: 10px 12px; font-size: 13.5px; min-height: 40px; }
-.chat-ab-col-answer--draft { color: var(--mobius-text-secondary, #475569); opacity: .9; }
+.chat-ab-col-answer--draft { color: var(--mobius-text-secondary, #475569); opacity: .95; }
+.chat-ab-col-stream { white-space: pre-wrap; line-height: 1.55; }
+.chat-ab-col-stream::after { content: "▊"; color: #a78bfa; animation: chat-ab-caret 1s step-end infinite; }
+@keyframes chat-ab-caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .chat-ab-col-stream::after { animation: none; } }
 .chat-ab-col-answer--note { color: var(--mobius-text-muted, #94a3b8); font-style: italic; }
 /* The full answer card inside a column: strip the free-standing bubble's own width/margins so
    it fills the column instead of centring like a chat bubble. */

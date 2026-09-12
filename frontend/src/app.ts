@@ -637,6 +637,7 @@ function startAbLiveSplit(
   thinkingBlockEl: HTMLElement,
   comparison: AbComparison,
   tier: "quick" | "copilot" | "agentic",
+  deps: AbSplitDeps,
 ): void {
   thinkingBlockEl.remove();   // each column carries its OWN trace — the shared one is replaced
   // Any placeholder answer bubble already appended for the normal path — drop it.
@@ -655,7 +656,7 @@ function startAbLiveSplit(
   const grid = document.createElement("div");
   grid.className = "chat-ab-split-grid";
   grid.style.setProperty("--ab-cols", String(cols.length || 1));
-  for (const c of cols) grid.appendChild(_abLiveColumn(c, tier));
+  for (const c of cols) grid.appendChild(_abLiveColumn(c, tier, deps));
   split.appendChild(grid);
   turnWrap.appendChild(split);
   turnWrap.scrollIntoView({ block: "nearest" });
@@ -667,6 +668,7 @@ function startAbLiveSplit(
 function _abLiveColumn(
   col: { armId: string; cid: string; served: boolean },
   tier: "quick" | "copilot" | "agentic",
+  deps: AbSplitDeps,
 ): HTMLElement {
   const box = document.createElement("section");
   box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
@@ -728,12 +730,41 @@ function _abLiveColumn(
   answer.className = "chat-ab-col-answer";
   bodyWrap.appendChild(answer);
 
+  // Live word-by-word reveal (Ananth: "we had a slow phased-in word-by-word rendering… start
+  // streaming live instead of waiting for a one shot"). As `message` chunks or the draft arrive,
+  // the answer streams in a word at a time rather than appearing whole at `completed`. The reveal
+  // catches up to whatever text has arrived; `completed` cancels it and swaps in the full card.
+  const stream = document.createElement("div");
+  stream.className = "chat-ab-col-stream";
+  let streamTarget = "";
+  let streamShown = 0;
+  let streamTimer: number | null = null;
+  let streamMounted = false;
+  const pumpWords = (): void => {
+    const words = streamTarget.split(/(\s+)/);
+    if (streamShown < words.length) {
+      streamShown = Math.min(streamShown + 2, words.length);   // one word + its trailing space
+      stream.innerHTML = _inlineMd(words.slice(0, streamShown).join(""));
+      streamTimer = window.setTimeout(pumpWords, 26);
+    } else {
+      streamTimer = null;
+    }
+  };
+  const feedStream = (text: string): void => {
+    if (!text) return;
+    if (!streamMounted) { answer.className = "chat-ab-col-answer chat-ab-col-answer--draft"; answer.textContent = ""; answer.appendChild(stream); streamMounted = true; }
+    streamTarget = text;
+    if (streamTimer == null) pumpWords();   // resume if the reveal had caught up and stopped
+  };
+  const stopStream = (): void => { if (streamTimer != null) { window.clearTimeout(streamTimer); streamTimer = null; } };
+
   if (!col.cid) {
     pushLine("no correlation id for this arm — treat as a bug, not an empty answer");
     return box;
   }
 
   let settled = false;
+  let messageSoFar = "";
   const es = new EventSource(`${API_BASE}/chat/stream/${encodeURIComponent(col.cid)}`);
   const finish = (): void => { try { es.close(); } catch { /* already closed */ } };
 
@@ -750,20 +781,26 @@ function _abLiveColumn(
         if (d.line != null) pushLine(String(d.line));
         else if (d.note != null) pushLine(String(d.note));
         break;
+      case "message":
+        // Token-level stream (the arm that emits it — e.g. v2). Accumulate and reveal live.
+        if (d.chunk != null) { messageSoFar += String(d.chunk); feedStream(messageSoFar); }
+        break;
       case "draft_ready":
-        if (d.text != null) { answer.className = "chat-ab-col-answer chat-ab-col-answer--draft"; answer.innerHTML = _inlineMd(String(d.text)); }
+        // The fuller draft in one event (the arm that doesn't token-stream — e.g. v1). Reveal it
+        // word-by-word too, so both arms phase in the same way rather than one popping whole.
+        if (d.text != null) feedStream(String(d.text));
         break;
       case "completed":
-        settled = true; finish();
+        settled = true; finish(); stopStream();
         pushLine("composing answer…");
-        void _fetchEnvelopeOnce(col.cid).then((env) => {
-          if (env && Array.isArray(env.blocks) && env.blocks.length) _renderAbAnswerInto(answer, env);
+        void _fetchFullAbResponse(col.cid).then((resp) => {
+          if (resp) _renderAbAnswerInto(answer, resp, col.cid, deps);
           else { answer.className = "chat-ab-col-answer"; answer.textContent = "(no renderable answer)"; }
           emits.open = false;   // fold the trace once the answer lands; still one click to reopen
         });
         break;
       case "error":
-        settled = true; finish();
+        settled = true; finish(); stopStream();
         answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
         answer.textContent = col.served
           ? `This arm errored: ${String(d.message ?? "unknown")}`
@@ -797,47 +834,66 @@ function _abLiveColumn(
  *  collapsed by default, is satisfied structurally), Details, actions — so any visible difference
  *  is the orchestrator's, never the UI's. Falls back to raw renderEnvelope only if the card model
  *  comes back empty. */
-function _renderAbAnswerInto(answer: HTMLElement, env: { blocks?: unknown[] }): void {
-  answer.className = "chat-ab-col-answer";
-  answer.textContent = "";
-  const card = envelopeToAnswerCard((env.blocks || []) as EnvBlock[]);
-  if (card) {
-    answer.appendChild(renderAnswerCard(card, false, {}));
-    return;
-  }
-  // Fallback: no card model → raw envelope body (still the production renderer).
-  const { answerBody, sources } = renderEnvelope((env.blocks || []) as EnvBlock[], {
-    renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
-      if (b.type === "tool_attribution") {
-        const chip = document.createElement("div");
-        chip.className = "envelope-tool-chip";
-        chip.setAttribute("data-icon", String(b.icon || "search"));
-        chip.textContent = String(b.label || "Research");
-        return chip;
-      }
-      return null;
-    },
-  });
-  answer.appendChild(answerBody);
-  if (sources && Array.isArray((sources as { refs?: unknown[] }).refs)) {
-    const refs = ((sources as unknown as { refs: Array<Record<string, unknown>> }).refs).map((r) => ({
-      doc_title: r.title as string | undefined,
-      page_number: (r.page as number | null | undefined) ?? null,
-      snippet: r.snippet as string | undefined,
-      document_id: r.document_id as string | undefined,
-    }));
-    const srcEl = renderSourcesList(refs);
-    if (srcEl) answer.appendChild(srcEl);
-  }
+/** Closure-bound rendering the split needs but a module-level fn can't reach: the Diagnostics
+ *  tab injector (admin-gated, uses cachedProfile) and follow-up dispatch (sendMessage). Built at
+ *  the call site inside the send closure and threaded down so each column renders the SAME tabs
+ *  the served bubble does (Ananth: "including the tabs… everything should be identical"). */
+interface AbSplitDeps {
+  onFollowup: (q: string) => void;
+  injectDiagnostics: (bubble: HTMLElement, resp: ChatResponse, cid: string) => void;
 }
 
-/** Fetch one arm's assistant_envelope once (called on the stream's `completed`). */
-async function _fetchEnvelopeOnce(cid: string): Promise<{ blocks?: unknown[] } | null> {
+/** Render one arm's FULL turn into its column from the complete ChatResponse — not just the
+ *  envelope. Populates every surface the served bubble has: the answer card (Answer/Details),
+ *  the Diagnostics tab (via deps.injectDiagnostics), and the Sources list (renderSourceCiter from
+ *  resp.sources). Sources were empty before because envelopeToAnswerCard deliberately does not map
+ *  them — they come from the top-level ChatResponse. */
+function _renderAbAnswerInto(answer: HTMLElement, resp: ChatResponse, cid: string, deps: AbSplitDeps): void {
+  answer.className = "chat-ab-col-answer";
+  answer.textContent = "";
+  const env = (resp as { assistant_envelope?: { blocks?: unknown[] } }).assistant_envelope;
+  const blocks = (env?.blocks || []) as EnvBlock[];
+  const card = envelopeToAnswerCard(blocks, tryParseAnswerCard(resp.message ?? ""));
+  if (card) {
+    const cardEl = renderAnswerCard(card, false, {
+      onFollowupClick: deps.onFollowup,
+      qcAudit: resp.qc_audit,
+      sourceConfidenceStrip: (resp.source_confidence_strip ?? "").trim() || undefined,
+      onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page ?? undefined, cite ?? undefined),
+    });
+    answer.appendChild(cardEl);
+    // Diagnostics tab — same injector the served bubble uses (admin-gated inside deps).
+    const bubble = cardEl.querySelector(".answer-card-bubble") as HTMLElement | null;
+    if (bubble) deps.injectDiagnostics(bubble, resp, cid);
+  } else {
+    // Fallback: no card model → raw envelope body (still the production renderer).
+    const { answerBody } = renderEnvelope(blocks, {
+      renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
+        if (b.type === "tool_attribution") {
+          const chip = document.createElement("div");
+          chip.className = "envelope-tool-chip";
+          chip.setAttribute("data-icon", String(b.icon || "search"));
+          chip.textContent = String(b.label || "Research");
+          return chip;
+        }
+        return null;
+      },
+    });
+    answer.appendChild(answerBody);
+  }
+  // Sources — the numbered list, driven by the top-level ChatResponse (same as the served bubble).
+  const srcs = (resp.sources ?? []) as Parameters<typeof renderSourceCiter>[0];
+  if (srcs.length) answer.appendChild(renderSourceCiter(srcs, resp.cited_source_indices ?? [], cid));
+}
+
+/** Fetch one arm's FULL ChatResponse once (called on the stream's `completed`) — the envelope
+ *  alone can't populate Sources/Diagnostics, which live on the top-level response. */
+async function _fetchFullAbResponse(cid: string): Promise<ChatResponse | null> {
   try {
     const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
     if (!r.ok) return null;
-    const d = await r.json() as { status?: string; assistant_envelope?: { blocks?: unknown[] } };
-    return d.status === "completed" && d.assistant_envelope ? d.assistant_envelope : null;
+    const d = await r.json() as ChatResponse;
+    return d.status === "completed" ? d : null;
   } catch { return null; }
 }
 
@@ -981,7 +1037,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, renderSourcesList, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
 import { abColumns, type AbComparison } from "./ab-fork";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
@@ -12128,7 +12184,28 @@ function run(): void {
         // the served arm would render twice (once in its column, once as the bubble) and the two
         // columns would use different renderers. The sentinel short-circuits the rest of the chain.
         if (activeComparison) {
-          startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode);
+          // Deps carry the closure-only rendering into the module-level split: the Diagnostics-tab
+          // injector (admin-gated via cachedProfile) and follow-up dispatch. Built HERE so each
+          // column renders the same tabs/sources/diagnostics the served bubble would.
+          const abDeps: AbSplitDeps = {
+            onFollowup: (q: string) => sendMessage(q),
+            injectDiagnostics: (bubble, resp, cid) => {
+              if (!getShowLlmPerformance(cachedProfile) || resp.status !== "completed") return;
+              _injectDiagnosticsTab(bubble, {
+                insightRows: Array.isArray(resp.usage_breakdown) ? resp.usage_breakdown : [],
+                perfMeta: resp.llm_performance,
+                thinkingLog: resp.thinking_log,
+                qc: resp.qc_audit ?? null,
+                sourceConfidenceStrip: resp.source_confidence_strip ?? null,
+                correlationId: cid,
+                totalCostFallback: resp.cost_usd,
+                inputTokens: Number(resp.tokens_used?.input_tokens) || 0,
+                outputTokens: Number(resp.tokens_used?.output_tokens) || 0,
+                routingFeedback: resp.technical_feedback?.llm_performance ?? null,
+              });
+            },
+          };
+          startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode, abDeps);
           loadSidebarHistory();
           throw AB_SPLIT_SENTINEL;
         }
