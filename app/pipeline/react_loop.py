@@ -4884,7 +4884,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 logger.info("[v2.preload] estimate unavailable (%s); rag only", _tr_e)
                 _offer_keys = ["rag"]
 
-            _plan = _v2pre.plan(_offer_keys)
+            # THE TOOLS' OWN DECLARED INPUTS. Without these, preload sent
+            # {"query": <the user's question>} to every planned tool, so an
+            # appeals-playbook lookup and an ICD-10/NPI lookup both ran against
+            # a care-management policy question -- the playbook logged
+            # "Checking playbook for ?" and the healthcare lookup timed out.
+            # Read from the registry, never a list kept here: a second opinion
+            # about what a tool takes rots the first time a skill changes.
+            _tool_schemas: dict = {}
+            try:
+                from app.skills import registry as _sk_reg
+                for _k in _offer_keys:
+                    # The tool key IS the skill name for everything except
+                    # rag, which _execute_tool dispatches as "search_corpus"
+                    # (see the SkillCall at :1759). That one alias is the whole
+                    # mapping -- a general tool->skill table maintained here
+                    # would be a second opinion about dispatch, and it would
+                    # disagree with _execute_tool the first time either moved.
+                    _sp = _sk_reg.get("search_corpus" if _k == "rag" else _k)
+                    if _sp is not None:
+                        _tool_schemas[_k] = getattr(_sp, "inputs_schema", {}) or {}
+            except Exception as _sch_e:   # pragma: no cover
+                logger.warning("[v2.preload] schema lookup failed (%s); "
+                               "falling back to unfiltered preload", _sch_e)
+                _tool_schemas = {}
+
+            _plan = _v2pre.plan(_offer_keys,
+                                schemas=_tool_schemas or None)
             # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
             # dev turn with no preload looked identical in the logs to a turn
             # where the block never executed -- and I spent a chase on exactly
@@ -4922,6 +4948,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _plan,
                     lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter),
                     _pre_q,
+                    schemas=_tool_schemas or None,
                 )
                 ctx._v2_suggest = _plan.suggest
                 # ROLE comes from Tool Manifest's own `reason` for offering the

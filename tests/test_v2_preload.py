@@ -449,10 +449,80 @@ def test_an_empty_plan_is_logged_not_skipped_silently():
     silent. This is the rule the module states everywhere and did not follow.
     """
     src = open("app/pipeline/react_loop.py").read()
-    i = src.index("_plan = _v2pre.plan(_offer_keys)")
-    block = src[i:i + 1200]
+    # Anchored on the CALL, not its argument list — the argument list changed
+    # the moment schemas were threaded through, and the gate broke on a
+    # correct edit. Fingerprint, not property, one more time.
+    i = src.index("_plan = _v2pre.plan(")
+    block = src[i:i + 1400]
     assert "if _plan.is_empty:" in block
     assert "NOTHING TO RUN" in block
     # The diagnosis has to name what WAS offered, or the next reader is back
     # to guessing which half failed.
     assert "offered=" in block and "excluded=" in block
+
+
+# ── a tool is preloaded only if it can act on the QUESTION ALONE ────────────
+#
+# Ananth, 2026-09-12, from a live dev trace: "we loaded 4 tools and 2 rags
+# before react .. the first load was about appeals and the second load was
+# about healthcare tool".
+#
+# He was right and it was mine. execute() sent {"query": question} to EVERY
+# planned tool, so an appeals-playbook lookup and an ICD-10/NPI lookup both ran
+# against "what is the care management philosophy for Molina, Sunshine and
+# UHC". The playbook logged "Checking playbook for ?"; the healthcare lookup
+# TIMED OUT — wall clock spent before react spoke, for nothing.
+
+from app.pipeline.v2.preload import preloadable, question_input
+
+_SCHEMAS = {
+    "rag": {"properties": {"query": {}, "citable_required": {}}},
+    "healthcare_query": {"properties": {"question": {}}},
+    "web_scrape": {"properties": {"url": {}, "scrape_mode": {}}, "required": ["url"]},
+    "payor_lookup": {"properties": {"payor": {}, "field": {}}, "required": ["field"]},
+}
+
+
+def test_the_question_goes_under_the_key_the_tool_declares():
+    """search_corpus declares `query`; healthcare_query declares `question`.
+    We sent `query` to both, so one received nothing it recognised."""
+    assert question_input(_SCHEMAS["rag"], "Q") == {"query": "Q"}
+    assert question_input(_SCHEMAS["healthcare_query"], "Q") == {"question": "Q"}
+
+
+def test_a_tool_needing_something_the_question_cannot_supply_is_excluded():
+    ok, why = preloadable(_SCHEMAS["web_scrape"])
+    assert not ok and "url" in why
+
+
+def test_a_required_field_blocks_even_when_a_question_key_exists():
+    """payor_lookup takes `payor` but REQUIRES `field`. A question alone makes
+    the call meaningless even though a free-text key is present."""
+    ok, why = preloadable({"properties": {"payor": {}, "query": {}},
+                           "required": ["field"]})
+    assert not ok and "field" in why
+
+
+def test_UNKNOWN_IS_NOT_YES():
+    """appeals_get_playbook is an MCP tool with no schema in this registry.
+    Guessing that it takes a question is exactly what produced "Checking
+    playbook for ?"."""
+    ok, why = preloadable(None)
+    assert not ok and "cannot tell" in why
+    ok, why = preloadable({})
+    assert not ok
+
+
+def test_plan_excludes_with_a_REASON_not_silently():
+    pl = plan(["rag", "web_scrape", "appeals_get_playbook"], schemas=_SCHEMAS)
+    assert pl.execute == ("rag",)
+    reasons = dict(pl.excluded)
+    assert "web_scrape" in reasons and "url" in reasons["web_scrape"]
+    assert "appeals_get_playbook" in reasons
+
+
+def test_no_schemas_supplied_leaves_behaviour_unchanged():
+    """Without schemas this module has no basis to judge, and silently dropping
+    every tool would be worse than the bug it fixes."""
+    pl = plan(["rag", "web_scrape"], schemas=None)
+    assert "web_scrape" in pl.execute or "web_scrape" in pl.suggest

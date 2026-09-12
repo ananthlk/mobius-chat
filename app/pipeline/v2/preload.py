@@ -249,8 +249,61 @@ class PreloadPlan:
         return not self.execute
 
 
+# The property a tool must have to be preloadable: it can act on the user's
+# QUESTION ALONE. Preload runs before react has said anything, so the question
+# is the only input that exists -- there is no gap, no url, no task id.
+#
+# Ananth, 2026-09-12, reading a live trace: "we loaded 4 tools and 2 rags
+# before react .. the first load was about appeals and the second load was
+# about healthcare tool".
+#
+# He was right and it was mine. execute() sent {"query": question} to EVERY
+# planned tool, so an appeals-playbook lookup and an ICD-10/NPI lookup both ran
+# against "what is the care management philosophy for Molina, Sunshine and
+# UHC". The playbook logged "Checking playbook for ?" and the healthcare lookup
+# TIMED OUT -- pure wall clock, before react spoke, for nothing.
+#
+# Decided from the DECLARED SCHEMA, never a hardcoded list: a list here would
+# be a second opinion about what a tool takes, and it would rot the first time
+# a skill changed its inputs.
+QUESTION_KEYS = ("query", "question")
+
+
+def preloadable(schema: dict | None) -> tuple[bool, str]:
+    """Can this tool run on the question alone? (ok, why_not)
+
+    UNKNOWN IS NOT YES. A tool with no declared schema -- MCP tools, which is
+    what appeals_get_playbook is -- cannot be checked, so it is excluded and
+    said so. Guessing that it takes a question is exactly what produced
+    "Checking playbook for ?".
+    """
+    if not schema:
+        return False, "no declared inputs — cannot tell what it needs"
+    props = (schema.get("properties") or {})
+    required = list(schema.get("required") or [])
+    key = next((k for k in QUESTION_KEYS if k in props), None)
+    if key is None:
+        return False, f"takes no free-text question (props: {','.join(list(props)[:4]) or 'none'})"
+    # A required input we cannot supply from the question alone makes the call
+    # meaningless even when a question key exists: web_scrape needs a url.
+    unmet = [r for r in required if r not in QUESTION_KEYS]
+    if unmet:
+        return False, f"needs {','.join(unmet)} — not derivable from the question"
+    return True, key
+
+
+def question_input(schema: dict | None, question: str) -> dict:
+    """The question, under the key THIS tool declares.
+
+    healthcare_query declares `question`, search_corpus declares `query`. We
+    sent `query` to both, so one of them received nothing it recognised.
+    """
+    ok, key_or_why = preloadable(schema)
+    return {key_or_why: question} if ok else {}
+
+
 def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
-         suggest_n: int = SUGGEST_N) -> PreloadPlan:
+         suggest_n: int = SUGGEST_N, schemas: dict | None = None) -> PreloadPlan:
     """Rank-ordered offer -> (execute, suggest, excluded).
 
     `offer_tool_keys` is Offer.tools in the order estimate() returned them --
@@ -267,6 +320,14 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
         if key in NEVER_PRELOAD:
             excluded.append((key, "never preloaded: gate token or has side effects"))
             continue
+        # Only when the caller supplied schemas. Without them this module has
+        # no basis to judge, and silently dropping every tool would be worse
+        # than the bug it fixes.
+        if schemas is not None:
+            ok, why = preloadable(schemas.get(key))
+            if not ok:
+                excluded.append((key, f"cannot run on the question alone: {why}"))
+                continue
         ranked.append(key)
 
     # ALWAYS means "whatever it ranks", NOT "whether or not it was offered".
@@ -313,7 +374,8 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
 # If the tool mix ever changes so that two EXPENSIVE tools preload together,
 # revisit -- with isolated contexts, not with a shared one.
 
-def execute(pl: PreloadPlan, runner, question: str) -> list[dict]:
+def execute(pl: PreloadPlan, runner, question: str,
+            schemas: dict | None = None) -> list[dict]:
     """Run the planned tools in order. `runner(tool, inputs) -> dict` is
     injected so this stays testable without a network or a PipelineContext.
 
@@ -336,7 +398,12 @@ def execute(pl: PreloadPlan, runner, question: str) -> list[dict]:
     out: list[dict] = []
     for tool in pl.execute:
         try:
-            _inputs = {"query": question}
+            # The question under the key THIS tool declares -- not `query`
+            # for everything. Falls back to `query` only when no schema was
+            # supplied, which is the pre-existing behaviour for callers that
+            # do not pass schemas.
+            _sch = (schemas or {}).get(tool) if schemas else None
+            _inputs = question_input(_sch, question) if _sch else {"query": question}
             # Only rag reads this; passing it to every tool would be a
             # parameter that means nothing to most of them.
             if tool == "rag" and PRELOAD_TOKEN_BUDGET > 0:
