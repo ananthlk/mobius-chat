@@ -1970,9 +1970,18 @@ def _execute_tool(
             and _low_confidence_call_number < _rag_call_ceiling
         ):
             _low_confidence_call_number += 1
+            # SAYS WHAT IT ACTUALLY DOES. This loop re-sends the IDENTICAL
+            # query string (see inputs below) -- no reframe, and the LLM is
+            # never consulted, so prompts.py rule 1b's "never blind-retry" is
+            # addressed to an actor that is not the one retrying. The old line
+            # said "escalating", which reads as though something changed.
+            # Ananth, 2026-09-12: "react was asking without reframing the
+            # question which is an issue .. this is where it should have been
+            # more specific on what it needed".
             emit(
                 f"  ↓ Low confidence (call {_low_confidence_call_number - 1}) — "
-                f"escalating to call {_low_confidence_call_number}…"
+                f"re-running the same query (call {_low_confidence_call_number}"
+                f"/{_rag_call_ceiling}); nothing about the ask has changed."
             )
             try:
                 from app.skills.registry import SkillCall, dispatch as _skill_dispatch
@@ -4571,6 +4580,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _pre_q,
                 )
                 ctx._v2_suggest = _plan.suggest
+                # THE USER MUST BE TOLD THIS RAN. Preload retrieves evidence
+                # BEFORE round 1 speaks; without a line here the next search
+                # looks like a duplicate with no explanation, and the whole
+                # governor reads as silence while rag narrates in detail.
+                # Ananth, 2026-09-12: "the react emits are missing, we need to
+                # add them else it is confusing".
+                _pre_ok = [r for r in ctx._v2_preloaded if r.get("ok")]
+                _pre_empty = [r for r in ctx._v2_preloaded if not r.get("ok")]
+                if _pre_ok:
+                    emit("◌ Pre-loading evidence before reasoning: "
+                         + " · ".join(str(r.get("tool")) for r in _pre_ok))
+                    for _r in _pre_ok:
+                        emit(f"  ✓ {_r.get('tool')} → {_r.get('summary')}")
+                # "Ran and found nothing" is a DIFFERENT fact from "was never
+                # run", and the user is owed the distinction for the same
+                # reason react is -- it changes what to ask next.
+                for _r in _pre_empty:
+                    emit(f"  ⊘ {_r.get('tool')} → ran, returned nothing")
+                if ctx._v2_preloaded:
+                    emit("  → Judging what came back before searching again.")
                 logger.info(
                     "[v2.preload] cid=%s ran=%s ok=%d suggest=%s elapsed=%.1fs",
                     (ctx.correlation_id or "")[:8],
@@ -5048,6 +5077,37 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 ",".join(_v2_sel.dropped_by_conflict
                                          + _v2_sel.dropped_by_cap) or "-",
                             )
+                            # THE GOVERNOR'S DECISION, TO THE USER. Every
+                            # line above this was logger.info -- the whole v2
+                            # governor was invisible in the stream while rag
+                            # narrated every step, so a user watching saw rag
+                            # escalate with no idea what react wanted. The
+                            # WORKING GAP is the load-bearing one: it is the
+                            # only thing that explains why a second search is
+                            # not a repeat of the first.
+                            if _steer_gap is not None:
+                                emit(f"  → This round: {_steer_gap.text}")
+                            # Roles in the user's language, not the registry's
+                            # ids. "role_summarise" means nothing to a reader.
+                            _ROLE_WORDS = {
+                                "role_judge": "judging what came back",
+                                "role_plan": "choosing the next source",
+                                "role_summarise": "writing what the evidence supports",
+                                "role_communicate": "answering every part asked",
+                                "role_critic": "checking the answer against the evidence",
+                                "role_next_steps": "naming what would close the rest",
+                            }
+                            _role_said = [_ROLE_WORDS[i] for i in
+                                          _v2bl.frame_sections(_v2_facts)[1]
+                                          if i in _ROLE_WORDS]
+                            if _role_said:
+                                emit("     " + " · ".join(_role_said))
+                            # What was already set aside. This is the section
+                            # react has never been told either -- showing it
+                            # lets the user see we are not re-reading it.
+                            if _v2_facts.discarded:
+                                emit(f"     ✗ set aside: "
+                                     + "; ".join(_v2_facts.discarded[:2]))
                             # The roles, logged separately from the statements.
                             # Which roles a round carried is the thing to read
                             # back when an answer judges but never writes, and
