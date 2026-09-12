@@ -4512,6 +4512,27 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         try:
             from app.pipeline.v2 import preload as _v2pre
 
+            # toolreg reads TOOLREG_DATABASE_URL and connects with psycopg2
+            # DIRECTLY -- it does not go through db_client, which is where chat
+            # injects CHAT_DB_PASSWORD into a deliberately secret-free DSN
+            # (db_client.py:144). So the env var alone authenticates as nobody:
+            #   "fe_sendauth: no password supplied"  -- observed live on 01066.
+            #
+            # Same Cloud SQL instance, same `postgres` role as chat's own DSN,
+            # so the same secret authenticates. Injected here rather than put
+            # in deploy/dev.env, which is tracked and must stay secret-free.
+            _tr_url = os.environ.get("TOOLREG_DATABASE_URL", "")
+            _tr_pw = os.environ.get("CHAT_DB_PASSWORD", "").strip()
+            if _tr_url and _tr_pw and "@" in _tr_url:
+                import re as _tr_re
+                from urllib.parse import quote as _tr_quote
+
+                _m = _tr_re.match(r"(postgresql(?:\+\w+)?://)([^:@/]+)(@.+)$", _tr_url)
+                if _m:      # only when the user segment carries no :password
+                    os.environ["TOOLREG_DATABASE_URL"] = (
+                        f"{_m.group(1)}{_m.group(2)}:"
+                        f"{_tr_quote(_tr_pw, safe='')}{_m.group(3)}")
+
             _pre_q = (getattr(ctx, "message", None) or "").strip()
             _offer_keys: list[str] = []
             try:

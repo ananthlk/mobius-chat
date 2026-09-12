@@ -318,3 +318,34 @@ def test_preload_does_not_reference_locals_bound_later():
     assert not late, (
         f"preload reads locals bound later in the function: {sorted(late)}"
     )
+
+
+def test_the_toolreg_dsn_gets_a_password_injected():
+    """LIVE on 01066: "fe_sendauth: no password supplied".
+
+    toolreg reads TOOLREG_DATABASE_URL and connects with psycopg2 DIRECTLY --
+    it never passes through db_client, which is where chat injects
+    CHAT_DB_PASSWORD into a deliberately secret-free DSN. So the env var alone
+    authenticates as nobody, and deploy/dev.env is tracked and must stay
+    secret-free, so the password cannot simply be written there.
+
+    Asserts the injection EXISTS on the preload path and preserves the URL --
+    an injection that mangles the DSN fails differently and just as fatally.
+    """
+    import pathlib
+    import re
+    from urllib.parse import quote
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    code = "\n".join(l.split("#")[0] for l in src.splitlines())
+    assert "TOOLREG_DATABASE_URL" in code and "CHAT_DB_PASSWORD" in code, (
+        "the preload path no longer injects a password into the toolreg DSN"
+    )
+    # The regex it uses must actually match the DSN shape deploy/dev.env ships.
+    dsn = [l for l in pathlib.Path("deploy/dev.env").read_text().splitlines()
+           if l.startswith("TOOLREG_DATABASE_URL=")]
+    assert dsn, "TOOLREG_DATABASE_URL is not in deploy/dev.env"
+    url = dsn[0].split("=", 1)[1]
+    m = re.match(r"(postgresql(?:\+\w+)?://)([^:@/]+)(@.+)$", url)
+    assert m, f"the injection regex cannot match the shipped DSN: {url[:60]}"
+    out = f"{m.group(1)}{m.group(2)}:{quote('p@ss', safe='')}{m.group(3)}"
+    assert "mobius_rag" in out and "cloudsql" in out, "injection mangled the DSN"
