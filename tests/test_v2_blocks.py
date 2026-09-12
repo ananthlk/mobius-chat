@@ -314,3 +314,27 @@ def test_the_target_block_degrades_when_there_is_less_to_say():
     blk = blk[blk.index("[THIS ROUND]"):]
     assert "avoid:" not in blk and "asked:" not in blk
     assert "UHC philosophy" in blk
+
+
+# ── the finalising round exists to WRITE THE ANSWER ────────────────────────
+
+def test_a_finalising_round_communicates_and_does_not_plan():
+    """Ananth, 2026-09-12: "if the answer is complete then the next round
+    should have communicate with the extended answer.. i think this is
+    missing".
+
+    It was. Measured: react said complete=true on a round whose roles were
+    judge · plan · summarise — COMMUNICATE was in the NOT-SENT list. The answer
+    the user reads was written by a round asked to summarise the evidence,
+    never to answer the person. Those are different jobs, which is the whole
+    reason the roles are separate."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),),
+              gaps=(("S1", "g"),), suggest=("rag",))
+    normal = _roles(assemble(Facts(**kw))[1])
+    final = _roles(assemble(Facts(**kw, finalising=True))[1])
+    assert "role_plan" in normal and "role_communicate" not in normal
+    assert "role_communicate" in final
+    # Planning the next tool while writing the final answer is the two-jobs
+    # contradiction this stack exists to prevent.
+    assert "role_plan" not in final
+    assert len(final) <= MAX_ROLES

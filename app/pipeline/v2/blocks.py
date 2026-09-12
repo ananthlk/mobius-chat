@@ -93,6 +93,17 @@ class Facts:
     # The answer already written this turn, if one has been. Its PRESENCE is
     # what turns the next round into the critic round -- see _drafting().
     answer: str = ""
+    # 🔴 THIS ROUND EXISTS TO WRITE THE ANSWER.
+    #
+    # Ananth, 2026-09-12: "if the answer is complete then the next round should
+    # have communicate with the extended answer.. i think this is missing".
+    #
+    # It was. Measured: react said complete=true in round 1, whose roles were
+    # judge · plan · summarise — COMMUNICATE was in the not-sent list. So the
+    # answer the user reads was written by a round that had been asked to
+    # SUMMARISE the evidence, never to answer the person. Those are different
+    # jobs, which is the entire reason the roles are separate.
+    finalising: bool = False
     can_complete: bool = True
 
 
@@ -166,7 +177,11 @@ REGISTRY: tuple[Block, ...] = (
           # PLAN needs something to plan FOR. Rendering it with no gap asks
           # react to choose a tool for nothing -- the round-1 contradiction
           # that had it searching twice.
-          when=lambda f: _drafting(f) and (bool(f.gaps) and bool(f.suggest)),
+          # Never on the finalising round: planning the next tool while
+          # writing the final answer is the two-jobs-one-round contradiction
+          # this stack exists to prevent.
+          when=lambda f: _drafting(f) and (bool(f.gaps) and bool(f.suggest))
+                         and not f.finalising,
           render=lambda f: "[YOUR ROLE — PLAN] For each gap still open, say "
                            "which tool would close it. Name the tool in your "
                            "gap report; you are not calling it this round.",
@@ -205,8 +220,9 @@ REGISTRY: tuple[Block, ...] = (
           # negation of role_plan's condition. That keeps any single round at
           # or under MAX_ROLES without a cap that silently drops a role: a
           # round still choosing tools is not the round that delivers.
-          when=lambda f: _drafting(f) and (bool(f.preloaded or f.useful)
-                         and not (bool(f.gaps) and bool(f.suggest))),
+          when=lambda f: _drafting(f) and (
+              f.finalising or (bool(f.preloaded or f.useful)
+                               and not (bool(f.gaps) and bool(f.suggest)))),
           render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
                            "user reads. Answer every part they asked, in the "
                            "order they asked it, naming each one. Cite the "
@@ -305,11 +321,34 @@ REGISTRY: tuple[Block, ...] = (
           owner="governor"),
 
     Block("complete", Slot.COMPLETE,
+          # 🔴 INTENT, NOT A CHECKBOX.
+          #
+          # Ananth, 2026-09-12: "the complete piece also feels a bit more like
+          # a check box of did we answer all 3 payors without really saying did
+          # it meet the users intent".
+          #
+          # He is right, and the old wording invited it: "are you satisfied
+          # with the level of answer AND the evidence" reads as coverage
+          # arithmetic, and a model answering it counts parts. Coverage is
+          # already measured mechanically by the integrator — asking react for
+          # the same number is a second, worse copy of a check we can compute.
+          #
+          # What we cannot compute is whether the person who asked can ACT on
+          # it. The identity block says who they are and that they are about to
+          # do something; this asks whether the answer is good enough for that.
           when=lambda f: f.can_complete,
-          render=lambda f: "[MARK COMPLETE?] Set is_complete=true only if you "
-                           "are satisfied with the level of answer AND the "
-                           "evidence behind it. A part left unanswered because "
-                           "nobody looked is not complete.",
+          render=lambda f: (
+              "[IS THIS DONE?] Not \"did I cover every part\" — we measure "
+              "that ourselves. The question is whether the person who asked "
+              "can ACT on this answer.\n"
+              "  They are an operator about to do something with it. Could "
+              "they do that thing now, or would they still have to go and "
+              "look something up?\n"
+              "  is_complete=true means: yes, they can act on it.\n"
+              "  is_complete=false means: something they need is still "
+              "missing — say WHAT, in complete_why, in their terms.\n"
+              "  A part nobody looked for is not complete. Neither is a part "
+              "answered so vaguely that they would have to check it anyway."),
           owner="governor"),
 )
 
@@ -438,6 +477,9 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         org=str(getattr(ctx, "org_name", "") or ""),
         gaps=tuple((g.gap_id, g.text) for g in getattr(state, "open_gaps", ()) or ()),
         targeted_gap=targeted_gap,
+        # Set by react_loop when react has proposed complete and we are taking
+        # one more round purely to write the answer.
+        finalising=bool(getattr(ctx, "_v2_finalising", False)),
         preloaded=tuple((p.get("tool"), bool(p.get("ok")), str(p.get("summary") or ""))
                         for p in (preloaded or [])),
         suggest=tuple(suggest),

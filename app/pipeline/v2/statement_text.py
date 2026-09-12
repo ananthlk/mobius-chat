@@ -66,7 +66,10 @@ FALLBACK: dict[str, str] = {
         "Nothing was kept from the last call. Either the query missed, or "
         "this corpus does not hold it -- say which you think it is.",
     "governor.ctl_satisfied":
-        "Before is_complete=true: are you satisfied with the level of answer "
+        "Before is_complete=true: could the person who asked ACT on this "
+        "answer now, or would they still have to go and look something up? "
+        "Not 'did I cover every part' -- we measure coverage ourselves. "
+        "(superseded wording, kept for the block key) are you satisfied with the level of answer "
         "and evidence you have? Not 'is the answer grounded' -- 'did I do "
         "enough to get it'. A part left unanswered because you never looked "
         "is not complete.",

@@ -6685,6 +6685,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if thought:
             emit(f"  → Round {rn}: {thought}")
 
+        # ── ONE COMMUNICATE ROUND BEFORE WE EXIT ────────────────────────
+        # Ananth: "if the answer is complete then the next round should have
+        # communicate with the extended answer.. i think this is missing".
+        #
+        # It was missing. react said complete=true on a round whose roles were
+        # judge · plan · summarise — COMMUNICATE was in the NOT-SENT list — so
+        # the answer the user reads was written by a round asked to summarise
+        # the evidence, never to answer the person.
+        #
+        # So: the first time react proposes complete, we do NOT exit. We take
+        # one more round with the communicate role, carrying every fact, and
+        # exit after it. ONCE per turn (_v2_finalised), and only if a round and
+        # the budget remain — otherwise this is an unbounded loop wearing a
+        # role name, and the promise pays for it.
+        if (is_complete
+                and getattr(ctx, "orchestrator_version", "v1") == "v2"
+                and not getattr(ctx, "_v2_finalised", False)
+                and rn < max_it
+                and (getattr(ctx, "react_hard_ceiling_s", 0) or 0) > _pp_elapsed_s):
+            ctx._v2_finalised = True
+            ctx._v2_finalising = True          # read by facts_from next round
+            emit("  → Answer is complete. Taking one more round to write it "
+                 "for the person who asked (role: communicate).")
+            logger.info("[v2.finalise] cid=%s round=%s → communicate round",
+                        (ctx.correlation_id or "")[:8], rn)
+            continue
+
         if is_complete or not tool:
             answer = decision.get("answer", "")
 
