@@ -212,8 +212,33 @@ def _detect_jurisdiction(text: str) -> str | None:
         m = re.search(pat, t, flags=re.I)
         if not m:
             continue
-        ab = (m.group("ab") or "").upper()
+        ab_raw = m.group("ab") or ""
+        ab = ab_raw.upper()
         if ab not in STATE_ABBREVS:
+            continue
+        # THE TOKEN MUST BE WRITTEN AS AN ABBREVIATION, not merely spellable
+        # as one. The patterns run under re.I so the surrounding words match in
+        # any case -- which also made `[A-Z]{2}` match LOWERCASE, and `.upper()`
+        # then laundered an English word into a state code:
+        #
+        #     "approval for in home ventilators"  ->  "for in"  ->  IN  ->  Indiana
+        #
+        # Measured on dev 2026-09-11: that scoped every search to a state the
+        # corpus holds nothing for, so the turn burned its whole round budget
+        # and answered "our materials didn't cover this" -- indistinguishable
+        # from a genuine corpus gap, on a question the corpus can answer. The
+        # same wording returns HCPCS E0466 once the jurisdiction is right.
+        #
+        # This docstring already warned about exactly this list -- "OR", "IN",
+        # "ME", "OK", "HI" appear frequently as normal words -- and said the
+        # token is "matched and normalized". It was normalized; it was never
+        # matched as an abbreviation. The guard was documented, not written.
+        #
+        # Cost of the fix, stated: "coverage in fl" (lowercase) no longer
+        # resolves. Full state NAMES are still case-insensitive, so "florida"
+        # works. A false positive silently mis-scopes every search on the
+        # thread; a false negative searches broadly and says so.
+        if not ab_raw.isupper():
             continue
         if _is_id_like_context(ab, m.start("ab"), m.end("ab")):
             continue
