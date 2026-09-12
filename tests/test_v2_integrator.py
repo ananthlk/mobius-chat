@@ -312,3 +312,30 @@ def test_the_critic_DOES_run_when_there_is_evidence():
     run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
         decision=_decision(), runner=runner)
     assert "v2_critic" in called
+
+
+def test_a_token_inside_another_part_cannot_distinguish():
+    """🔴 MEASURED LIVE, and it is the three-payer defect INVERTED.
+
+    "Sunshine Health care management philosophy" kept `health` as a
+    distinguishing token — it is not a token of "UnitedHealthcare care
+    management philosophy" — and matching is a SUBSTRING test, so it then
+    matched Molina's "health management programs" AND the string
+    "UnitedHealthcare". Coverage reported Sunshine SUPPORTED, citing Molina's
+    and UHC's documents.
+
+    A payer silently credited with someone else's evidence is worse than one
+    silently missing: it reads as verified."""
+    keys = _distinguishing_tokens(GAPS)
+    assert keys[GAPS[1]] == ("sunshine",), keys[GAPS[1]]
+    assert "health" not in keys[GAPS[1]]
+
+
+def test_another_payers_document_does_not_support_this_part():
+    facts = (Fact("Molina offers health management programs", "molina.pdf", 108),
+             Fact("UnitedHealthcare Care Model empowers members", "FL-Care.pdf", 5))
+    cov = {c.part: c for c in assemble(question="q", answer="a", facts=facts,
+                                       all_parts=GAPS).coverage}
+    assert cov[GAPS[1]].status == "unobservable"
+    assert cov[GAPS[1]].evidence == ()
+    assert cov[GAPS[0]].status == "supported"

@@ -192,8 +192,25 @@ def _distinguishing_tokens(parts) -> dict:
     tok = {p: _tokens(p) - _COMMON for p in parts}
     out = {}
     for p in parts:
-        others = set().union(*[tok[q] for q in parts if q != p]) if len(parts) > 1 else set()
-        distinct = tok[p] - others
+        others = [q for q in parts if q != p]
+        other_toks = set().union(*[tok[q] for q in others]) if others else set()
+        distinct = tok[p] - other_toks
+
+        # 🔴 A TOKEN THAT APPEARS INSIDE ANOTHER PART CANNOT DISTINGUISH.
+        #
+        # Matching is a SUBSTRING test, so set difference alone is not enough.
+        # Measured live: "Sunshine Health care management philosophy" kept
+        # `health` as distinguishing — it is not a token of "UnitedHealthcare
+        # care management philosophy" — and then matched Molina's "health
+        # management programs" AND the string "UnitedHealthcare". Coverage
+        # reported Sunshine as SUPPORTED, citing Molina's and UHC's documents.
+        #
+        # That is the three-payer defect inverted: instead of a payer silently
+        # missing, a payer is silently credited with someone else's evidence,
+        # which is worse — it reads as verified.
+        other_blob = " ".join(others).lower()
+        distinct = {t for t in distinct if t not in other_blob}
+
         # Fall back to the part's own tokens when every token is shared --
         # better to over-match than to mark a part uncheckable because the
         # question phrased two parts identically.
