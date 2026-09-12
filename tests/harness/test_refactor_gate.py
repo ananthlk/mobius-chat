@@ -332,7 +332,21 @@ class TestI7SwallowCount:
     # replaces the loop the hooks go, this exemption stops matching anything,
     # and the count returns to the real baseline with no edit here. If it ever
     # matches more than two, that is a finding.
-    _EXEMPT_TAG = "[v2.shadow]"
+    # 2026-09-12: a THIRD v2 hook now exists -- the framing hook, which is the
+    # one that can STOP a turn. This gate caught it, exactly as its comment
+    # said it would ("if it ever matches more than two, that is a finding").
+    #
+    # NOT baselined up, and NOT folded into the [v2.shadow] tag it is not.
+    # Each hook is exempt BY NAME with its own cap, so an unrelated fourth
+    # swallow cannot land in shared headroom and go unseen -- which is the
+    # precise failure the original two-line exemption was written to prevent.
+    #
+    # [v2.frame] earns the same exemption for the same reason as the others: a
+    # governor hook that can break the turn it governs is worse than one that
+    # declines to act. When v2 owns the loop these hooks go and every entry
+    # here stops matching, with no edit needed.
+    _EXEMPT_TAGS = {"[v2.shadow]": 2, "[v2.frame]": 1}
+    _EXEMPT_TAG = "[v2.shadow]"   # kept: test_exempt_observers_have_not_multiplied
     _EXEMPT_MAX = 2
 
     def _count_swallows(self) -> int:
@@ -343,6 +357,7 @@ class TestI7SwallowCount:
         tree = ast.parse(src)
         count = 0
         exempt = [0]
+        seen_per_tag: dict[str, int] = {}
         for node in ast.walk(tree):
             if not isinstance(node, (ast.ExceptHandler,)):
                 continue
@@ -358,14 +373,20 @@ class TestI7SwallowCount:
             has_reraise = any(isinstance(n, ast.Raise) for n in ast.walk(node))
             if not (has_log and not has_reraise):
                 continue
-            # Deliberate-observer exemption — see _EXEMPT_TAG above.
-            tagged = any(
-                isinstance(c, ast.Constant)
-                and isinstance(c.value, str)
-                and self._EXEMPT_TAG in c.value
-                for c in ast.walk(node)
+            # Deliberate-observer exemption — see _EXEMPT_TAGS above. Matched
+            # per tag, with a per-tag cap: a hook that exceeds its own cap
+            # falls through and is COUNTED, so the exemption cannot silently
+            # absorb a new swallow that merely borrows an existing tag.
+            consts = [c.value for c in ast.walk(node)
+                      if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+            matched = next(
+                (t for t, cap in self._EXEMPT_TAGS.items()
+                 if any(t in v for v in consts)
+                 and seen_per_tag.get(t, 0) < cap),
+                None,
             )
-            if tagged:
+            if matched:
+                seen_per_tag[matched] = seen_per_tag.get(matched, 0) + 1
                 exempt[0] += 1
                 continue
             count += 1
