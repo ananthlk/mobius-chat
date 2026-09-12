@@ -22,6 +22,7 @@ import logging
 import re
 
 from app.pipeline.v2.posture import (
+    Closure,
     explain, gap_id_for, jaccard,
     REPEAT_JACCARD,
     Attempt, Budget, Decision, Gap, Posture, RoundState, select,
@@ -128,6 +129,46 @@ def _tokens(text: str) -> set[str]:
     return out
 
 
+def _closure_reports(enr: dict, round_index: int,
+                     evidence_arrived: bool) -> dict[str, Closure]:
+    """react's per-gap closure for ONE round, keyed by gap TEXT.
+
+    Keyed by text because that is what every other path here keys on; the
+    contract also asks react to echo the id, and when it does the id is
+    recorded so a rewording can be matched later -- but an id is never
+    REQUIRED, or a newly opened gap (which has no id yet) could not report.
+
+    THE CROSS-CHECK lives here, not in the rules. `closure` is a claim: the
+    model grading its own progress. A claimed rise with no evidence arriving
+    this round is marked unsupported and will not advance the band. It is
+    still RECORDED -- discounting a self-report and deleting it are different
+    acts, and only one of them can be audited later.
+    """
+    raw = enr.get("gaps")
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, Closure] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        val = item.get("closure")
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            val = None          # a bool is not a percentage
+        else:
+            val = max(0, min(100, int(val)))
+        claims_progress = val is not None and val > 0
+        out[text] = Closure(
+            round_index=round_index,
+            value=val,
+            supported=(evidence_arrived or not claims_progress),
+            why=str(item.get("why") or "")[:200],
+        )
+    return out
+
+
 def _targeting(gaps: list[str], query: str | None) -> dict[str, bool]:
     """Which of this round's open gaps did this query actually aim at?
 
@@ -192,6 +233,7 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         history: list[int] = []
         open_texts: list[str] = []
         attempts_by_text: dict[str, list[Attempt]] = {}
+        closure_by_text: dict[str, list[Closure]] = {}
 
         closed_all: list[str] = []
         all_texts: list[str] = []          # every gap text this turn, in order
@@ -231,6 +273,12 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             _running = str(enr.get("running_answer") or "").strip()
             returned = bool(closed) or bool(_running)
             _aimed = _targeting(gaps, query)
+            # Same `returned` signal the attempt uses: it is the only evidence
+            # of arrival the governor can see without dereferencing tool
+            # payloads on the decision path.
+            for _text, _c in _closure_reports(enr, int((r or {}).get("round") or 0),
+                                              returned).items():
+                closure_by_text.setdefault(_text, []).append(_c)
             for g in gaps:
                 attempts_by_text.setdefault(g, [])
                 if tool:
@@ -294,6 +342,7 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             Gap(gap_id=gap_id_for(canon[t]), text=t,
                 opened_round=opened_at.get(canon[t], opened_at.get(t, round_index)),
                 attempted_by=tuple(attempts_by_text.get(t, ())),
+                closure_by=tuple(closure_by_text.get(t, ())),
                 # RECORDED, never absorbed silently. The id survived a
                 # rewording; the fact that it had to is the signal.
                 reworded_from=("" if canon[t] == t else canon[t]),

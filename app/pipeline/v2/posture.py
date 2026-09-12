@@ -146,6 +146,64 @@ class Attempt:
     targeted: bool = True
 
 
+class Band(str, Enum):
+    """How much of a gap the kept evidence answers.
+
+    BANDS, NEVER THE RAW NUMBER. `closure` is a model self-report, and 62 vs 68
+    is noise in a self-report -- a rule that separates them is tuned against
+    that noise. Every governor rule reads a band or a band crossing.
+    """
+    NONE = "none"          # 0
+    TRACE = "trace"        # 1-24
+    PARTIAL = "partial"    # 25-59
+    MOST = "most"          # 60-89
+    CLOSED = "closed"      # 90-100
+    UNKNOWN = "unknown"    # react did not report -- NOT the same as NONE
+
+
+_BAND_ORDER = {Band.NONE: 0, Band.TRACE: 1, Band.PARTIAL: 2,
+               Band.MOST: 3, Band.CLOSED: 4}
+
+
+def closure_band(value: int | None) -> Band:
+    """Raw self-report -> band. None means NOT REPORTED, which must never
+    collapse into NONE: "react said it found nothing" and "react was not asked"
+    carry opposite advice about continuing."""
+    if value is None:
+        return Band.UNKNOWN
+    v = max(0, min(100, int(value)))
+    if v == 0:
+        return Band.NONE
+    if v < 25:
+        return Band.TRACE
+    if v < 60:
+        return Band.PARTIAL
+    if v < 90:
+        return Band.MOST
+    return Band.CLOSED
+
+
+@dataclass(frozen=True)
+class Closure:
+    """One round's reported progress on ONE gap.
+
+    ``supported`` is the CROSS-CHECK, not the report. The model grades its own
+    progress, and this system has already shipped a model asserting "no
+    sources" beside a substantive answer. A rise the governor could not
+    corroborate is recorded as unsupported and does not advance the band --
+    recorded, never rewritten: the governor does not edit a self-report into
+    something it finds more convenient.
+    """
+    round_index: int
+    value: int | None = None
+    supported: bool = True
+    why: str = ""
+
+    @property
+    def band(self) -> Band:
+        return closure_band(self.value)
+
+
 # posture -> measured proxy. `basis` names WHICH measurement, so a reader can
 # check whether the proxy still fits when a posture's behaviour changes.
 _ROUND_COST: dict[str, RoundCost] = {
@@ -192,6 +250,11 @@ class Gap:
     opened_round: int
     importance: str = "normal"
     attempted_by: tuple[Attempt, ...] = ()
+    # Per-round closure on THIS gap, oldest first. Empty when react has not
+    # reported closure -- which is every turn until the prompt seat lands the
+    # field, so every rule below must behave exactly as it does today when
+    # this is empty.
+    closure_by: tuple[Closure, ...] = ()
     # ── ID PROVENANCE, so drift is countable rather than silent ────────────
     # The gap TEXT is LLM-generated, so a content-addressed id is only as
     # stable as the model's wording. A model change, a temperature change or a
@@ -356,6 +419,52 @@ def trend(history: tuple[int, ...]) -> Trend:
     if now < prev:
         return Trend.DECREASING
     return Trend.FLAT
+
+
+def latest_closure(gap: Gap) -> Closure | None:
+    """The most recent report, or None when react has never reported on this
+    gap. None is a distinct answer from Band.NONE."""
+    return gap.closure_by[-1] if gap.closure_by else None
+
+
+def closure_trend(gap: Gap) -> Trend:
+    """Is this gap CLOSING? Read across band crossings, never raw deltas.
+
+    Ananth's loop, 2026-09-12: "once you see it is near closing... if this
+    round did not close it, keep at it, if closed pick the next gap."
+    INCREASING is the signal to stay on a gap; FLAT across two reports is the
+    signal to change the lever rather than buy another round of the same one.
+
+    Fewer than two SUPPORTED reports is FLAT, not INCREASING: a single
+    observation describes a state, never a direction, and the expensive
+    mistake here is spending rounds on an imagined trend.
+    """
+    seen = [c for c in gap.closure_by if c.supported and c.value is not None]
+    if len(seen) < 2:
+        return Trend.FLAT
+    now, prev = _BAND_ORDER[seen[-1].band], _BAND_ORDER[seen[-2].band]
+    if now > prev:
+        return Trend.INCREASING
+    if now < prev:
+        return Trend.DECREASING
+    return Trend.FLAT
+
+
+def is_closing(gap: Gap) -> bool:
+    """Worth staying on. The governor's "keep at it" condition."""
+    return closure_trend(gap) is Trend.INCREASING
+
+
+def closure_says_closed(gap: Gap) -> bool:
+    """react reported this gap closed.
+
+    ADVISORY ONLY. `gaps_closed` membership is what actually closes a gap --
+    a gap reported CLOSED that react still lists as open stays open, and the
+    disagreement is recorded. A newer field that can silently override an
+    older one is worse than no field.
+    """
+    c = latest_closure(gap)
+    return bool(c and c.supported and c.band is Band.CLOSED)
 
 
 def targeted_attempts(gap: Gap) -> tuple[Attempt, ...]:

@@ -4767,6 +4767,49 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         if not hasattr(ctx, "v2_shadow_rounds"):
                             ctx.v2_shadow_rounds = []
                         ctx.v2_shadow_rounds.append(_v2pc)
+
+                    # ── STEERING (governor-react closure contract, Dir. 1) ──
+                    #
+                    # The governor has selected a gap every round since it
+                    # shipped and written it to turn_rounds.gap_targeted, which
+                    # NOTHING on the prompt path reads. This is the consumer.
+                    #
+                    # Built here because this is the only v2 state that exists
+                    # BEFORE the model speaks -- the framing hook at :5360 runs
+                    # after, which is why a decision made there could never
+                    # change what was asked.
+                    #
+                    # THREE CONSTRAINTS:
+                    #  * v2 ARM ONLY. Steering the v1 arm would vary the prompt
+                    #    on both sides and the A/B could no longer attribute a
+                    #    divergence to the decision.
+                    #  * OWN ENV FLAG. Revertible in ~90s without a deploy,
+                    #    like MOBIUS_V2_FRAME_DECIDES -- a change that alters
+                    #    what the model is asked needs an off switch that is
+                    #    not a rollback.
+                    #  * NEVER ON ROUND 1. Round 1's job is to decompose the
+                    #    question; naming one gap before the gaps exist would
+                    #    steer the turn at the one moment the ledger holds
+                    #    only the seeded root.
+                    ctx._v2_governor_block = None
+                    if (os.environ.get("MOBIUS_V2_STEER", "").strip() == "1"
+                            and getattr(ctx, "orchestrator_version", "v1") == "v2"
+                            and rn > 1):
+                        from app.pipeline.v2 import instruct as _v2i
+                        from app.pipeline.v2 import posture as _v2ip
+
+                        _steer_state = _v2ip.effective_state(_v2ps)
+                        _steer_gap = _v2ip.worth_spending(_steer_state)
+                        ctx._v2_governor_block = _v2i.governor_block(
+                            _steer_gap, remaining=_steer_state.open_gaps,
+                            round_index=rn,
+                        )
+                        if ctx._v2_governor_block:
+                            logger.info(
+                                "[v2.steer] cid=%s round=%s gap=%s text=%r",
+                                (ctx.correlation_id or "")[:8], rn,
+                                _steer_gap.gap_id, _steer_gap.text[:60],
+                            )
                 except Exception as _v2pe:  # pragma: no cover
                     logger.warning("[v2.shadow] pre-round hook failed: %s", _v2pe)
 
@@ -4913,6 +4956,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 round_n=rn, max_rounds=max_it, elapsed_s=_pp_elapsed_s,
                 soft_target_s=_pp_contract.soft_target_s, directive=_pp_pre_directive, reason=_pp_pre_reason,
             )
+        # The governor's steering block. Appended AFTER the product-promise
+        # directive so the two read in the order they apply: the directive
+        # says how much more to spend, this says what to spend it on.
+        _v2_steer_block = getattr(ctx, "_v2_governor_block", None)
+        if _v2_steer_block:
+            reasoning_context = reasoning_context + "\n\n" + _v2_steer_block
+
         # Final-round self-report instruction (see constant docstring above).
         # rn==max_it is the actual last round even when Product Promise has
         # grown max_it mid-turn via "extend" — max_it already reflects the
@@ -5322,6 +5372,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     "running_answer": _evidence_review.get("running_answer") if _evidence_review else "",
                     "gaps_closed": _as_str_list(_evidence_review.get("gaps_closed")) if _evidence_review else [],
                     "gaps_open": _as_str_list(_evidence_review.get("gaps_open")) if _evidence_review else [],
+                    # Per-gap closure (governor-react closure contract v1).
+                    # ABSENT until the prompt seat lands the field; carried
+                    # through untouched so the governor sees exactly what the
+                    # model said, including a malformed entry -- react_loop
+                    # does not get to clean up a self-report on its way past.
+                    "gaps": (_evidence_review.get("gaps")
+                             if isinstance(_evidence_review, dict) else None),
                 } if (thought or _evidence_review) else None,
             })
 
