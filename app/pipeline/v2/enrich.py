@@ -64,10 +64,17 @@ class EnrichDecision:
         return self.run_critic or self.run_next_steps
 
 
-def decide(*, answer: str, facts=(), open_gaps=(), is_complete=None,
+def should_enrich(*, answer: str, facts=(), open_gaps=(), is_complete=None,
            elapsed_s: float | None = None, promise_s: float | None = None,
            rounds_left: int = 0, round_cost_s: float | None = None) -> EnrichDecision:
     """Run the critic and next-steps for this answer?
+
+    NAMED should_enrich, not decide: posture.decide() already exists in this
+    module family and carries a hard requirement that every call site supply
+    `affordable`. Two functions named decide() cannot be told apart by an AST
+    gate matching on attribute name -- mine tripped that gate immediately --
+    and, more to the point, cannot be told apart by a person reading a call
+    site either.
 
     Today: yes, whenever there is an answer. The criteria below are measured
     and carried so the "yes" can become a judgement later.

@@ -88,7 +88,8 @@ class Integration:
 
 # ── 1. DETERMINISTIC: no model, and therefore checkable ─────────────────────
 
-def assemble(*, question: str, answer: str, facts=(), open_gaps=()) -> Integration:
+def assemble(*, question: str, answer: str, facts=(), open_gaps=(),
+             all_parts=()) -> Integration:
     """Everything computable without asking anyone.
 
     COVERAGE IS THE THREE-PAYER CHECK, mechanised: for each part the question
@@ -96,7 +97,15 @@ def assemble(*, question: str, answer: str, facts=(), open_gaps=()) -> Integrati
     payers and 17 covering three produce identical answers to a reader and
     different answers here.
     """
-    parts = _parts_of(question, open_gaps)
+    # PARTS COME FROM EVERY GAP THE TURN NAMED, not just the ones still open.
+    #
+    # Measured live: react closed all three payer gaps and reported none open,
+    # so parts fell back to the whole question, coverage collapsed to ONE part,
+    # and a single Molina fact marked it "supported" -- the three-payer check
+    # silently stopped checking at the exact moment the answer claimed to be
+    # complete. Closed gaps are the decomposition; open gaps are only its
+    # unfinished tail.
+    parts = _parts_of(question, all_parts or open_gaps)
     grounded = [f for f in facts or () if getattr(f, "grounded", False)]
     ungrounded = sum(1 for f in facts or () if not getattr(f, "grounded", False))
 
@@ -208,14 +217,16 @@ def _cite(f) -> str:
             else str(getattr(f, "document", "")))
 
 
-def _parts_of(question: str, open_gaps) -> tuple[str, ...]:
+def _parts_of(question: str, gaps) -> tuple[str, ...]:
     """The parts to check coverage for.
 
     react's own gap list FIRST: it is the decomposition this system already
     made, and re-deriving parts by parsing the question here would be a second
-    author of it. Falls back to the whole question when no gaps were named --
-    a one-part question is the common case and must not be split invented.
+    author of it. Falls back to the whole question when no gaps were named at
+    all -- a one-part question is the common case and must not be split
+    invented.
     """
+    open_gaps = gaps
     if open_gaps:
         return tuple(dict.fromkeys(str(g) for g in open_gaps if str(g).strip()))
     q = (question or "").strip()
@@ -295,7 +306,7 @@ _NEXT_FALLBACK = (
 )
 
 
-def run(*, question: str, answer: str, facts=(), open_gaps=(),
+def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
         decision, runner) -> Integration:
     """Assemble, then critique and plan next steps CONCURRENTLY.
 
@@ -303,7 +314,7 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(),
     testable without a network, and so the model choice stays the caller's.
     """
     base = assemble(question=question, answer=answer, facts=facts,
-                    open_gaps=open_gaps)
+                    open_gaps=open_gaps, all_parts=all_parts)
     if not getattr(decision, "runs_anything", False):
         # SKIPPED IS NOT FAILED and is not empty. The deterministic half still
         # ran and is returned; the two model sections say why they did not.

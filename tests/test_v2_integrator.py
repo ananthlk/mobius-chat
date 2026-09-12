@@ -5,7 +5,7 @@ deterministic enricher, + critic (llm) + next steps (llm) for now" and "you can
 reuse the existing models if they work which should for critic and next steps".
 """
 from app.pipeline.v2.contract import Fact
-from app.pipeline.v2.enrich import decide
+from app.pipeline.v2.enrich import should_enrich
 from app.pipeline.v2.integrator import (
     _distinguishing_tokens, _loads, assemble, run,
 )
@@ -21,7 +21,7 @@ def _decision(**kw):
     base = dict(answer="an answer", facts=FACTS, open_gaps=GAPS,
                 elapsed_s=20.0, promise_s=31.0, rounds_left=2, round_cost_s=5.0)
     base.update(kw)
-    return decide(**base)
+    return should_enrich(**base)
 
 
 # ── the deterministic half needs no model, and is therefore checkable ───────
@@ -146,7 +146,7 @@ def test_fenced_json_parses():
 
 def test_skipped_is_not_failed_and_keeps_the_deterministic_half():
     out = run(question="q", answer="", facts=FACTS, open_gaps=GAPS,
-              decision=decide(answer=""), runner=_runner())
+              decision=should_enrich(answer=""), runner=_runner())
     assert out.ran["critique"] == "skipped"
     assert out.coverage, "the deterministic half still ran"
 
@@ -190,3 +190,28 @@ def test_a_resolver_that_raises_still_yields_a_usable_prompt(monkeypatch):
     from app.pipeline.v2.integrator import _next_steps_prompt
     system, _ = _next_steps_prompt("q", "a", ())
     assert "close what is still open" in system
+
+
+def test_coverage_checks_every_part_the_turn_named_not_just_the_open_ones():
+    """MEASURED LIVE: react closed all three payer gaps and reported none
+    open, so parts fell back to the whole question, coverage collapsed to ONE
+    part, and a single Molina fact marked it "supported". The three-payer check
+    stopped checking at the exact moment the answer claimed to be complete.
+
+    Closed gaps ARE the decomposition; open gaps are only its unfinished tail.
+    """
+    out = assemble(question="q", answer="a",
+                   facts=(Fact("Molina uses ICM", "molina.pdf", 111),),
+                   open_gaps=(), all_parts=GAPS)
+    got = {c.part: c.status for c in out.coverage}
+    assert got[GAPS[0]] == "supported"
+    # Not "supported by association" and not "not_attempted" (we did search) --
+    # nothing grounds them, and that is a different claim from either.
+    assert got[GAPS[1]] == "unobservable"
+    assert got[GAPS[2]] == "unobservable"
+
+
+def test_a_single_part_question_still_falls_back_to_the_question():
+    out = assemble(question="timely filing for Sunshine", answer="a",
+                   facts=(), open_gaps=(), all_parts=())
+    assert len(out.coverage) == 1

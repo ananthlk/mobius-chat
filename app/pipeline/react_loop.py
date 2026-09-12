@@ -4059,6 +4059,111 @@ def _looks_like_gaps_hedge(answer_text: str) -> bool:
     return any(phrase in lowered for phrase in _GAPS_CLOSED_HEDGE_PHRASES)
 
 
+def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
+    """The v2 integrator, at the one point an answer becomes final.
+
+    Ananth, 2026-09-12: "lets also get a new integrator .. deterministic
+    enricher + critic (llm) + next steps (llm)" and "wire it in".
+
+    HERE and not in the round loop: _finalize_response is the single place a
+    turn's answer is settled, so this runs exactly once however the loop
+    exited -- complete, budget, capability or error. Wiring it into the loop
+    would have run it per round and published three critiques of a
+    half-written answer.
+
+    NEVER FAILS THE TURN. The answer is already on ctx by the time anything
+    here runs; an integrator that raises must cost annotations, never the
+    response.
+    """
+    if getattr(ctx, "orchestrator_version", "v1") != "v2":
+        return
+    try:
+        # Local import, this file's convention for time (see _pp_time_mod,
+        # _preload_time) -- and bound HERE rather than relied on from an outer
+        # scope, which is the shape behind four UnboundLocalErrors today.
+        import time as _int_time
+
+        from app.pipeline.v2 import enrich as _v2en
+        from app.pipeline.v2 import integrator as _v2int
+        from app.pipeline.v2 import trace as _v2tr
+
+        resp = getattr(ctx, "_v2_last_contract", None)
+        facts = tuple(getattr(resp, "facts", ()) or ())
+        _all_gaps = tuple(g.text for g in (getattr(resp, "gaps", ()) or ())
+                          if getattr(g, "text", ""))
+        gaps = tuple(g.text for g in (getattr(resp, "gaps", ()) or ())
+                     if getattr(g, "status", "open") == "open"
+                     and getattr(g, "text", ""))
+        # EVERY gap this turn named, across rounds -- the decomposition does
+        # not disappear when a round closes it, and coverage must still check
+        # the part. Live: all three payer gaps closed, parts collapsed to the
+        # whole question, and one Molina fact marked it supported.
+        for _r_hist in (getattr(ctx, "react_trace_rounds", None) or []):
+            _enr_h = (_r_hist or {}).get("enrichment") or {}
+            for _key in ("gaps_open", "gaps_closed"):
+                for _g in (_enr_h.get(_key) or ()):
+                    if isinstance(_g, str) and _g.strip() and _g not in _all_gaps:
+                        _all_gaps = _all_gaps + (_g,)
+
+        _pp = getattr(ctx, "promise", None)
+        decision = _v2en.should_enrich(
+            answer=final_answer or "",
+            facts=facts,
+            open_gaps=gaps,
+            is_complete=getattr(resp, "is_complete", None),
+            elapsed_s=(_int_time.monotonic() - ctx.react_turn_start_monotonic
+                       if getattr(ctx, "react_turn_start_monotonic", None) else None),
+            promise_s=getattr(_pp, "latency_s", None) if _pp else None,
+            rounds_left=max(0, (getattr(ctx, "react_max_rounds", 0) or 0)
+                            - (getattr(ctx, "react_rounds_used", 0) or 0)),
+            round_cost_s=None)
+
+        out = _v2int.run(question=(ctx.message or ""), answer=final_answer or "",
+                         facts=facts, open_gaps=gaps, all_parts=_all_gaps,
+                         decision=decision,
+                         runner=_v2int.default_runner(ctx))
+        ctx.v2_integration = out.to_dict()
+        ctx.v2_enrich_decision = {"why": decision.why,
+                                  "criteria": decision.criteria,
+                                  "reopen_affordable": decision.reopen_affordable}
+
+        # The headline says what the CHECK found, not that a check ran.
+        _unfinished = [c.part for c in out.coverage
+                       if c.status in ("not_attempted", "unobservable")]
+        head = (f"⚠ integrator: {len(_unfinished)} part(s) unverified — "
+                + "; ".join(p[:40] for p in _unfinished[:2])
+                if _unfinished else
+                f"✓ integrator: all {len(out.coverage)} part(s) grounded")
+        detail = [f"  coverage:"] + [
+            f"       {c.status:14} {c.part[:60]}"
+            + (f"  [{'; '.join(c.evidence[:2])}]" if c.evidence else "")
+            for c in out.coverage]
+        if out.critique_summary:
+            detail.append(f"  critique: {out.critique_summary[:200]}")
+        for c in out.critique:
+            detail.append(f"       {c.status:14} {c.part[:50]} — {c.why[:60]}")
+        for st in out.next_steps:
+            detail.append(f"  → next: {st[:140]}")
+        if out.citations:
+            detail.append(f"  cited: {'; '.join(out.citations[:4])}")
+        for pr in out.problems:
+            detail.append(f"  ⚠ {pr}")
+        detail.append(f"  ran: {out.ran} · prompts: {out.prompt_sources}")
+        _v2tr.emit_step(emitter, (getattr(ctx, "correlation_id", "") or ""),
+                        _v2tr.Step("integrator", head, tuple(detail),
+                                   {"ran": out.ran,
+                                    "unverified": _unfinished,
+                                    "next_steps": list(out.next_steps),
+                                    "decision": ctx.v2_enrich_decision}),
+                        thread_id=getattr(ctx, "thread_id", None))
+        logger.info("[v2.integrator] cid=%s ran=%s unverified=%d steps=%d",
+                    (getattr(ctx, "correlation_id", "") or "")[:8],
+                    out.ran, len(_unfinished), len(out.next_steps))
+    except Exception as _intE:   # pragma: no cover
+        logger.warning("[v2.integrator] failed cid=%s: %s",
+                       (getattr(ctx, "correlation_id", "") or "")[:8], _intE)
+
+
 def _finalize_response(
     ctx: PipelineContext,
     final_answer: str,
@@ -4069,6 +4174,7 @@ def _finalize_response(
 ) -> None:
     """Map ReAct output to ctx fields so run_integrate() works unchanged."""
     _sync_extra_out_to_context(ctx, emitter)
+    _v2_integrate(ctx, final_answer, emitter)
     ctx.plan = _make_react_plan(ctx)
     ctx.answers = [final_answer]
     ctx.usages = getattr(ctx, "usages", []) or []
@@ -6008,6 +6114,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # Conflating them would put a policy layer in front of a log.
                 from app.pipeline.v2 import store as _v2store
                 _v2_resp = _v2c.parse(decision if isinstance(decision, dict) else None)
+                # Kept for _finalize_response: the integrator needs the FACTS,
+                # and re-parsing the decision there would be a second parse of
+                # one response -- two readings that can disagree.
+                ctx._v2_last_contract = _v2_resp
                 _v2store.save_round(_v2c.to_row(
                     _v2_resp,
                     correlation_id=(ctx.correlation_id or ""),
@@ -6749,7 +6859,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                     # This branch only runs when the model
                                     # proposed complete -- which is exactly the
                                     # moment the governor needs to be able to
-                                    # say "not yet". Telling decide() so is
+                                    # say "not yet". Telling should_enrich() so is
                                     # what turns a brake into a brake AND an
                                     # accelerator.
                                     _v2_act = _v2x.decide(
