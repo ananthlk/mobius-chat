@@ -287,3 +287,47 @@ def test_one_attempt_is_not_a_stall():
                                  returned_payload=True, targeted=True)))
     block2 = governor_block(two, remaining=(two,), directive=Directive.CLOSE)
     assert "not moving" in block2, "two pulls of the same lever IS a stall"
+
+
+def test_the_block_takes_the_gap_from_the_decision_never_recomputes_it():
+    """THE LIVE FAILURE, first run: zero [v2.steer] lines and no error.
+
+    select() calls worth_spending(allow_overrun=True) on the overrun branch.
+    The steering call site called worth_spending(state) again WITHOUT it, so a
+    gap affordable only from the band came back None, the block was None, and
+    steering was silently absent on exactly the rounds it exists for -- while
+    the row still said branch=overrun_into_band. Two authors of one decision,
+    disagreeing in silence.
+
+    AST, so this catches a recomputation however it is spelled.
+    """
+    import app.pipeline.react_loop as rl
+
+    tree = ast.parse(inspect.getsource(rl))
+    # Find the steering block by its assignment to _steer_gap.
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "_steer_gap"
+                   for t in node.targets):
+            continue
+        called = {n.func.attr for n in ast.walk(node.value)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        if "worth_spending" in called:
+            offenders.append(node.lineno)
+    assert not offenders, (
+        f"_steer_gap recomputes worth_spending at line(s) {offenders}; it must "
+        f"be looked up from the decision the machine already made"
+    )
+
+
+def test_the_steering_gate_is_not_vacuous():
+    """Guard: if _steer_gap stops existing, the assertion above inspects
+    nothing and passes forever."""
+    import app.pipeline.react_loop as rl
+    tree = ast.parse(inspect.getsource(rl))
+    found = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "_steer_gap"
+                     for t in n.targets)]
+    assert found, "no _steer_gap assignment found; the gate above proves nothing"

@@ -4800,7 +4800,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
                         _steer_state = _v2ip.effective_state(_v2ps)
                         _v2ps_decision = _v2ip.select(_steer_state)
-                        _steer_gap = _v2ip.worth_spending(_steer_state)
+                        # THE GAP THE MACHINE ACTUALLY CHOSE, looked up from
+                        # the decision -- never recomputed.
+                        #
+                        # My first version called worth_spending(state) again
+                        # here. select() calls it with allow_overrun=True on
+                        # the overrun branch, so a gap affordable only from the
+                        # band came back None, governor_block returned None,
+                        # and the block was silently absent on exactly the
+                        # rounds it exists for. Zero [v2.steer] lines in the
+                        # first live run, and no error either -- the second
+                        # author disagreed with the first and the row still
+                        # said `overrun_into_band`.
+                        _steer_gap = next(
+                            (g for g in _steer_state.open_gaps
+                             if g.gap_id == _v2ps_decision.gap_targeted),
+                            None,
+                        )
                         # The machine's own DISCOVER/CLOSE call, not a second
                         # one: a block that decided for itself whether the
                         # round is for finding gaps or closing them would be a
