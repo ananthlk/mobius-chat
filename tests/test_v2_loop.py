@@ -188,3 +188,51 @@ def test_the_own_loop_defaults_OFF_even_in_dev():
     assert "MOBIUS_V2_OWN_LOOP=1" not in env, "it is on by default in dev"
     sh = pathlib.Path("scripts/deploy.sh").read_text()
     assert "MOBIUS_V2_OWN_LOOP=" in sh, "absent from the allowlist — cannot be enabled"
+
+
+# ── v2's own prompts, and the honesty about not having them yet ─────────────
+
+def test_the_prompt_SOURCE_is_recorded_per_round():
+    """Ananth, 2026-09-11: "you can create your own prompts as against using
+    the prompts from v1 — rather let v1 reuse its prompt, and over time you
+    will replace tool selection and prompt selection with your own."
+
+    Until the v2 blocks exist the loop falls back to v1's prompt. A run whose
+    prompts silently came from v1 while the harness said "prompts varied"
+    would be the reverse of tonight's cost_usd defect: a field claiming a
+    provenance the value does not have.
+    """
+    from app.pipeline.react.prompts import _react_reasoning_system
+    prompt, source = L._v2_system_prompt(3, "copilot", None, _react_reasoning_system)
+    assert prompt.strip(), "no prompt at all"
+    assert source in ("v2_blocks", "v1_fallback")
+    assert '"v2_prompt_source"' in _code(), "the source is computed and discarded"
+
+
+def test_the_fallback_is_a_REAL_prompt_not_an_empty_string():
+    """A silent degrade to an empty system prompt would make v2 look
+    catastrophically worse than v1 for a reason that is not v2."""
+    from app.pipeline.react.prompts import _react_reasoning_system
+    prompt, _ = L._v2_system_prompt(3, "copilot", None, _react_reasoning_system)
+    assert len(prompt) > 500
+
+
+def test_v2_holds_NO_prompt_text_of_its_own():
+    """[RULED] v2 reads prompts from prompt_blocks ONLY. No prompt text in v2
+    code — otherwise the LLM seat cannot own or version what the model is
+    told, and two copies of a prompt drift the first time either changes."""
+    code = _code()
+    # the module_key is a key, not a prompt; no multi-line instruction blobs
+    for tell in ("You are ", "Your response each round", "Respond with JSON"):
+        assert tell not in code, f"prompt text inlined in v2 ({tell!r})"
+
+
+def test_the_block_reader_is_REACTS_OWN_not_a_guessed_api():
+    """My first version imported prompt_blocks.get_block, which does not
+    exist. It would have thrown, been swallowed by the except, and fallen back
+    to v1 FOREVER while the loop reported it was using v2 prompts — the silent
+    degrade the `source` return value exists to prevent, defeated by the
+    mechanism meant to enforce it."""
+    code = _code()
+    assert "resolve_composition_sync" in code
+    assert "prompt_blocks import get_block" not in code

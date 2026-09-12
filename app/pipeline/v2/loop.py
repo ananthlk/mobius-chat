@@ -218,10 +218,13 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # ── 2. ACT — the same prompt, model and tools v1 would use ──────────
         extensions_used += 1
         try:
-            system = _react_reasoning_system(max_rounds, mode,
-                                             getattr(ctx, "user_profile", None))
+            system, prompt_source = _v2_system_prompt(
+                max_rounds, mode, getattr(ctx, "user_profile", None),
+                _react_reasoning_system,
+            )
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
             raw = _call_llm_json(system, user, ctx=ctx, stage="planner")
+            res.rounds[-1]["v2_prompt_source"] = prompt_source
         except Exception as exc:
             logger.warning("[v2.loop] round %s model call failed: %s", rn, exc)
             res.stopped_by = "model_error"
@@ -355,3 +358,68 @@ def _best_running_answer(ctx: Any) -> str:
         if ra:
             return ra
     return ""
+
+
+# ── v2's OWN prompts ────────────────────────────────────────────────────────
+#
+# Ananth, 2026-09-11: "you can create your own prompts as against using the
+# prompts from v1 -- rather let v1 reuse its prompt, and over time you will
+# replace tool selection and prompt selection with your own."
+#
+# This changes the experiment deliberately and the cost has to be stated:
+# once prompts vary too, a divergence is no longer attributable to the DECISION
+# alone. That was the whole design of step 2, and it was right for step 2.
+#
+# But there is a sharper reason he is right, which I did not see until this
+# loop existed. v1's reasoning prompt DESCRIBES V1'S MACHINE -- it renders
+# "Up to 3 reasoning rounds -- copilot: faster path" and the round-budget
+# contract that goes with it. This loop does not have v1's round semantics; it
+# decides per round on gaps and affordability. So feeding it v1's prompt is not
+# holding a variable constant, it is TELLING THE MODEL IT IS IN A MACHINE IT IS
+# NOT IN. The same prompt across two different loops is a mismatch, not a
+# control -- which is the PROMPT_MISMATCH idea from the executor, one level up.
+#
+# v2 READS PROMPTS FROM prompt_blocks ONLY. [RULED] No prompt text in v2 code.
+# These keys are the LLM seat's to author; until they exist the loop falls back
+# to v1's prompt and RECORDS that it did, so no comparison can silently credit
+# v2 with a prompt it never had.
+# The module_key the LLM seat authors against. Absent today, which is why
+# every round currently records source="v1_fallback".
+V2_MODULE_KEY = "react.v2_governor"
+
+
+def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
+                      v1_builder) -> tuple[str, str]:
+    """(prompt, source). `source` is "v2_blocks" or "v1_fallback", per round.
+
+    The source is RECORDED rather than assumed. A run whose prompts silently
+    came from v1 while the harness reported "prompts varied" would be the
+    reverse of tonight's cost_usd defect: a field claiming a provenance the
+    value does not have.
+    """
+    # resolve_composition_sync is react's OWN block reader — the same function
+    # _react_reasoning_system uses, against a different module_key. Found by
+    # reading the call site rather than guessing an API: my first version
+    # imported prompt_blocks.get_block, which does not exist. It would have
+    # thrown, been swallowed, and fallen back to v1 forever while the loop
+    # reported it was using v2 prompts — a silent degrade of exactly the kind
+    # this function's `source` return value exists to make impossible.
+    try:
+        from app.services.prompt_manager import resolve_composition_sync
+
+        rc = resolve_composition_sync(
+            V2_MODULE_KEY,
+            conditions={"has_user_profile": bool(
+                (user_profile or {}).get("rendered_prompt"))},
+            template_vars={
+                "max_rounds": max_rounds,
+                "mode": mode,
+                "user_profile_text": (user_profile or {}).get("rendered_prompt") or "",
+            },
+        )
+        body = getattr(rc, "text", None) or getattr(rc, "rendered", None) if rc else None
+        if body and str(body).strip():
+            return str(body), "v2_blocks"
+    except Exception as exc:
+        logger.debug("[v2.loop] v2 prompt composition unavailable: %s", exc)
+    return v1_builder(max_rounds, mode, user_profile), "v1_fallback"
