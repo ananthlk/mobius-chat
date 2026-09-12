@@ -259,6 +259,20 @@ def check_parts(ack: dict, this_round: dict, gaps: list[str]) -> AckCheck:
     if len(claimed) < 2:
         return AckCheck("parts", Verdict.UNOBSERVABLE, str(claimed), q,
                         "single-part question: nothing to under-cover")
+    # 🔴 A NARROWED ROUND IS NOT AN IGNORED INSTRUCTION.
+    #
+    # "Cover every part in one query" is the ROUND-1 instruction. From round 2
+    # the governor names ONE part and says the others are not for this round --
+    # so a query naming one part is obedience, and scoring it as IGNORED
+    # condemns exactly the behaviour we asked for.
+    #
+    # Caught in simulation, not live: the honest-and-compliant case came back
+    # `parts: ignored`. A follow-rate built on that would have been permanently
+    # red, and the fix would have been to "correct" a prompt that was working.
+    if ack.get("working_gap"):
+        return AckCheck("parts", Verdict.UNOBSERVABLE, f"{len(claimed)} parts", q,
+                        "the governor named one part this round; a narrow "
+                        "query is instructed, not a lapse")
     if not q:
         return AckCheck("parts", Verdict.UNOBSERVABLE, str(claimed), "",
                         "no query recorded this round")

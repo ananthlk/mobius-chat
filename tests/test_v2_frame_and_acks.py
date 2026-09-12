@@ -141,3 +141,70 @@ def test_dissent_followed_when_the_next_round_searches_it():
 def test_no_dissent_raised_is_unobservable():
     r = C.check_dissent({}, {"inputs": {"query": "x"}}, None, [SUN])
     assert r.verdict is C.Verdict.UNOBSERVABLE
+
+
+# ── the root gap is the QUESTION, not a part ────────────────────────────────
+
+def test_no_statement_speaks_about_the_root_gap():
+    """Rendering the root into a gap-shaped sentence produced lines like "one
+    more round is authorised if it closes <the entire question>" and "<the
+    entire question> was searched once and is still open" -- true of a ledger
+    row, nonsense to read.
+
+    EVD-4 already excluded the root, but as ONE STATEMENT'S CONDITION rather
+    than as the property it is, so five others did not. Found by rendering
+    round 2 locally instead of deploying.
+    """
+    from app.pipeline.v2.posture import seed_root_gap
+    root = seed_root_gap(Q)
+    tried = Gap(gap_id=root.gap_id, text=root.text, opened_round=1,
+                importance="high", attempted_by=(_A(1, "molina care management"),))
+    st = RoundState(round_index=2, open_gaps=(tried,), gaps_open_history=(1,),
+                    budget=Budget(remaining_s=80.0, remaining_c=3.0, band_s=25.0),
+                    next_round_cost_s=10.4, acting_cost_s=10.0,
+                    validate_cost_s=9.6, question=Q)
+    c = ST.Ctx(state=st, round_index=2, max_rounds=10, tier="thinking",
+               kept=17, gap=tried)
+    txt, _ = F.render(c, Posture.EXPLORE)
+    # The question must not appear as a quoted gap, nor under §5.
+    assert "[§5" not in txt, "the root gap was listed as an open PART"
+    assert Q not in txt, "a statement quoted the whole question as a gap"
+
+
+def test_the_role_matches_the_round_when_no_part_is_named_yet():
+    """§6 said "find evidence that closes a named open part" directly above a
+    statement saying "name each part still missing". Two authors, one round.
+    The condition is "no NAMED part yet" -- the same one EVD-1 selects on."""
+    from app.pipeline.v2.posture import seed_root_gap
+    root = seed_root_gap(Q)
+    st = RoundState(round_index=2, open_gaps=(root,), gaps_open_history=(1,),
+                    budget=Budget(remaining_s=80.0, remaining_c=3.0, band_s=25.0),
+                    next_round_cost_s=10.4, acting_cost_s=10.0,
+                    validate_cost_s=9.6, question=Q)
+    c = ST.Ctx(state=st, round_index=2, max_rounds=10, tier="thinking",
+               kept=17, gap=root)
+    txt, _ = F.render(c, Posture.EXPLORE)
+    assert F.DISCOVER_ROLE in txt
+    assert "closes a named open part" not in txt
+
+
+def test_a_narrowed_round_is_not_an_ignored_instruction():
+    """THE FALSE POSITIVE. An honest, fully compliant round -- told to work one
+    part, queried that part -- scored `parts: IGNORED` because the query named
+    1 of 3. A follow-rate built on that is permanently red, and the "fix" would
+    have been to correct a prompt that was working.
+
+    "Cover every part in one query" is the ROUND-1 instruction; from round 2
+    the governor names one part and says the others are not for this round.
+    """
+    r = C.check_parts({"parts": [MOL, SUN, UHC], "working_gap": "S384280"},
+                      {"inputs": {"query": SUN}}, [MOL, SUN, UHC])
+    assert r.verdict is C.Verdict.UNOBSERVABLE
+    assert "instructed" in r.basis
+
+    # And round 1 -- no working_gap -- must still catch the real failure.
+    r1 = C.check_parts({"parts": [MOL, SUN, UHC], "working_gap": None},
+                       {"inputs": {"query": MOL}}, [MOL, SUN, UHC])
+    assert r1.verdict is C.Verdict.IGNORED, (
+        "scoping the check must not disarm it on the round it exists for"
+    )

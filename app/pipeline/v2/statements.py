@@ -131,6 +131,23 @@ def _last_query(gap: Gap | None) -> str:
     return ", ".join(f'"{q}"' for q in qs) or "(not recorded)"
 
 
+def _named_gap(c: Ctx) -> Gap | None:
+    """The gap a statement may SPEAK ABOUT, or None.
+
+    THE ROOT GAP IS THE QUESTION, NOT A PART. Rendering it into a gap-shaped
+    sentence produces lines like "one more round is authorised if it closes
+    <the entire question>" and "<the entire question> was searched once and is
+    still open" -- both true of a ledger row and both nonsense to read.
+
+    Found by rendering round 2 locally rather than deploying: EVD-4 already
+    excluded the root, and five other statements did not, because the
+    exclusion was written as one statement's condition instead of as the
+    property it actually is.
+    """
+    g = c.gap
+    return None if (g is None or g.gap_id == ROOT_GAP_ID) else g
+
+
 def _unattempted(c: Ctx) -> Gap | None:
     """A material gap with no attempt KNOWN to have aimed at it.
 
@@ -162,7 +179,7 @@ REGISTRY: tuple[Statement, ...] = (
               conflicts=frozenset({"CTL-5", "EVD-4", "STR-1", "STR-2", "STR-3"})),
     Statement("CTL-5", Slot.BOUND, Group.CONTROL,
               frozenset({Posture.EXPLORE, Posture.VALIDATE}),
-              when=lambda c: may_overrun(c.state)[0] and c.gap is not None,
+              when=lambda c: may_overrun(c.state)[0] and _named_gap(c) is not None,
               block_key="governor.ctl_overrun_authorised",
               params=lambda c: {"gap": _q(c.gap)}),
 
@@ -199,36 +216,35 @@ REGISTRY: tuple[Statement, ...] = (
     # ── E5 TARGET ───────────────────────────────────────────────────────────
     Statement("EVD-4", Slot.TARGET, Group.EVIDENCE,
               frozenset({Posture.EXPLORE, Posture.VALIDATE}),
-              when=lambda c: c.gap is not None and len(c.material) > 1
-                             and c.gap.gap_id != ROOT_GAP_ID,
+              when=lambda c: _named_gap(c) is not None and len(c.material) > 1,
               block_key="governor.evd_work_this_gap",
               params=lambda c: {"gap": _q(c.gap)}),
 
     # ── E6 APPROACH ─────────────────────────────────────────────────────────
     Statement("STR-1", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-              when=lambda c: c.gap is not None and len(targeted_attempts(c.gap)) == 1,
+              when=lambda c: _named_gap(c) is not None and len(targeted_attempts(c.gap)) == 1,
               block_key="governor.str_searched_once",
               params=lambda c: {"gap": _q(c.gap), "prior_queries": _last_query(c.gap)},
               # Both say "stay on this gap and ask differently". Two near-
               # identical lines teach the model to skim the block.
               conflicts=frozenset({"STR-3"})),
     Statement("STR-2", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-              when=lambda c: c.gap is not None and stuck(c.gap, c.round_index),
+              when=lambda c: _named_gap(c) is not None and stuck(c.gap, c.round_index),
               block_key="governor.str_stuck",
               params=lambda c: {"gap": _q(c.gap), "prior_queries": _last_query(c.gap)}),
     Statement("STR-3", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-              when=lambda c: c.gap is not None
+              when=lambda c: _named_gap(c) is not None
                              and closure_trend(c.gap) is Trend.INCREASING,
               block_key="governor.str_closing",
               params=lambda c: {"gap": _q(c.gap)}),
     Statement("STR-4", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-              when=lambda c: c.gap is not None
+              when=lambda c: _named_gap(c) is not None
                              and closure_trend(c.gap) is Trend.DECREASING,
               block_key="governor.str_falling",
               params=lambda c: {"gap": _q(c.gap)}),
     Statement("STR-5", Slot.APPROACH, Group.STRATEGY,
               frozenset({Posture.ALTERNATIVES, Posture.EXPLORE}),
-              when=lambda c: c.gap is not None and c.tier == "thinking"
+              when=lambda c: _named_gap(c) is not None and c.tier == "thinking"
                              and unreachable(c.gap, c.round_index),
               block_key="governor.str_unreachable",
               params=lambda c: {"gap": _q(c.gap)}),

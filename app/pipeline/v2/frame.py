@@ -33,6 +33,15 @@ from app.pipeline.v2.posture import (
 # Posture -> the role, in react's language rather than the machine's. NOT a
 # posture name: "narrow" means nothing to the model, and a label it cannot act
 # on is a label that changes nothing.
+# EXPLORE has TWO roles and the posture alone cannot tell them apart.
+# Directive.DISCOVER means "no part is named yet -- find out what is missing";
+# CLOSE means "one part is named -- go get it". Rendering the CLOSE role on a
+# DISCOVER round says "find evidence that closes a named open part" directly
+# above a statement saying "name each part still missing", which is a
+# contradiction the model has to resolve for us. Found by rendering round 2.
+DISCOVER_ROLE = ("work out what this question still needs — review what came "
+                 "back and name each part that is missing")
+
 ROLE: dict[Posture, str] = {
     Posture.FRAME: "read the question and decide what it is actually asking",
     Posture.EXPLORE: "find evidence that closes a named open part",
@@ -76,20 +85,38 @@ def _gap_line(g: Gap, current_round: int) -> list[str]:
     return out
 
 
-def render(c: ST.Ctx, posture: Posture) -> tuple[str | None, ST.Selection]:
+def render(c: ST.Ctx, posture: Posture,
+           directive=None) -> tuple[str | None, ST.Selection]:
     """The governor's sections, in execution order, plus the ack request."""
     sel = ST.select(c, posture)
     gaps = c.state.open_gaps
     parts: list[str] = []
 
     # ── §5 OPEN GAPS ────────────────────────────────────────────────────────
+    # §5 is the ledger of PARTS. When the only open gap is the root, there are
+    # no parts yet -- the question is already in §3, and repeating it under a
+    # "[§5 OPEN PARTS]" heading tells react it has an unsearched part when what
+    # it actually has is an unanswered question.
+    from app.pipeline.v2.posture import ROOT_GAP_ID as _ROOT
+    gaps = tuple(g for g in gaps if g.gap_id != _ROOT)
     if gaps and c.round_index > 1:
         parts.append("[§5 OPEN PARTS — the governor's ledger across rounds]")
         for g in gaps:
             parts.extend(_gap_line(g, c.round_index))
 
     # ── §6 ROLE ─────────────────────────────────────────────────────────────
-    role = ROLE.get(posture)
+    from app.pipeline.v2.posture import Directive as _Dir
+    # "No NAMED part yet" is the real condition, and it is the same one EVD-1
+    # already selects on. select() can return CLOSE here -- the root gap has an
+    # attempt, so by its lights there is something to close -- but the root is
+    # the QUESTION, and a round whose only open gap is the question is a round
+    # for finding out what the parts are. Deriving the role from the directive
+    # ALONE made §6 say "close a named open part" directly above "name each
+    # part still missing". Two authors, one round.
+    _no_named_part = not gaps          # gaps already has the root filtered out
+    role = (DISCOVER_ROLE
+            if (directive is _Dir.DISCOVER or _no_named_part)
+            else ROLE.get(posture))
     if role:
         parts.append(f"[§6 ROLE this round] {role}")
 

@@ -4849,7 +4849,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             gap=_steer_gap,
                         )
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
-                            _v2_ctx, _v2ps_decision.posture)
+                            _v2_ctx, _v2ps_decision.posture,
+                            directive=_v2ps_decision.directive)
                         # Fires ONCE. Leaving it set would re-ask the dissent
                         # every round after a single proposal -- nagging, and
                         # it would make the compliance signal meaningless.
