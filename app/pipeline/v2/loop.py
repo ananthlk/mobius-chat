@@ -271,6 +271,10 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
                                  stage=f"react_{rn}")
             res.rounds[-1]["v2_prompt_source"] = prompt_source
+            try:
+                ctx.v2_prompt_source = prompt_source
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("[v2.loop] round %s model call failed: %s", rn, exc)
             res.stopped_by = "model_error"

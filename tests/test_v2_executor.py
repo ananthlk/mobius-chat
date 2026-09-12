@@ -665,3 +665,74 @@ def test_the_call_site_TELLS_decide_the_model_proposed_complete():
     src = _react_src()
     i = src.index("_v2x.decide(")
     assert "model_proposes_complete=True" in src[i:i + 400]
+
+
+# ── the self-report gate ────────────────────────────────────────────────────
+
+def test_an_answer_that_contradicts_its_own_confidence_note_is_flagged():
+    """cid 403d0e59: the SAME JSON said "No sources were provided to answer the
+    question" and then answered it in full, including a fabricated Centene
+    claim. confidence_note is carried through six places in this codebase and
+    gated by none — the fourteenth producer-without-a-consumer here, and the
+    most consequential, because the missing consumer would have stopped an
+    ungrounded answer reaching a person."""
+    bad, why = ex.self_report_contradicts_answer({
+        "confidence_note": "No sources were provided to answer the question.",
+        "direct_answer": "Molina, Sunshine Health and United Healthcare differ in…",
+    })
+    assert bad and "confidence_note" in why
+
+
+def test_an_HONEST_no_answer_is_NOT_flagged():
+    """"I could not find this" with zero sources is CORRECT behaviour. Flagging
+    it would punish the one response we most want — and would push the system
+    back toward answering anyway, which is the defect."""
+    ok, _ = ex.self_report_contradicts_answer({
+        "confidence_note": "No sources were provided to answer the question.",
+        "direct_answer": "",
+    }, source_count=0)
+    assert not ok
+
+
+def test_zero_sources_alone_never_triggers_it():
+    """Corroboration, never the sole tell. Plenty of legitimate answers have no
+    corpus sources — the product-identity path answers from a different
+    knowledge base, and the clarifying-question path answers with no evidence
+    by design."""
+    ok, _ = ex.self_report_contradicts_answer(
+        {"direct_answer": "Short answer."}, source_count=0)
+    assert not ok
+
+
+def test_unknown_source_count_is_not_treated_as_zero():
+    """None means UNKNOWN. A caller that does not know must not be forced to
+    guess, and could-not-check reported as checked-false is a shape this
+    program has found eight times."""
+    ok, _ = ex.self_report_contradicts_answer(
+        {"direct_answer": "x" * 900}, source_count=None)
+    assert not ok
+
+
+def test_the_gate_REPORTS_and_never_rewrites():
+    """A function that silently blanked an answer would be a worse failure than
+    the one it fixes. What to do about a contradicted answer is the caller's
+    decision."""
+    import ast, inspect
+    tree = ast.parse(inspect.getsource(ex.self_report_contradicts_answer))
+    for n in ast.walk(tree):
+        assert not isinstance(n, ast.Assign) or not any(
+            isinstance(t, ast.Subscript) for t in n.targets), \
+            "the gate mutates the envelope"
+
+
+def test_the_self_report_gate_runs_on_BOTH_arms():
+    """It is a property of the ANSWER, not of the orchestrator. An ungrounded
+    v1 answer matters exactly as much as an ungrounded v2 one, and gating only
+    v2 would make the comparison look like v2 has a problem v1 does not."""
+    orch = pathlib.Path("app/pipeline/orchestrator.py").read_text()
+    i = orch.index("SELF-REPORT GATE")
+    block = orch[i:i + 1600]
+    assert "self_report_contradicts_answer" in block
+    assert 'orchestrator_version' in block, "the log does not say which arm"
+    # it must NOT be gated on the arm
+    assert '== "v2"' not in block, "the gate only runs on one arm"

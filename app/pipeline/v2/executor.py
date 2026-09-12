@@ -349,3 +349,73 @@ POPULATION_MISMATCH = (
     "select() counts all open_gaps; exit_mode() counts only gaps at or above "
     "min_importance. Same state, same round, two answers. Filed 2026-09-11."
 )
+
+
+# ── THE SELF-REPORT GATE ────────────────────────────────────────────────────
+#
+# On cid 403d0e59 the SAME JSON object carried both of these:
+#
+#   confidence_note: "No sources were provided to answer the question."
+#   gaps:            "Information regarding the care management philosophies
+#                     of Molina, Sunshine Health, and United Healthcare is
+#                     missing."
+#   direct_answer:   a full three-payer comparison, including a Centene claim
+#
+# The model correctly assessed its own evidence state AND answered anyway, and
+# the pipeline published both. `confidence_note` is carried through six places
+# in this codebase and gated by NONE of them -- the fourteenth
+# producer-without-a-consumer found here, and the most consequential, because
+# the missing consumer would have stopped an ungrounded answer reaching a
+# person.
+#
+# The LLM seat's react.grounding_contract makes the model LESS LIKELY to do it.
+# This makes it detectable. A prompt asks; a check catches. They are
+# complementary and neither replaces the other.
+#
+# PURE, and deliberately narrow: it reports, it does not rewrite. What to do
+# about a contradicted answer is the caller's decision, and a function that
+# silently blanked an answer would be a worse failure than the one it fixes.
+
+_NO_EVIDENCE_TELLS = (
+    "no sources were provided",
+    "no sources available",
+    "no relevant sources",
+    "without any sources",
+    "no documents were provided",
+    "no evidence was",
+)
+
+
+def self_report_contradicts_answer(envelope: dict | None,
+                                   source_count: int | None = None) -> tuple[bool, str]:
+    """(contradicted, why). Does the answer's own metadata say it had nothing?
+
+    Two independent tells, both from the model's OWN output rather than from a
+    judgement about content:
+
+      * confidence_note states plainly that no sources were provided, AND
+      * a substantive answer was nevertheless produced
+
+    `source_count` corroborates when the caller has it: zero sources beside a
+    long answer is the same contradiction from the other side. It is optional
+    because a caller that does not know must not be forced to guess -- None
+    means UNKNOWN, never zero.
+    """
+    if not isinstance(envelope, dict):
+        return False, ""
+    note = str(envelope.get("confidence_note") or "").strip().lower()
+    answer = str(envelope.get("direct_answer") or envelope.get("answer") or "").strip()
+    if not answer:
+        return False, ""
+
+    said_none = any(t in note for t in _NO_EVIDENCE_TELLS)
+    if said_none:
+        return True, (f"the answer's own confidence_note says it had no sources "
+                      f"and it answered anyway ({len(answer)} chars): {note[:120]!r}")
+    # Corroboration only -- never the sole trigger. A short, honest "I could
+    # not find this" with zero sources is CORRECT behaviour and must not be
+    # flagged; the tell is a SUBSTANTIVE answer with nothing behind it.
+    if source_count == 0 and len(answer) > 600:
+        return True, (f"{len(answer)} chars of answer with zero sources and no "
+                      f"confidence_note explaining it")
+    return False, ""

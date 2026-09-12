@@ -1194,6 +1194,33 @@ def run_pipeline(
                 capture_if_harness_arm(correlation_id)
             except Exception:
                 logger.exception("[ab] capture hook failed")
+            # ── SELF-REPORT GATE ───────────────────────────────────────────
+            # Does the answer's own confidence_note say it had no sources,
+            # while it answered anyway? On cid 403d0e59 both shipped in one
+            # JSON object and nothing read the field. REPORTS, never rewrites:
+            # silently blanking a published answer would be a worse failure
+            # than the one it catches, and this runs AFTER publish.
+            #
+            # Deliberately on BOTH arms -- it is a property of the answer, not
+            # of the orchestrator, and an ungrounded v1 answer matters exactly
+            # as much as an ungrounded v2 one.
+            try:
+                from app.pipeline.v2.executor import self_report_contradicts_answer
+                _env = (getattr(ctx, "response_payload", None) or {}).get(
+                    "assistant_envelope") if isinstance(
+                    getattr(ctx, "response_payload", None), dict) else None
+                _card = _env if isinstance(_env, dict) else getattr(ctx, "answer_card", None)
+                _bad, _why = self_report_contradicts_answer(
+                    _card if isinstance(_card, dict) else None,
+                    source_count=len(getattr(ctx, "all_sources", None) or []) or None,
+                )
+                if _bad:
+                    logger.warning("[grounding] UNGROUNDED-BY-SELF-REPORT cid=%s arm=%s: %s",
+                                   correlation_id[:8],
+                                   getattr(ctx, "orchestrator_version", "v1"), _why)
+                    ctx.ungrounded_self_report = _why
+            except Exception:
+                logger.exception("[grounding] self-report gate failed")
         except Exception:
             logger.exception("[promise] attestation close failed cid=%s",
                              correlation_id[:8])
