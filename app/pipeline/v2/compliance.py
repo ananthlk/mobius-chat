@@ -438,3 +438,69 @@ def check_complete(ack: dict, this_round: dict) -> AckCheck:
     return AckCheck("complete", Verdict.IGNORED, str(claimed), str(actual),
                     f"ack said complete={claimed} while the response set "
                     f"is_complete={actual}")
+
+
+# ── "was another round worth it?" — the claim, checked against what happened ──
+#
+# Ananth, 2026-09-12: "the governor knows if a next round is feasible.. so the
+# question to llm is .. do you think another round is worth it to improve the
+# score.. lets see what it says we dont have to rely on it, just asking may be
+# helpful".
+#
+# NOT A GATE. Nothing reads this verdict to decide anything -- it exists to
+# build the record that would let us decide later, and it says so. The useful
+# number is the DISAGREEMENT rate: how often "another round is worth it" was
+# followed by a round that closed nothing. An ack that always agrees with what
+# happened is measuring nothing and should be deleted.
+#
+# This is also the only ack whose truth arrives AFTER the round that made the
+# claim, which is why it is checked at turn end against the following round
+# rather than inline.
+
+def check_next_round_worth(ack: dict, this_round: dict,
+                           next_round: dict | None) -> tuple[Verdict, str]:
+    """Did the next round deliver what the claim promised it would?
+
+    FOLLOWED      claimed worth it AND the next round closed a gap or kept new
+                  evidence; or claimed NOT worth it and the turn stopped.
+    IGNORED       claimed worth it and the next round changed nothing -- the
+                  round was bought on a promise it did not keep.
+    UNOBSERVABLE  no claim, or no next round to judge it by. A turn that ended
+                  for BUDGET reasons cannot tell us whether the model's
+                  judgement was right, and scoring that as correct would credit
+                  the claim for our own decision to stop.
+    """
+    claim = (ack or {}).get("next_round_worth_it")
+    if not isinstance(claim, bool):
+        return Verdict.UNOBSERVABLE, "no next_round_worth_it in the ack"
+
+    if next_round is None:
+        if claim is False:
+            # It said stop and the turn stopped. Weak evidence -- the turn may
+            # have stopped for budget -- so it is named as agreement, not proof.
+            return Verdict.FOLLOWED, "said another round would not help; turn ended"
+        return (Verdict.UNOBSERVABLE,
+                "said another round would help, but no next round ran — "
+                "cannot tell a wrong call from a budget stop")
+
+    enr = (next_round or {}).get("enrichment") or {}
+    closed = list(enr.get("gaps_closed") or ())
+    kept = enr.get("kept")
+    moved = bool(closed) or (isinstance(kept, int) and kept > 0)
+
+    if claim and moved:
+        return Verdict.FOLLOWED, (
+            f"next round closed {len(closed)} gap(s)" if closed
+            else f"next round kept {kept} new chunk(s)")
+    if claim and not moved:
+        return Verdict.IGNORED, (
+            "said another round would help; the next round closed nothing and "
+            "kept nothing")
+    if not claim and moved:
+        # It said stop, we went anyway, and the round paid off. That is OUR
+        # call being wrong-footed, not the model's -- recorded as DECLINED so
+        # it never reads as the model having ignored an instruction.
+        return Verdict.DECLINED, (
+            "said another round would not help, but the round that ran did "
+            "close something")
+    return Verdict.FOLLOWED, "said another round would not help; it did not"

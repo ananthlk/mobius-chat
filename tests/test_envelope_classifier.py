@@ -540,3 +540,82 @@ class TestMultiSection:
     def test_single_section_remains_reachable(self):
         sections = deterministic_format(self.MIXED, multi_section=False)["sections"]
         assert len(sections) == 1
+
+
+class TestDirectAnswerSplit:
+    """Sections have always been additive to direct_answer. Harmless when one
+    section rendered; with every block becoming a section, the unsplit draft
+    means the reader sees the same rows, steps and phone numbers twice."""
+
+    LONG = (
+        "Sunshine Health's appeal process runs in three levels, and the clock on each "
+        "one starts from a different event.\n\n"
+        "| Level | Deadline |\n| --- | --- |\n| Level 1 | 90 days |\n| Level 2 | 60 days |\n\n"
+        "Expedited review is available where a delay would jeopardize the member's health.\n\n"
+        "Step 1: Pull the original claim and the EOP\n"
+        "Step 2: Complete the dispute form in full\n"
+    )
+
+    def test_block_content_leaves_the_answer_line(self):
+        card = deterministic_format(self.LONG)
+        answer = card["direct_answer"]
+        assert "| Level |" not in answer
+        assert "Step 1:" not in answer
+        assert "90 days" not in answer
+
+    def test_prose_between_blocks_survives(self):
+        answer = deterministic_format(self.LONG)["direct_answer"]
+        assert "runs in three levels" in answer
+        assert "Expedited review is available" in answer
+
+    def test_the_blocks_still_render_as_sections(self):
+        """The content moved, it did not vanish."""
+        sections = deterministic_format(self.LONG)["sections"]
+        assert [s["format"] for s in sections] == ["table", "steps"]
+        assert sections[0]["data"]["rows"][0] == ["Level 1", "90 days"]
+
+    def test_the_gap_a_removed_block_leaves_is_collapsed(self):
+        answer = deterministic_format(self.LONG)["direct_answer"]
+        assert "\n\n\n" not in answer
+
+    def test_facts_left_in_the_prose_are_still_bolded(self):
+        draft = (
+            "Claims must be filed within 180 days of service.\n\n"
+            "- Original claim number\n- Denial CARC\n- Medical records\n"
+        )
+        card = deterministic_format(draft)
+        assert "**180 days**" in card["direct_answer"]
+        assert len(card["sections"]) == 1
+
+    def test_an_all_structure_draft_keeps_its_full_answer_line(self):
+        """direct_answer is the STREAMED anchor. Blanking it leaves the user
+        watching an empty bubble until the card lands, so a draft with no
+        prose at all falls back to the full text -- mild duplication beats a
+        turn that looks broken while it loads."""
+        draft = "Initial filing: 180 days\nResubmission: 90 days\nCopay: $25"
+        card = deterministic_format(draft)
+        assert card["sections"]
+        assert "**180 days**" in card["direct_answer"]
+
+    def test_a_draft_with_no_sections_is_untouched(self):
+        draft = "Sunshine Health requires claims within 180 days of service."
+        card = deterministic_format(draft)
+        assert card["sections"] == []
+        assert card["direct_answer"] == "Sunshine Health requires claims within **180 days** of service."
+
+    def test_a_gated_draft_keeps_its_full_answer_line(self):
+        """The raw-excerpt gate abstains on every block, so nothing rendered
+        -- the excerpt must reach the user whole."""
+        draft = (
+            "[1] Sunshine Provider Manual\n"
+            "- Submit within 90 days\n- Include cover letter\n- Attach records\n"
+        )
+        card = deterministic_format(draft)
+        assert card["sections"] == []
+        assert "Submit within" in card["direct_answer"]
+
+    def test_single_section_mode_still_keeps_the_whole_draft(self):
+        """The split belongs to the segmented path; the fallback path has no
+        block boundaries to split on."""
+        card = deterministic_format(self.LONG, multi_section=False)
+        assert "| Level |" in card["direct_answer"]

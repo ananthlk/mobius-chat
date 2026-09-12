@@ -368,6 +368,36 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
             if prof.get(key):
                 prefs.append(f"{key}: {prof[key]}")
 
+    # ── THE THREAD'S STORED EVIDENCE ───────────────────────────────────
+    # Ananth: "we also need it to store the facts/things it found useful vs not
+    # useful (so that we dont have to send it again)".
+    #
+    # THIS IS THE READ THAT MAKES THE WRITE WORTH ANYTHING. Without it the
+    # ledger is a table nobody opens -- the producer-with-no-consumer defect,
+    # with a schema. Stored facts come FIRST because they are already judged:
+    # a fact costs ~100 characters to carry where the passage behind it costs
+    # ~9,000, and it survives the chunks it came from.
+    #
+    # Fail-soft: a store that is down must not cost the turn its in-turn
+    # memory, so this only ever ADDS to what the rounds already produced.
+    stored_useful: list[str] = []
+    try:
+        from app.pipeline.v2 import store as _v2store
+        _su, _snu = _v2store.load_evidence(str(getattr(ctx, "thread_id", "") or ""))
+        for _f in _su:
+            # The FACT is what we re-send, with its provenance attached so it
+            # stays checkable. Falling back to the label alone when a row has
+            # no fact text keeps an older row usable instead of dropping it.
+            _line = (f"{_f['fact']} [{_f['label']}]" if _f.get("fact")
+                     else str(_f.get("label") or ""))
+            if _line and _line not in stored_useful:
+                stored_useful.append(_line)
+        for _l in _snu:
+            if _l and _l not in discarded:
+                discarded.append(_l)
+    except Exception:
+        pass
+
     return Facts(
         question=(getattr(ctx, "message", None) or "").strip(),
         user_name=str(prof.get("display_name") or "") if isinstance(prof, dict) else "",
@@ -378,7 +408,9 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         preloaded=tuple((p.get("tool"), bool(p.get("ok")), str(p.get("summary") or ""))
                         for p in (preloaded or [])),
         suggest=tuple(suggest),
-        useful=tuple(useful[-3:]),          # recent, not the whole turn
+        # Stored facts first, then this turn's own -- the stored ones are
+        # already judged and cost a fraction of the passages they replace.
+        useful=tuple((stored_useful + useful)[-5:]),
         discarded=tuple(discarded[-3:]),
         can_complete=True,
     )

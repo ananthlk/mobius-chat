@@ -63,6 +63,31 @@ ACK_KEYS: tuple[tuple[str, str], ...] = (
                 "'declined — <reason>'"),
 )
 
+# Asked ONLY when the governor has already decided another round is affordable.
+#
+# Ananth, 2026-09-12: "the governor knows if a next round is feasible.. so the
+# question to llm is .. do you think another round is worth it to improve the
+# score.. lets see what it says we dont have to rely on it, just asking may be
+# helpful".
+#
+# The split is the point: FEASIBLE is ours (budget, rounds left) and WORTH IT
+# is theirs (would more evidence change the answer). Asking when we cannot
+# afford it invites a yes we cannot honour, and teaches the model its answer
+# does not matter.
+#
+# The price is in the question because it is now measured, not guessed: a
+# second round costs 3.26x the first in dollars and 2.82x in latency across
+# 3,342 production turns. "Is it worth it" with no cost attached is a question
+# whose answer is always yes.
+NEXT_ROUND_ACK_KEYS: tuple[tuple[str, str], ...] = (
+    ("next_round_worth_it", "true/false — would ANOTHER round materially "
+                            "improve this answer? A further round costs "
+                            "roughly 3x this one. Say false if more searching "
+                            "would return the same thing"),
+    ("next_round_why", "one clause: what specifically the next round would "
+                       "get that this one did not"),
+)
+
 
 def _gap_line(g: Gap, current_round: int) -> list[str]:
     tried = targeted_attempts(g)
@@ -138,7 +163,8 @@ def preload_sections(executed: list[dict], suggest: tuple[str, ...]) -> list[str
 def render(c: ST.Ctx, posture: Posture,
            directive=None, *, preloaded: list[dict] | None = None,
            suggest: tuple[str, ...] = (),
-           facts=None) -> tuple[str | None, ST.Selection]:
+           facts=None,
+           next_round_feasible: bool = False) -> tuple[str | None, ST.Selection]:
     # NOTE: `preloaded` shadows nothing -- it is the executed-tool list, and
     # its truthiness is what makes this a judgement round.
     """The governor's sections, in execution order, plus the ack request."""
@@ -225,7 +251,8 @@ def render(c: ST.Ctx, posture: Posture,
 
     # ── the ack ─────────────────────────────────────────────────────────────
     parts.append("[ACK — return these in your JSON as \"ack\": {...}]")
-    parts.extend(f"  {k}: {desc}" for k, desc in ACK_KEYS)
+    _ack_keys = ACK_KEYS + (NEXT_ROUND_ACK_KEYS if next_round_feasible else ())
+    parts.extend(f"  {k}: {desc}" for k, desc in _ack_keys)
     parts.append("  Each is checked against what this round actually does. "
                  "A claim here that the round contradicts is worse than "
                  "leaving it out — say what you are doing, not what looks right.")

@@ -5360,7 +5360,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             ctx, _steer_state,
                             targeted_gap=(_steer_gap.text if _steer_gap else ""),
                             preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
-                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
+                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()),
+                            # ONLY ASK WHEN WE COULD ACTUALLY GO AGAIN.
+                            # Feasible is ours (rounds left, budget); worth it
+                            # is theirs. Asking when we cannot afford it
+                            # invites a yes we cannot honour and teaches the
+                            # model its answer does not matter.
+                            next_round_feasible=(
+                                rn < max_it
+                                and (ctx.react_hard_ceiling_s or 0) > _pp_elapsed_s))
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
                             _v2_ctx, _v2ps_decision.posture,
                             directive=_v2ps_decision.directive,
@@ -5370,7 +5378,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # producer-with-no-consumer defect with a retrieval
                             # bill attached.
                             preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
-                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
+                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()),
+                            # ONLY ASK WHEN WE COULD ACTUALLY GO AGAIN.
+                            # Feasible is ours (rounds left, budget); worth it
+                            # is theirs. Asking when we cannot afford it
+                            # invites a yes we cannot honour and teaches the
+                            # model its answer does not matter.
+                            next_round_feasible=(
+                                rn < max_it
+                                and (ctx.react_hard_ceiling_s or 0) > _pp_elapsed_s))
                         # Fires ONCE. Leaving it set would re-ask the dissent
                         # every round after a single proposal -- nagging, and
                         # it would make the compliance signal meaningless.
@@ -5416,71 +5432,63 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # only thing that explains why a second search is
                             # not a repeat of the first.
                             # ── THE STANDARD ROUND REPORT ───────────────
-                            # Ananth, 2026-09-12: "this is the standard ..
-                            # output.. rag posture assumed: summary of the
-                            # request .. running answer (summary unless this is
-                            # communicate):: open gaps :; next tools ::"
-                            #
-                            # One shape every round, so a reader can diff round
-                            # N against round N+1 and see what moved. Before
-                            # this, the running answer existed only in the logs
-                            # and the final message -- a user watching a 187s
-                            # turn saw rag narrate and react say nothing, and
-                            # could not tell a round that advanced from one
-                            # that did not.
-                            emit(f"  ┌ posture: {_v2ps_decision.posture.value}"
-                                 + (f" · gap: {_steer_gap.text}"
-                                    if _steer_gap is not None else ""))
-                            emit(f"  │ asking:  {(_v2_facts.targeted_gap or _v2_facts.question)[:120]}")
-                            # The running answer, carried from the previous
-                            # round's evidence_review. SUMMARISED unless the
-                            # round's job is to communicate -- on a COMMUNICATE
-                            # round the full text is the deliverable, not a
-                            # progress note.
-                            _ra = str(_prev_enr.get("running_answer") or "").strip()
-                            if _ra:
-                                _communicating = (
-                                    "role_communicate"
-                                    in _v2bl.frame_sections(_v2_facts)[1])
-                                emit("  │ answer:  "
-                                     + (_ra if _communicating else _ra[:220]
-                                        + ("…" if len(_ra) > 220 else "")))
-                            else:
-                                emit("  │ answer:  nothing yet")
-                            _open_now = [g.text for g in _steer_state.open_gaps]
-                            emit("  │ open:    "
-                                 + ("; ".join(_open_now[:4]) if _open_now
-                                    else "none"))
-                            # NEXT TOOLS: what the next round may ask for. Empty
-                            # is said out loud -- an absent line reads as "no
-                            # tools needed" when it means "the selector never
-                            # answered", which is what happens when toolreg is
-                            # unreachable.
-                            _nx = tuple(getattr(ctx, "_v2_suggest", None) or ())
-                            emit("  └ next:    "
-                                 + (" · ".join(_nx) if _nx
-                                    else "(no suggestions — selector unavailable)"))
-                            # Roles in the user's language, not the registry's
-                            # ids. "role_summarise" means nothing to a reader.
-                            _ROLE_WORDS = {
-                                "role_judge": "judging what came back",
-                                "role_plan": "choosing the next source",
-                                "role_summarise": "writing what the evidence supports",
-                                "role_communicate": "answering every part asked",
-                                "role_critic": "checking the answer against the evidence",
-                                "role_next_steps": "naming what would close the rest",
-                            }
-                            _role_said = [_ROLE_WORDS[i] for i in
-                                          _v2bl.frame_sections(_v2_facts)[1]
-                                          if i in _ROLE_WORDS]
-                            if _role_said:
-                                emit("     " + " · ".join(_role_said))
-                            # What was already set aside. This is the section
-                            # react has never been told either -- showing it
-                            # lets the user see we are not re-reading it.
-                            if _v2_facts.discarded:
-                                emit(f"     ✗ set aside: "
-                                     + "; ".join(_v2_facts.discarded[:2]))
+                            # Ananth, 2026-09-12: "can we plug in this our
+                            # standard structure and start emitting this".
+                            # One shape every round, carrying everything a
+                            # formatter needs -- he is replacing the enricher
+                            # with it ("i can format it"), so a field a
+                            # renderer must fetch from elsewhere is a field
+                            # this failed to carry. Built in v2/report.py,
+                            # which is pure; this block only supplies facts.
+                            from app.pipeline.v2 import report as _v2rep
+                            _rep_roles = tuple(
+                                i for i in _v2bl.frame_sections(_v2_facts)[1]
+                                if i.startswith("role_"))
+                            _rep_ans = str(_prev_enr.get("running_answer") or "").strip()
+                            _rep_complete = _prev_enr.get("is_complete")
+                            _rep_ack = (_prev_enr.get("ack") or {}) if isinstance(
+                                _prev_enr.get("ack"), dict) else {}
+                            _report = _v2rep.RoundReport(
+                                round_index=rn,
+                                roles=_rep_roles,
+                                thread_summary=str(
+                                    getattr(ctx, "thread_summary", "") or
+                                    getattr(ctx, "previous_thread_summary", "") or ""),
+                                # The running answer IS the turn summary -- one
+                                # author, not a second paraphrase of it.
+                                turn_summary=_rep_ans,
+                                findings=tuple(_prev_enr.get("gaps_closed") or ()),
+                                open_gaps=tuple(
+                                    g.text for g in _steer_state.open_gaps),
+                                next_tools=tuple(
+                                    getattr(ctx, "_v2_suggest", None) or ()),
+                                evidence=_v2_facts.useful,
+                                set_aside=_v2_facts.discarded,
+                                # Only a COMMUNICATE round publishes the full
+                                # answer; report.render() enforces that too.
+                                expanded_answer=_rep_ans,
+                                is_complete=(_rep_complete
+                                             if isinstance(_rep_complete, bool)
+                                             else None),
+                                complete_why=str(_rep_ack.get("complete_why") or ""),
+                                elapsed_s=_pp_elapsed_s,
+                                promise_s=(getattr(_pp_contract, "soft_target_s", None)
+                                           if _pp_contract is not None else None),
+                                rounds_left=max(0, max_it - rn),
+                                next_round_worth_it=(
+                                    _rep_ack.get("next_round_worth_it")
+                                    if isinstance(_rep_ack.get("next_round_worth_it"), bool)
+                                    else None),
+                                next_round_why=str(
+                                    _rep_ack.get("next_round_why") or ""),
+                            )
+                            emit(_v2rep.render(_report))
+                            # The machine-readable twin, for the formatter and
+                            # for anything downstream that should not have to
+                            # parse the human form back out.
+                            ctx.v2_round_reports = list(
+                                getattr(ctx, "v2_round_reports", None) or [])
+                            ctx.v2_round_reports.append(_v2rep.to_dict(_report))
                             # The roles, logged separately from the statements.
                             # Which roles a round carried is the thing to read
                             # back when an answer judges but never writes, and
@@ -5953,6 +5961,49 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             if not isinstance(v, list):
                 return []
             return [str(x).strip() for x in v if str(x).strip()]
+
+        # ── THE V2 CONTRACT: parse, store, and carry forward ────────────
+        # Ananth, 2026-09-12: "lets get the contract for react structured..
+        # over time this is gold.. we also need it to store the facts/things it
+        # found useful vs not useful (so that we dont have to send it again)"
+        # and "this is the most critical thing we can build".
+        #
+        # Parsed from the SAME decision dict the loop already uses -- not a
+        # second call and not a second parse of the raw string. It reads v1's
+        # shape too (the live prompt still asks for it) and records WHICH shape
+        # arrived, so the migration is visible in the table rather than assumed.
+        if getattr(ctx, "orchestrator_version", "v1") == "v2":
+            try:
+                from app.pipeline.v2 import contract as _v2c
+                from app.pipeline.v2 import store as _v2store
+                _v2_resp = _v2c.parse(decision if isinstance(decision, dict) else None)
+                _v2store.save_round(_v2c.to_row(
+                    _v2_resp,
+                    correlation_id=(ctx.correlation_id or ""),
+                    thread_id=(ctx.thread_id or ""),
+                    round_index=rn))
+                # THE LEDGER THAT STOPS US RE-SENDING. Facts carry across
+                # turns at ~100 chars each; the passages behind them cost
+                # ~9,000. Only grounded facts are stored -- a fact with no
+                # document cannot be checked later and would re-enter the next
+                # turn as an unsourced claim.
+                _v2store.record_evidence(
+                    (ctx.thread_id or ""),
+                    correlation_id=(ctx.correlation_id or ""),
+                    useful=[{"document": f.document, "page": f.page,
+                             "fact": f.fact}
+                            for f in _v2_resp.facts if f.grounded],
+                    not_useful=_v2_resp.not_useful)
+                logger.info("[v2.contract] cid=%s round=%s shape=%s facts=%d "
+                            "not_useful=%d problems=%s",
+                            (ctx.correlation_id or "")[:8], rn,
+                            _v2_resp.shape_seen, len(_v2_resp.facts),
+                            len(_v2_resp.not_useful),
+                            ";".join(_v2_resp.problems) or "-")
+            except Exception as _v2ce:   # pragma: no cover
+                logger.warning("[v2.contract] failed cid=%s round=%s: %s",
+                               (getattr(ctx, "correlation_id", "") or "")[:8],
+                               rn, _v2ce)
 
         _evidence_review = decision.get("evidence_review")
         if not isinstance(_evidence_review, dict):
