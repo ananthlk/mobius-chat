@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { pickShadowArm, looksLikeCid, type AbComparison } from "./ab-fork";
+import { pickShadowArm, looksLikeCid, cidForArm, abColumns, type AbComparison } from "./ab-fork";
 
 // The REAL payload Governor ships (2026-09-11), copied from a live forked turn. The bug this
 // guards: a value-type scan picked `view` (a permalink URL) as an arm because it was added
@@ -75,6 +75,19 @@ describe("pickShadowArm — reads structure from named fields, not a value's typ
     expect(looksLikeCid("")).toBe(false);
     expect(looksLikeCid(undefined)).toBe(false);
   });
+
+  it("cidForArm reads the served arm's cid too, never the `view` permalink", () => {
+    expect(cidForArm(live, "v2")).toBe("d3068deb-aaaa");   // served
+    expect(cidForArm(live, "v1")).toBe("32b4154e-bbbb");   // shadow
+    expect(cidForArm(live, "view")).toBe("");              // a permalink is not a cid
+  });
+
+  it("abColumns returns served LEFT, shadow RIGHT — order independent of finish", () => {
+    const cols = abColumns(live);
+    expect(cols.map((c) => c.armId)).toEqual(["v2", "v1"]);   // served (thread_arm) first
+    expect(cols[0]).toEqual({ armId: "v2", cid: "d3068deb-aaaa", served: true });
+    expect(cols[1]).toEqual({ armId: "v1", cid: "32b4154e-bbbb", served: false });
+  });
 });
 
 describe("the comparison must survive the .then() chain", () => {
@@ -90,10 +103,13 @@ describe("the comparison must survive the .then() chain", () => {
     // hoisted into the closure, like activeCorrelationId
     expect(src).toContain("let activeComparison: AbComparison | null = null;");
     expect(src).toContain("activeComparison = (data as { comparison?: AbComparison }).comparison");
-    // and the render site must use the hoisted value
-    expect(src).toContain("if (activeComparison && data.status === \"completed\")");
-    // the stream result must NOT be read for it again
+    // The A/B render now branches in the POST .then (both cids are in the POST response),
+    // starting the two-column split off the hoisted value — NOT off the later stream result.
+    expect(src).toContain("if (activeComparison) {");
+    expect(src).toContain("startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison");
+    // the stream result must NEVER be read for the comparison
     expect(src).not.toContain("data.comparison &&");
+    expect(src).not.toContain("data.comparison)");
   });
 
   it("the stream payload genuinely does not carry comparison", () => {

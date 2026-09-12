@@ -605,171 +605,201 @@ function setAbForkComposerHint(on: boolean): void {
   composer?.classList.toggle("composer--ab-fork", on);
 }
 
-/** The in-chat A/B shadow panel. The bubble above is the SERVED answer (thread_arm); this
- *  renders the OTHER arm — clearly labelled as the shadow: a fresh thread, never served, no
- *  memory of prior turns, and this turn's doubled cost. No promotion — the served answer is
- *  and stays the conversation. Polls /chat/response/{shadow_cid} because the shadow may still
- *  be running when the served turn completes (they fork simultaneously but settle apart). */
-/** The shadow's poll window is derived from the SERVED turn's TIER, never a fixed timeout
- *  (Governor 2026-09-11). The shadow can legitimately take the full tier promise + band, and
- *  the tiers are far apart: a copilot shadow lands ~2.5s behind, but an agentic shadow can run
- *  ~4× the served arm and still be on time (v1 took 6 rounds where v2 took 3). A fixed
- *  copilot-sized window dropped exactly the agentic turns where the arms diverge most — which
- *  are the ones worth seeing. The shadow carries no promise of its own (one attestation per
- *  contract), so the window comes from the served arm's tier: promise + band, in ms. */
-function _abShadowWindowMs(tier: "quick" | "copilot" | "agentic"): number {
+/** Sentinel thrown to short-circuit the normal single-bubble render chain for an A/B turn —
+ *  the split view owns the turn, so streamResponse + the completed handler must not also run.
+ *  The chain's .catch checks for this and no-ops instead of rendering a failed turn. */
+const AB_SPLIT_SENTINEL = { __abSplit: true } as const;
+
+/** Tier window (promise + band) in ms — used for a column's "taking longer" hint. */
+function _abTierWindowMs(tier: "quick" | "copilot" | "agentic"): number {
   switch (tier) {
-    case "quick": return (13 + 5) * 1000;      // 18s
-    case "agentic": return (95 + 25) * 1000;   // 120s
-    case "copilot": default: return (31 + 8) * 1000;  // 39s
+    case "quick": return (13 + 5) * 1000;
+    case "agentic": return (95 + 25) * 1000;
+    case "copilot": default: return (31 + 8) * 1000;
   }
 }
 
-function renderAbShadowComparison(
-  comparison: NonNullable<ChatResponse["comparison"]>,
-  tier: "quick" | "copilot" | "agentic" = "copilot",
+/**
+ * The in-chat A/B SPLIT (Ananth 2026-09-11: "simultaneous, really split, same thinking and
+ * everything — everything should be identical"). Both arms forked within 300ms and run in
+ * PARALLEL; this renders two equal columns side by side, EACH streaming its own live trace +
+ * draft + answer, both filling in at once. Symmetry is the requirement — both columns run the
+ * SAME per-column code (`_abLiveColumn`), so any visible difference is a real difference in what
+ * the orchestrator did, never a difference in what the UI chose to render for one side.
+ *
+ * Column order is fixed (served LEFT, shadow RIGHT, from thread_arm), never finish order. The
+ * served/shadow labelling survives the layout — position must not be the only distinguisher,
+ * and no-promotion holds: the served arm IS the thread; the shadow ran on a fresh thread, was
+ * never served, and has no memory of earlier turns.
+ */
+function startAbLiveSplit(
+  turnWrap: HTMLElement,
+  thinkingBlockEl: HTMLElement,
+  comparison: AbComparison,
+  tier: "quick" | "copilot" | "agentic",
+): void {
+  thinkingBlockEl.remove();   // each column carries its OWN trace — the shared one is replaced
+  // Any placeholder answer bubble already appended for the normal path — drop it.
+  turnWrap.querySelectorAll(".answer-card, .assistant-message, .answer-card-bubble").forEach((n) => n.remove());
+
+  const cols = abColumns(comparison);
+  const split = document.createElement("section");
+  split.className = "chat-ab-split";
+
+  const banner = document.createElement("div");
+  banner.className = "chat-ab-split-banner";
+  banner.innerHTML = `<span class="chat-ab-badge">A/B compare</span> Both arms ran on your question at the same instant — doubled cost. `
+    + `The <b>served</b> arm is your thread; the <b>shadow</b> ran on a fresh thread, was never served, and has no memory of earlier turns.`;
+  split.appendChild(banner);
+
+  const grid = document.createElement("div");
+  grid.className = "chat-ab-split-grid";
+  grid.style.setProperty("--ab-cols", String(cols.length || 1));
+  for (const c of cols) grid.appendChild(_abLiveColumn(c, tier));
+  split.appendChild(grid);
+  turnWrap.appendChild(split);
+  turnWrap.scrollIntoView({ block: "nearest" });
+}
+
+/** One arm's live column: header (arm + served/shadow badge), a growing thinking trace, and the
+ *  answer. Opens /chat/stream/{cid} and renders exactly what the served bubble would — thinking
+ *  lines, draft, then the final answer via the production renderEnvelope. Identical for both arms. */
+function _abLiveColumn(
+  col: { armId: string; cid: string; served: boolean },
+  tier: "quick" | "copilot" | "agentic",
 ): HTMLElement {
-  const wrap = document.createElement("section");
-  wrap.className = "chat-ab-shadow";
-  const servedArm = comparison.thread_arm;
-  const { shadowArm, shadowCid } = pickShadowArm(comparison as AbComparison, servedArm);
+  const box = document.createElement("section");
+  box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
 
   const head = document.createElement("div");
-  head.className = "chat-ab-shadow-head";
-  head.innerHTML = `<span class="chat-ab-badge">A/B · block 2 of 2</span> The answer above is arm <b>${servedArm}</b> (served — it is your thread). `
-    + `This block is the shadow arm <b>${shadowArm ?? "—"}</b>: a <b>fresh thread</b>, never served, no memory of earlier turns. Shown for comparison only.`;
-  wrap.appendChild(head);
+  head.className = "chat-ab-col-head";
+  head.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span>`
+    + `<span class="chat-ab-col-role chat-ab-col-role--${col.served ? "served" : "shadow"}">${col.served ? "served · your thread" : "shadow · not served, fresh thread"}</span>`;
+  box.appendChild(head);
 
-  if (!shadowArm || !shadowCid) {
-    // A single-arm comparison should never reach us (Governor: a failed fork degrades to a
-    // normal turn with NO block). If it does, say so plainly rather than imply an empty arm.
-    const note = document.createElement("div");
-    note.className = "chat-ab-shadow-note";
-    note.textContent = "The shadow arm did not report a turn — treat this as a bug, not as an empty answer.";
-    wrap.appendChild(note);
-    return wrap;
+  const trace = document.createElement("div");
+  trace.className = "chat-ab-col-trace";
+  const traceLines: string[] = [];
+  const pushLine = (line: string): void => {
+    const t = (line || "").trim();
+    if (!t || traceLines[traceLines.length - 1] === t) return;   // de-dupe consecutive
+    traceLines.push(t);
+    const row = document.createElement("div");
+    row.className = "chat-ab-trace-line";
+    row.textContent = t;
+    trace.appendChild(row);
+    trace.scrollTop = trace.scrollHeight;
+  };
+  pushLine(`starting ${col.armId}…`);
+  box.appendChild(trace);
+
+  const answer = document.createElement("div");
+  answer.className = "chat-ab-col-answer";
+  box.appendChild(answer);
+
+  if (!col.cid) {
+    pushLine("no correlation id for this arm — treat as a bug, not an empty answer");
+    return box;
   }
 
-  const body = document.createElement("div");
-  body.className = "chat-ab-shadow-body";
-  body.appendChild(_abShadowSpinner(shadowArm, tier));
-  wrap.appendChild(body);
+  let settled = false;
+  const es = new EventSource(`${API_BASE}/chat/stream/${encodeURIComponent(col.cid)}`);
+  const finish = (): void => { try { es.close(); } catch { /* already closed */ } };
 
-  function renderShadowAnswer(env: { blocks?: unknown[] }): void {
-    body.textContent = "";
-    // Render the shadow through the SAME production renderer the bubble uses — the comparison
-    // is only honest if the shadow renders identically to what a served answer would.
-    const { answerBody, sources } = renderEnvelope((env.blocks || []) as EnvBlock[], {
-      renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
-        if (b.type === "tool_attribution") {
-          const chip = document.createElement("div");
-          chip.className = "envelope-tool-chip";
-          chip.setAttribute("data-icon", String(b.icon || "search"));
-          chip.textContent = String(b.label || "Research");
-          return chip;
-        }
-        return null;
-      },
-    });
-    body.appendChild(answerBody);
-    if (sources && Array.isArray((sources as { refs?: unknown[] }).refs)) {
-      const refs = ((sources as unknown as { refs: Array<Record<string, unknown>> }).refs).map((r) => ({
-        doc_title: r.title as string | undefined,
-        page_number: (r.page as number | null | undefined) ?? null,
-        snippet: r.snippet as string | undefined,
-        document_id: r.document_id as string | undefined,
-      }));
-      const srcEl = renderSourcesList(refs);
-      if (srcEl) body.appendChild(srcEl);
+  es.onmessage = (e: MessageEvent) => {
+    let parsed: { event: string; data?: Record<string, unknown> };
+    try { parsed = JSON.parse(e.data as string); } catch { return; }
+    const d = parsed.data || {};
+    switch (parsed.event) {
+      case "thinking":
+      case "quality_audit":
+        if (d.line != null) pushLine(String(d.line));
+        break;
+      case "tool_progress":
+        if (d.line != null) pushLine(String(d.line));
+        else if (d.note != null) pushLine(String(d.note));
+        break;
+      case "draft_ready":
+        if (d.text != null) { answer.className = "chat-ab-col-answer chat-ab-col-answer--draft"; answer.innerHTML = _inlineMd(String(d.text)); }
+        break;
+      case "completed":
+        settled = true; finish();
+        pushLine("composing answer…");
+        void _fetchEnvelopeOnce(col.cid).then((env) => {
+          if (env && Array.isArray(env.blocks) && env.blocks.length) _renderAbAnswerInto(answer, env);
+          else { answer.className = "chat-ab-col-answer"; answer.textContent = "(no renderable answer)"; }
+          trace.classList.add("chat-ab-col-trace--done");
+        });
+        break;
+      case "error":
+        settled = true; finish();
+        answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
+        answer.textContent = col.served
+          ? `This arm errored: ${String(d.message ?? "unknown")}`
+          : "The shadow arm errored — a degraded comparison, not a failed question.";
+        break;
     }
-  }
-
-  function note(text: string): HTMLElement {
-    const n = document.createElement("div");
-    n.className = "chat-ab-shadow-note";
-    n.textContent = text;
-    return n;
-  }
-
-  void _pollShadowEnvelope(shadowCid, _abShadowWindowMs(tier)).then((res) => {
-    body.textContent = "";
-    if (res.state === "completed" && Array.isArray(res.env.blocks) && res.env.blocks.length) {
-      renderShadowAnswer(res.env);
-      return;
+  };
+  es.onerror = () => {
+    if (settled) return;                    // normal close after completion
+    // A drop before completion. For the SHADOW this is a degraded comparison, not a failed turn;
+    // for the SERVED arm the outer chain's own retry path still owns the failure.
+    finish();
+    if (!col.served) {
+      answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
+      answer.textContent = "The shadow arm didn't finish — a degraded comparison, not a failed question.";
     }
-    if (res.state === "running") {
-      // THIRD state (Governor): still working, not dropped. The served answer above is done;
-      // the shadow can legitimately run to the tier's full promise (agentic ~4× the served arm).
-      body.appendChild(note(`The shadow arm ${shadowArm} is still running — it can take longer than the served arm (a different orchestrator may use more rounds). Your answer above is complete; check for the shadow when it settles.`));
-      const again = document.createElement("button");
-      again.className = "chat-ab-check-again";
-      again.textContent = "Check for the shadow";
-      again.addEventListener("click", () => {
-        again.disabled = true;
-        void fetch(`${API_BASE}/chat/response/${encodeURIComponent(shadowCid)}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d: { status?: string; assistant_envelope?: { blocks?: unknown[] } } | null) => {
-            if (d && d.status === "completed" && d.assistant_envelope) renderShadowAnswer(d.assistant_envelope);
-            else { again.disabled = false; }
-          })
-          .catch(() => { again.disabled = false; });
-      });
-      body.appendChild(again);
-      return;
+  };
+  // A hard backstop so a stuck stream doesn't spin forever: at the tier window, if still unsettled,
+  // note it's taking longer (do NOT declare failure — an agentic arm can legitimately still be going).
+  window.setTimeout(() => {
+    if (!settled && !answer.textContent && !answer.querySelector("*")) {
+      pushLine(tier === "agentic" ? "still working (agentic — can take ~2 min)…" : "still working…");
     }
-    // failed / never observed → a degraded comparison, NOT a failed question.
-    body.appendChild(note("The shadow arm didn't complete — a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
-  }).catch(() => {
-    body.textContent = "";
-    body.appendChild(note("Couldn't load the shadow arm — a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
-  });
-
-  return wrap;
+  }, _abTierWindowMs(tier));
+  return box;
 }
 
-function _abShadowSpinner(arm: string, tier: "quick" | "copilot" | "agentic"): HTMLElement {
-  const s = document.createElement("div");
-  s.className = "chat-ab-shadow-spinner";
-  // In agentic the shadow can run ~2 min and still be on time, so say so — an unqualified
-  // spinner reads as "stuck" when it is merely a longer tier.
-  const hint = tier === "agentic" ? " (agentic — it can take up to ~2 min)"
-    : tier === "quick" ? "" : " (up to ~40s)";
-  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running…${hint}`;
-  return s;
-}
-
-type ShadowPoll =
-  | { state: "completed"; env: { blocks?: unknown[] } }
-  | { state: "failed" }        // the turn explicitly failed → degraded comparison
-  | { state: "running" };      // still processing when the window closed → NOT degraded
-
-/** Poll /chat/response/{cid} until the shadow completes, FAILS, or the tier window closes.
- *  The window (promise + band, from the served arm's tier) is passed in — a shadow still
- *  running at the end of it is "still working", not a drop: distinguishing the two is the whole
- *  point (Governor), because agentic shadows legitimately finish long after the served arm. */
-async function _pollShadowEnvelope(cid: string, windowMs: number): Promise<ShadowPoll> {
-  const deadline = Date.now() + windowMs;
-  let delay = 1200;
-  let sawProcessing = false;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
-      if (r.ok) {
-        const d = await r.json() as { status?: string; assistant_envelope?: { blocks?: unknown[] } };
-        if (d.status === "completed" && d.assistant_envelope) return { state: "completed", env: d.assistant_envelope };
-        if (d.status === "failed") return { state: "failed" };
-        if (d.status) sawProcessing = true;   // processing/queued — a live, unfinished turn
+/** Render an assistant envelope into a column's answer area via the PRODUCTION renderer, so a
+ *  shadow answer is byte-for-byte what a served answer would look like. */
+function _renderAbAnswerInto(answer: HTMLElement, env: { blocks?: unknown[] }): void {
+  answer.className = "chat-ab-col-answer";
+  answer.textContent = "";
+  const { answerBody, sources } = renderEnvelope((env.blocks || []) as EnvBlock[], {
+    renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
+      if (b.type === "tool_attribution") {
+        const chip = document.createElement("div");
+        chip.className = "envelope-tool-chip";
+        chip.setAttribute("data-icon", String(b.icon || "search"));
+        chip.textContent = String(b.label || "Research");
+        return chip;
       }
-    } catch { /* transient — keep polling */ }
-    await new Promise((res) => setTimeout(res, delay));
-    delay = Math.min(delay + 600, 4000);
+      return null;
+    },
+  });
+  answer.appendChild(answerBody);
+  if (sources && Array.isArray((sources as { refs?: unknown[] }).refs)) {
+    const refs = ((sources as unknown as { refs: Array<Record<string, unknown>> }).refs).map((r) => ({
+      doc_title: r.title as string | undefined,
+      page_number: (r.page as number | null | undefined) ?? null,
+      snippet: r.snippet as string | undefined,
+      document_id: r.document_id as string | undefined,
+    }));
+    const srcEl = renderSourcesList(refs);
+    if (srcEl) answer.appendChild(srcEl);
   }
-  // Window closed. If we ever saw a live status it is still working; only a turn we could never
-  // observe at all is treated as failed/dropped.
-  return sawProcessing ? { state: "running" } : { state: "failed" };
 }
 
-/** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
+/** Fetch one arm's assistant_envelope once (called on the stream's `completed`). */
+async function _fetchEnvelopeOnce(cid: string): Promise<{ blocks?: unknown[] } | null> {
+  try {
+    const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
+    if (!r.ok) return null;
+    const d = await r.json() as { status?: string; assistant_envelope?: { blocks?: unknown[] } };
+    return d.status === "completed" && d.assistant_envelope ? d.assistant_envelope : null;
+  } catch { return null; }
+}
+
 const CREDENTIALING_ROSTER_TRIGGERS: string[] = [
   "provider roster",
   "credentialing report",
@@ -911,7 +941,7 @@ import {
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
 import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, renderSourcesList, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
-import { pickShadowArm, type AbComparison } from "./ab-fork";
+import { abColumns, type AbComparison } from "./ab-fork";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -12051,6 +12081,16 @@ function run(): void {
         if ((data.correlation_id || "").trim()) {
           onRequestCorrelationId();
         }
+        // A/B turn: both arms' correlation_ids are in the POST response NOW, before either has
+        // produced a token. Render the simultaneous two-column split and let each column own its
+        // OWN stream — do NOT run the normal single-bubble streamResponse + completed handler, or
+        // the served arm would render twice (once in its column, once as the bubble) and the two
+        // columns would use different renderers. The sentinel short-circuits the rest of the chain.
+        if (activeComparison) {
+          startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode);
+          loadSidebarHistory();
+          throw AB_SPLIT_SENTINEL;
+        }
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
         return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady, onIntegratorPartial);
       })
@@ -12815,17 +12855,16 @@ function run(): void {
           }));
         }
 
-        // 13. A/B compare (ab_fork): the served answer above IS the thread's arm. Append the
-        //     SHADOW arm's answer below it — clearly not-served, on a fresh thread. Never
-        //     rewrites history (no promotion). Absent `comparison` = a normal turn.
-        if (activeComparison && data.status === "completed") {
-          turnWrap.appendChild(renderAbShadowComparison(activeComparison, selectedMode));
-        }
+        // A/B (ab_fork) turns short-circuit ABOVE (in the POST .then) into the two-column split —
+        // they never reach the normal completed handler, so there is nothing to render here.
 
         loadSidebarHistory();
         scrollToBottom(messagesEl);
       })
-      .catch((err: Error) => {
+      .catch((err: unknown) => {
+        // An A/B turn deliberately throws AB_SPLIT_SENTINEL to end the normal chain — the split
+        // view owns the turn, so this is a clean short-circuit, NOT a failure.
+        if (err === AB_SPLIT_SENTINEL) { thinkingDone(thinkingLines.length); return; }
         markRequestFailed();
         thinkingDone(thinkingLines.length);
         // Task A: a client-side stream failure (stall / no-progress / timeout / lost job) is a
@@ -12834,7 +12873,7 @@ function run(): void {
         // completed turn with a server sentinel, not here).
         turnWrap.appendChild(
           renderFailedTurn(
-            { message: err?.message ?? String(err), error_code: "stream_failure", retryable: true },
+            { message: (err as Error)?.message ?? String(err), error_code: "stream_failure", retryable: true },
             () => sendMessage(message)
           )
         );

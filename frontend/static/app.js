@@ -3830,17 +3830,28 @@ function renderAnswerCard(card, isError, opts) {
 function looksLikeCid(v) {
   return typeof v === "string" && v.length > 0 && !/[\s/]/.test(v);
 }
+function cidForArm(comparison, arm) {
+  const fromArms = comparison.arms?.[arm]?.correlation_id;
+  if (looksLikeCid(fromArms))
+    return fromArms;
+  const fromShadow = comparison.shadow?.[arm]?.correlation_id;
+  if (looksLikeCid(fromShadow))
+    return fromShadow;
+  const flat = comparison[arm];
+  return looksLikeCid(flat) ? flat : "";
+}
+function abColumns(comparison) {
+  const served = comparison.thread_arm;
+  const { shadowArm } = pickShadowArm(comparison, served);
+  const cols = [];
+  if (served)
+    cols.push({ armId: served, cid: cidForArm(comparison, served), served: true });
+  if (shadowArm && shadowArm !== served)
+    cols.push({ armId: shadowArm, cid: cidForArm(comparison, shadowArm), served: false });
+  return cols;
+}
 function pickShadowArm(comparison, servedArm) {
-  const cidFor = (arm2) => {
-    const fromArms = comparison.arms?.[arm2]?.correlation_id;
-    if (looksLikeCid(fromArms))
-      return fromArms;
-    const fromShadow = comparison.shadow?.[arm2]?.correlation_id;
-    if (looksLikeCid(fromShadow))
-      return fromShadow;
-    const flat = comparison[arm2];
-    return looksLikeCid(flat) ? flat : "";
-  };
+  const cidFor = (arm2) => cidForArm(comparison, arm2);
   if (Array.isArray(comparison.shadow_arms) && comparison.shadow_arms.length) {
     const arm2 = String(comparison.shadow_arms[0]);
     return { shadowArm: arm2, shadowCid: cidFor(arm2) };
@@ -3968,7 +3979,8 @@ function setAbForkComposerHint(on) {
   const composer = document.querySelector(".composer") || document.getElementById("composer");
   composer?.classList.toggle("composer--ab-fork", on);
 }
-function _abShadowWindowMs(tier) {
+var AB_SPLIT_SENTINEL = { __abSplit: true };
+function _abTierWindowMs(tier) {
   switch (tier) {
     case "quick":
       return (13 + 5) * 1e3;
@@ -3979,121 +3991,165 @@ function _abShadowWindowMs(tier) {
       return (31 + 8) * 1e3;
   }
 }
-function renderAbShadowComparison(comparison, tier = "copilot") {
-  const wrap = document.createElement("section");
-  wrap.className = "chat-ab-shadow";
-  const servedArm = comparison.thread_arm;
-  const { shadowArm, shadowCid } = pickShadowArm(comparison, servedArm);
+function startAbLiveSplit(turnWrap, thinkingBlockEl, comparison, tier) {
+  thinkingBlockEl.remove();
+  turnWrap.querySelectorAll(".answer-card, .assistant-message, .answer-card-bubble").forEach((n) => n.remove());
+  const cols = abColumns(comparison);
+  const split = document.createElement("section");
+  split.className = "chat-ab-split";
+  const banner = document.createElement("div");
+  banner.className = "chat-ab-split-banner";
+  banner.innerHTML = `<span class="chat-ab-badge">A/B compare</span> Both arms ran on your question at the same instant \u2014 doubled cost. The <b>served</b> arm is your thread; the <b>shadow</b> ran on a fresh thread, was never served, and has no memory of earlier turns.`;
+  split.appendChild(banner);
+  const grid = document.createElement("div");
+  grid.className = "chat-ab-split-grid";
+  grid.style.setProperty("--ab-cols", String(cols.length || 1));
+  for (const c of cols)
+    grid.appendChild(_abLiveColumn(c, tier));
+  split.appendChild(grid);
+  turnWrap.appendChild(split);
+  turnWrap.scrollIntoView({ block: "nearest" });
+}
+function _abLiveColumn(col, tier) {
+  const box = document.createElement("section");
+  box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
   const head = document.createElement("div");
-  head.className = "chat-ab-shadow-head";
-  head.innerHTML = `<span class="chat-ab-badge">A/B \xB7 block 2 of 2</span> The answer above is arm <b>${servedArm}</b> (served \u2014 it is your thread). This block is the shadow arm <b>${shadowArm ?? "\u2014"}</b>: a <b>fresh thread</b>, never served, no memory of earlier turns. Shown for comparison only.`;
-  wrap.appendChild(head);
-  if (!shadowArm || !shadowCid) {
-    const note2 = document.createElement("div");
-    note2.className = "chat-ab-shadow-note";
-    note2.textContent = "The shadow arm did not report a turn \u2014 treat this as a bug, not as an empty answer.";
-    wrap.appendChild(note2);
-    return wrap;
-  }
-  const body = document.createElement("div");
-  body.className = "chat-ab-shadow-body";
-  body.appendChild(_abShadowSpinner(shadowArm, tier));
-  wrap.appendChild(body);
-  function renderShadowAnswer(env) {
-    body.textContent = "";
-    const { answerBody, sources } = renderEnvelope(env.blocks || [], {
-      renderExtraBlock: (b) => {
-        if (b.type === "tool_attribution") {
-          const chip = document.createElement("div");
-          chip.className = "envelope-tool-chip";
-          chip.setAttribute("data-icon", String(b.icon || "search"));
-          chip.textContent = String(b.label || "Research");
-          return chip;
-        }
-        return null;
-      }
-    });
-    body.appendChild(answerBody);
-    if (sources && Array.isArray(sources.refs)) {
-      const refs = sources.refs.map((r) => ({
-        doc_title: r.title,
-        page_number: r.page ?? null,
-        snippet: r.snippet,
-        document_id: r.document_id
-      }));
-      const srcEl = renderSourcesList(refs);
-      if (srcEl)
-        body.appendChild(srcEl);
-    }
-  }
-  function note(text) {
-    const n = document.createElement("div");
-    n.className = "chat-ab-shadow-note";
-    n.textContent = text;
-    return n;
-  }
-  void _pollShadowEnvelope(shadowCid, _abShadowWindowMs(tier)).then((res) => {
-    body.textContent = "";
-    if (res.state === "completed" && Array.isArray(res.env.blocks) && res.env.blocks.length) {
-      renderShadowAnswer(res.env);
+  head.className = "chat-ab-col-head";
+  head.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span><span class="chat-ab-col-role chat-ab-col-role--${col.served ? "served" : "shadow"}">${col.served ? "served \xB7 your thread" : "shadow \xB7 not served, fresh thread"}</span>`;
+  box.appendChild(head);
+  const trace = document.createElement("div");
+  trace.className = "chat-ab-col-trace";
+  const traceLines = [];
+  const pushLine = (line) => {
+    const t = (line || "").trim();
+    if (!t || traceLines[traceLines.length - 1] === t)
       return;
-    }
-    if (res.state === "running") {
-      body.appendChild(note(`The shadow arm ${shadowArm} is still running \u2014 it can take longer than the served arm (a different orchestrator may use more rounds). Your answer above is complete; check for the shadow when it settles.`));
-      const again = document.createElement("button");
-      again.className = "chat-ab-check-again";
-      again.textContent = "Check for the shadow";
-      again.addEventListener("click", () => {
-        again.disabled = true;
-        void fetch(`${API_BASE}/chat/response/${encodeURIComponent(shadowCid)}`).then((r) => r.ok ? r.json() : null).then((d) => {
-          if (d && d.status === "completed" && d.assistant_envelope)
-            renderShadowAnswer(d.assistant_envelope);
-          else {
-            again.disabled = false;
-          }
-        }).catch(() => {
-          again.disabled = false;
-        });
-      });
-      body.appendChild(again);
-      return;
-    }
-    body.appendChild(note("The shadow arm didn't complete \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
-  }).catch(() => {
-    body.textContent = "";
-    body.appendChild(note("Couldn't load the shadow arm \u2014 a degraded comparison, not a failed question. Your answer above is complete and unaffected."));
-  });
-  return wrap;
-}
-function _abShadowSpinner(arm, tier) {
-  const s = document.createElement("div");
-  s.className = "chat-ab-shadow-spinner";
-  const hint = tier === "agentic" ? " (agentic \u2014 it can take up to ~2 min)" : tier === "quick" ? "" : " (up to ~40s)";
-  s.innerHTML = `<span class="chat-ab-dot"></span> shadow arm <b>${arm}</b> still running\u2026${hint}`;
-  return s;
-}
-async function _pollShadowEnvelope(cid, windowMs) {
-  const deadline = Date.now() + windowMs;
-  let delay = 1200;
-  let sawProcessing = false;
-  while (Date.now() < deadline) {
+    traceLines.push(t);
+    const row = document.createElement("div");
+    row.className = "chat-ab-trace-line";
+    row.textContent = t;
+    trace.appendChild(row);
+    trace.scrollTop = trace.scrollHeight;
+  };
+  pushLine(`starting ${col.armId}\u2026`);
+  box.appendChild(trace);
+  const answer = document.createElement("div");
+  answer.className = "chat-ab-col-answer";
+  box.appendChild(answer);
+  if (!col.cid) {
+    pushLine("no correlation id for this arm \u2014 treat as a bug, not an empty answer");
+    return box;
+  }
+  let settled = false;
+  const es = new EventSource(`${API_BASE}/chat/stream/${encodeURIComponent(col.cid)}`);
+  const finish = () => {
     try {
-      const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
-      if (r.ok) {
-        const d = await r.json();
-        if (d.status === "completed" && d.assistant_envelope)
-          return { state: "completed", env: d.assistant_envelope };
-        if (d.status === "failed")
-          return { state: "failed" };
-        if (d.status)
-          sawProcessing = true;
-      }
+      es.close();
     } catch {
     }
-    await new Promise((res) => setTimeout(res, delay));
-    delay = Math.min(delay + 600, 4e3);
+  };
+  es.onmessage = (e) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    const d = parsed.data || {};
+    switch (parsed.event) {
+      case "thinking":
+      case "quality_audit":
+        if (d.line != null)
+          pushLine(String(d.line));
+        break;
+      case "tool_progress":
+        if (d.line != null)
+          pushLine(String(d.line));
+        else if (d.note != null)
+          pushLine(String(d.note));
+        break;
+      case "draft_ready":
+        if (d.text != null) {
+          answer.className = "chat-ab-col-answer chat-ab-col-answer--draft";
+          answer.innerHTML = _inlineMd(String(d.text));
+        }
+        break;
+      case "completed":
+        settled = true;
+        finish();
+        pushLine("composing answer\u2026");
+        void _fetchEnvelopeOnce(col.cid).then((env) => {
+          if (env && Array.isArray(env.blocks) && env.blocks.length)
+            _renderAbAnswerInto(answer, env);
+          else {
+            answer.className = "chat-ab-col-answer";
+            answer.textContent = "(no renderable answer)";
+          }
+          trace.classList.add("chat-ab-col-trace--done");
+        });
+        break;
+      case "error":
+        settled = true;
+        finish();
+        answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
+        answer.textContent = col.served ? `This arm errored: ${String(d.message ?? "unknown")}` : "The shadow arm errored \u2014 a degraded comparison, not a failed question.";
+        break;
+    }
+  };
+  es.onerror = () => {
+    if (settled)
+      return;
+    finish();
+    if (!col.served) {
+      answer.className = "chat-ab-col-answer chat-ab-col-answer--note";
+      answer.textContent = "The shadow arm didn't finish \u2014 a degraded comparison, not a failed question.";
+    }
+  };
+  window.setTimeout(() => {
+    if (!settled && !answer.textContent && !answer.querySelector("*")) {
+      pushLine(tier === "agentic" ? "still working (agentic \u2014 can take ~2 min)\u2026" : "still working\u2026");
+    }
+  }, _abTierWindowMs(tier));
+  return box;
+}
+function _renderAbAnswerInto(answer, env) {
+  answer.className = "chat-ab-col-answer";
+  answer.textContent = "";
+  const { answerBody, sources } = renderEnvelope(env.blocks || [], {
+    renderExtraBlock: (b) => {
+      if (b.type === "tool_attribution") {
+        const chip = document.createElement("div");
+        chip.className = "envelope-tool-chip";
+        chip.setAttribute("data-icon", String(b.icon || "search"));
+        chip.textContent = String(b.label || "Research");
+        return chip;
+      }
+      return null;
+    }
+  });
+  answer.appendChild(answerBody);
+  if (sources && Array.isArray(sources.refs)) {
+    const refs = sources.refs.map((r) => ({
+      doc_title: r.title,
+      page_number: r.page ?? null,
+      snippet: r.snippet,
+      document_id: r.document_id
+    }));
+    const srcEl = renderSourcesList(refs);
+    if (srcEl)
+      answer.appendChild(srcEl);
   }
-  return sawProcessing ? { state: "running" } : { state: "failed" };
+}
+async function _fetchEnvelopeOnce(cid) {
+  try {
+    const r = await fetch(`${API_BASE}/chat/response/${encodeURIComponent(cid)}`);
+    if (!r.ok)
+      return null;
+    const d = await r.json();
+    return d.status === "completed" && d.assistant_envelope ? d.assistant_envelope : null;
+  } catch {
+    return null;
+  }
 }
 var CREDENTIALING_ROSTER_TRIGGERS = [
   "provider roster",
@@ -13744,6 +13800,11 @@ ${message}`;
       if ((data.correlation_id || "").trim()) {
         onRequestCorrelationId();
       }
+      if (activeComparison) {
+        startAbLiveSplit(turnWrap, thinkingBlockEl, activeComparison, selectedMode);
+        loadSidebarHistory();
+        throw AB_SPLIT_SENTINEL;
+      }
       addThinkingLineAndScroll("Request sent. Waiting for worker\u2026");
       return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady, onIntegratorPartial);
     }).then(
@@ -14284,12 +14345,13 @@ ${message}`;
           correlationId: data.correlation_id ?? activeCorrelationId
         }));
       }
-      if (activeComparison && data.status === "completed") {
-        turnWrap.appendChild(renderAbShadowComparison(activeComparison, selectedMode));
-      }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
     }).catch((err) => {
+      if (err === AB_SPLIT_SENTINEL) {
+        thinkingDone(thinkingLines.length);
+        return;
+      }
       markRequestFailed();
       thinkingDone(thinkingLines.length);
       turnWrap.appendChild(

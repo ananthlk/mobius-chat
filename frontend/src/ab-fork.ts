@@ -22,6 +22,31 @@ export function looksLikeCid(v: unknown): v is string {
   return typeof v === "string" && v.length > 0 && !/[\s/]/.test(v);
 }
 
+/** The correlation_id for a given arm, from named fields (arms[id] → shadow[id] → flat key),
+ *  accepting only cid-looking values so a permalink can never be returned as a cid. */
+export function cidForArm(comparison: AbComparison, arm: string): string {
+  const fromArms = comparison.arms?.[arm]?.correlation_id;
+  if (looksLikeCid(fromArms)) return fromArms;
+  const fromShadow = comparison.shadow?.[arm]?.correlation_id;
+  if (looksLikeCid(fromShadow)) return fromShadow;
+  const flat = comparison[arm];
+  return looksLikeCid(flat) ? flat : "";
+}
+
+/** Both arm ids in stable, deterministic column order — served LEFT, shadow RIGHT — so a
+ *  column's position never depends on which arm finished first (Ananth: fixed by thread_arm,
+ *  never finish order). Returns {armId, cid, served} per column. */
+export function abColumns(
+  comparison: AbComparison,
+): Array<{ armId: string; cid: string; served: boolean }> {
+  const served = comparison.thread_arm;
+  const { shadowArm } = pickShadowArm(comparison, served);
+  const cols: Array<{ armId: string; cid: string; served: boolean }> = [];
+  if (served) cols.push({ armId: served, cid: cidForArm(comparison, served), served: true });
+  if (shadowArm && shadowArm !== served) cols.push({ armId: shadowArm, cid: cidForArm(comparison, shadowArm), served: false });
+  return cols;
+}
+
 /**
  * Pick the shadow arm + its correlation_id from named fields, in order of authority:
  *   1) `shadow_arms` + `arms[id].correlation_id`
@@ -33,14 +58,7 @@ export function pickShadowArm(
   comparison: AbComparison,
   servedArm: string,
 ): { shadowArm: string; shadowCid: string } {
-  const cidFor = (arm: string): string => {
-    const fromArms = comparison.arms?.[arm]?.correlation_id;
-    if (looksLikeCid(fromArms)) return fromArms;
-    const fromShadow = comparison.shadow?.[arm]?.correlation_id;
-    if (looksLikeCid(fromShadow)) return fromShadow;
-    const flat = comparison[arm];
-    return looksLikeCid(flat) ? flat : "";
-  };
+  const cidFor = (arm: string): string => cidForArm(comparison, arm);
 
   if (Array.isArray(comparison.shadow_arms) && comparison.shadow_arms.length) {
     const arm = String(comparison.shadow_arms[0]);
