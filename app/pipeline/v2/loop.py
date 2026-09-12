@@ -217,7 +217,11 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
 
         decision = P.select(state)
         exit_mode = P.exit_mode(state)
-        action = ex.decide(decision, exit_mode, extensions_used=extensions_used)
+        action = ex.decide(decision, exit_mode, extensions_used=extensions_used,
+                           # See executor.decide: BUDGET is the label for "work
+                           # remains", not for "out of money". The executor
+                           # reads affordability, never infers it.
+                           affordable=P.spendable(state))
         inputs_record = P.explain(state, decision)
 
         logger.info(

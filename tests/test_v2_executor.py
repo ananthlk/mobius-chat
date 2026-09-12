@@ -157,9 +157,31 @@ def test_no_posture_can_extend_past_a_budget_or_capability_exit(posture):
     and is exactly the reasoning that produced FRAME.
     """
     d = Decision(posture, "one more would close it")
+    # AFFORDABILITY IS SUPPLIED AND SAYS NO. Calling decide() without
+    # `affordable` would make this pass because the signal was missing rather
+    # than because the exit dominated -- a test that keeps passing for a
+    # reason unrelated to what it claims to check.
     for mode in (ExitMode.BUDGET, ExitMode.ERROR, ExitMode.CAPABILITY):
-        a = ex.decide(d, mode)
+        a = ex.decide(d, mode, affordable=False)
         assert not a.continues, (posture, mode, a.directive)
+
+    # ERROR and CAPABILITY are the GENUINE terminals: they dominate even when
+    # the budget is fine. BUDGET does not -- it is the label for "gaps remain".
+    for mode in (ExitMode.ERROR, ExitMode.CAPABILITY):
+        assert not ex.decide(d, mode, affordable=True).continues, (posture, mode)
+
+
+def test_explore_plus_budget_continues_when_the_budget_is_there():
+    """The correction to the test above, stated separately so it cannot be
+    silently weakened by a parametrize edit.
+
+    exit_mode() returns BUDGET whenever material gaps remain and are not
+    exhausted -- the ORDINARY state of an unfinished multi-part question.
+    Stopping on it made v2 unable to answer a three-payer question at all.
+    """
+    d = Decision(Posture.EXPLORE, "one more would close it",
+                 gap_targeted="S384280")
+    assert ex.decide(d, ExitMode.BUDGET, affordable=True).continues
 
 
 @pytest.mark.parametrize("posture", list(Posture))
@@ -174,8 +196,28 @@ def test_a_posture_exit_contradiction_is_recorded_on_the_row():
     """A disagreement inside my own module. Stopping wins, and the loser is
     written down — an overridden decision that leaves no trace is
     indistinguishable from one that was never made."""
-    a = ex.decide(Decision(Posture.EXPLORE, "one more"), ExitMode.BUDGET)
-    assert "overrode it" in a.because and "explore" in a.because
+    # affordable=False is the genuine contradiction: the posture wants a
+    # round and the budget says there isn't one.
+    a = ex.decide(Decision(Posture.EXPLORE, "one more"), ExitMode.BUDGET,
+                  affordable=False)
+    assert not a.continues
+    assert "explore" in a.because, "the overridden posture must be named"
+    assert "wanted another round" in a.because, "the loser must be written down"
+
+    # And the property, not the phrase: whenever a continuing posture is
+    # stopped, the row says which posture and why. Pinning the exact wording
+    # is how a regression test survives the defect it was built to catch.
+    for exit_mode, afford in ((ExitMode.CAPABILITY, True),
+                              (ExitMode.ERROR, True),
+                              (ExitMode.BUDGET, False),
+                              (ExitMode.BUDGET, None)):
+        act = ex.decide(Decision(Posture.EXPLORE, "one more"), exit_mode,
+                        affordable=afford)
+        assert not act.continues
+        assert "explore" in act.because and "wanted another round" in act.because, (
+            f"{exit_mode} / affordable={afford} stopped a continuing posture "
+            f"without recording it: {act.because!r}"
+        )
 
 
 def test_the_two_branches_react_loop_names_are_both_still_there():

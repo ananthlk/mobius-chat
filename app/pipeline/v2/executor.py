@@ -191,7 +191,8 @@ MAX_V2_EXTENSIONS = 6   # [GUESS] -- a fuse, not a target
 
 def decide(decision: Decision, exit: ExitMode | None = None,
            extensions_used: int = 0, *,
-           model_proposes_complete: bool = False) -> Action:
+           model_proposes_complete: bool = False,
+           affordable: bool | None = None) -> Action:
     """Posture -> the action v1's loop already knows how to take.
 
     `exit` splits COMMUNICATE, and only COMMUNICATE:
@@ -304,12 +305,62 @@ def decide(decision: Decision, exit: ExitMode | None = None,
             gap_targeted=decision.gap_targeted,
         )
 
-    if exit in (ExitMode.BUDGET, ExitMode.ERROR, ExitMode.CAPABILITY):
+    # ── BUDGET IS A LABEL, NOT A TERMINAL ───────────────────────────────────
+    #
+    # 2026-09-12, found on Ananth's three-payer question. exit_mode() is:
+    #
+    #     if not material:      COMPLETE
+    #     if all exhausted:     CAPABILITY
+    #     else:                 BUDGET        <- the FALL-THROUGH
+    #
+    # BUDGET is what exit_mode returns when GAPS REMAIN AND ARE NOT EXHAUSTED.
+    # It answers "if this turn ended now, how would we describe it?" -- it does
+    # NOT say the money ran out. Treating it as terminal made the ordinary
+    # state of an unfinished multi-part question mean STOP, so v2 stopped at
+    # round 2 on every multi-gap question: 23 of 47 stops in 24h, 25 of which
+    # suppressed a `rag` call the model had already chosen. Molina answered,
+    # Sunshine and UnitedHealthcare never asked, and the answer said they were
+    # "not available in the provided documents".
+    #
+    # It also made the accelerator unreachable -- 0 firings in 417 decisions --
+    # because this branch returned before it could ever apply.
+    #
+    # WHY NOT JUST TRUST THE POSTURE: the previous comment here was right that
+    # "select() would never return EXPLORE when the budget is gone" is a
+    # guarantee held in another module and asserted by nothing -- the reasoning
+    # that produced FRAME. So this does not infer affordability. It READS it:
+    # `affordable` is spendable() evaluated by the caller on the same state.
+    #
+    # UNKNOWN STAYS CONSERVATIVE. affordable=None means the caller did not say,
+    # and an unsupplied signal must not silently unlock spending -- that is how
+    # the 98-round runaway began. Unknown stops, and SAYS it stopped for want
+    # of the signal rather than on a judgement it never made.
+    if exit is ExitMode.BUDGET and directive == EXTEND:
+        if affordable is True:
+            # The posture wants another round and the budget agrees. BUDGET
+            # here is only the name for "work remains" -- there is nothing to
+            # override. Fall through to EXTEND.
+            pass
+        else:
+            contradiction = (
+                f" [posture {posture.value} wanted another round; "
+                + ("budget exhausted -- stopping wins]" if affordable is False
+                   else "affordability NOT SUPPLIED by the caller -- stopped "
+                        "for want of the signal, not on a decision]")
+            )
+            directive = FINALIZE
+    elif exit in (ExitMode.ERROR, ExitMode.CAPABILITY):
+        # The two GENUINE terminals. ERROR cannot be spent out of; CAPABILITY
+        # means every material gap has a targeted attempt that returned
+        # nothing, and another round buys a repeat of that.
         if directive == EXTEND:
             contradiction = (f" [posture {posture.value} wanted another round; "
                              f"exit {exit.value} overrode it -- stopping wins]")
-        # BUDGET/ERROR ship WITH the groundedness notice; CAPABILITY ships
-        # clean, because its limit is scope and not quality. See the docstring.
+        # ERROR ships WITH the groundedness notice; CAPABILITY ships clean,
+        # because its limit is scope and not quality. See the docstring.
+        directive = COMPLETE if exit is ExitMode.CAPABILITY else FINALIZE
+    elif exit in (ExitMode.BUDGET, ExitMode.ERROR, ExitMode.CAPABILITY):
+        # Non-EXTEND postures (the wrap-ups) keep their previous mapping.
         directive = COMPLETE if exit is ExitMode.CAPABILITY else FINALIZE
 
     return Action(

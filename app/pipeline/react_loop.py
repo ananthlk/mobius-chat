@@ -5436,6 +5436,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             _v2f_act = _v2fx.decide(
                                 _v2f_dec, _v2fp.exit_mode(_v2f_state),
                                 extensions_used=_pp_extension_rounds_used,
+                                # spendable() on the SAME state the posture was
+                                # chosen from. The executor must not infer
+                                # affordability from the exit label -- BUDGET
+                                # is the name for "work remains", not for "out
+                                # of money". Omitting this makes the executor
+                                # stop for want of the signal.
+                                affordable=_v2fp.spendable(_v2f_state),
                             )
                             if not _v2f_act.continues:
                                 _v2f_answer = (_running_answer or thought or "").strip()
@@ -5801,6 +5808,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                         _v2_dec, _v2p.exit_mode(_v2_state),
                                         extensions_used=_pp_extension_rounds_used,
                                         model_proposes_complete=True,
+                                        affordable=_v2p.spendable(_v2_state),
                                     )
                                     logger.info(
                                         "[v2.exec] cid=%s round=%s v1=%s -> v2=%s "
