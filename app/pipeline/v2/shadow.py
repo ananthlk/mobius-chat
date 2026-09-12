@@ -271,7 +271,14 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             # dereference because reading tool payloads on the decision path is
             # how an observer starts costing what it observes.
             _running = str(enr.get("running_answer") or "").strip()
-            returned = bool(closed) or bool(_running)
+            # `kept` is evidence ARRIVING; the other two are evidence USED.
+            # Using only the latter made a round that retrieved 15 sources read
+            # as "nothing came back" until the model had synthesised -- and the
+            # exit mode then said CAPABILITY, which is terminal and offers no
+            # continuation. See react_loop's "kept" comment for the live case.
+            _kept = enr.get("kept")
+            _kept = int(_kept) if isinstance(_kept, int) else 0
+            returned = bool(closed) or bool(_running) or _kept > 0
             _aimed = _targeting(gaps, query)
             # Same `returned` signal the attempt uses: it is the only evidence
             # of arrival the governor can see without dereferencing tool

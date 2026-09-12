@@ -5395,6 +5395,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     "running_answer": _evidence_review.get("running_answer") if _evidence_review else "",
                     "gaps_closed": _as_str_list(_evidence_review.get("gaps_closed")) if _evidence_review else [],
                     "gaps_open": _as_str_list(_evidence_review.get("gaps_open")) if _evidence_review else [],
+                    # HOW MANY CHUNKS THE MODEL KEPT this round.
+                    #
+                    # The governor's payload check was `gaps_closed or
+                    # running_answer` -- both DOWNSTREAM of synthesis. Live on
+                    # cid 3495afd2: rag returned 15 sources, the model kept
+                    # chunks, had not yet written a running answer, and the
+                    # governor read "nothing came back" on all three gaps and
+                    # exited CAPABILITY -- "no tool can reach this" -- 25s into
+                    # a 95s promise, with the evidence in context.
+                    #
+                    # Kept chunks are evidence ARRIVING. A running answer is
+                    # evidence USED. Reading the second as a proxy for the
+                    # first turns a slow synthesis into a capability verdict.
+                    "kept": (len(_keep_raw) if isinstance(_keep_raw, list) else 0),
                     # Per-gap closure (governor-react closure contract v1).
                     # ABSENT until the prompt seat lands the field; carried
                     # through untouched so the governor sees exactly what the

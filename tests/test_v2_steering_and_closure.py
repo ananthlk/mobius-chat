@@ -331,3 +331,51 @@ def test_the_steering_gate_is_not_vacuous():
              and any(isinstance(t, ast.Name) and t.id == "_steer_gap"
                      for t in n.targets)]
     assert found, "no _steer_gap assignment found; the gate above proves nothing"
+
+
+# ── evidence ARRIVING vs evidence USED ──────────────────────────────────────
+
+def test_kept_chunks_count_as_evidence_arriving():
+    """LIVE, cid 3495afd2: rag returned 15 sources, the model kept chunks and
+    had not yet written a running answer. The governor read "nothing came
+    back" on all three gaps and exited CAPABILITY -- terminal, no continuation
+    -- 25s into a 95s promise, with the evidence sitting in context.
+
+    gaps_closed and running_answer are both DOWNSTREAM of synthesis. Reading
+    them as a proxy for retrieval turns a slow synthesis into a capability
+    verdict about the corpus.
+    """
+    from app.pipeline.v2.shadow import state_from_ctx
+    import types
+
+    def _round(kept, running="", closed=()):
+        return {"round": 1, "tool": "rag", "inputs": {"query": SUN},
+                "enrichment": {"gaps_open": [SUN], "gaps_closed": list(closed),
+                               "running_answer": running, "kept": kept}}
+
+    class _Ctx:
+        correlation_id = "t"
+        thread_id = "t"
+        message = "q"
+
+    ctx = _Ctx()
+    ctx.react_trace_rounds = [_round(kept=12)]
+    st = state_from_ctx(ctx, round_index=2, elapsed_s=25.0,
+                        promise_latency_s=95.0, round_cost_s=10.4,
+                        acting_cost_s=10.0)
+    gap = next(g for g in st.open_gaps if g.text == SUN)
+    assert any(a.returned_payload for a in gap.attempted_by), (
+        "12 kept chunks read as 'nothing came back'"
+    )
+
+    ctx2 = _Ctx()
+    ctx2.react_trace_rounds = [_round(kept=0)]
+    st2 = state_from_ctx(ctx2, round_index=2, elapsed_s=25.0,
+                         promise_latency_s=95.0, round_cost_s=10.4,
+                         acting_cost_s=10.0)
+    gap2 = next(g for g in st2.open_gaps if g.text == SUN)
+    assert not any(a.returned_payload for a in gap2.attempted_by), (
+        "zero kept and no answer must still read as nothing returned -- "
+        "otherwise CAPABILITY becomes unreachable and the honest 'we tried "
+        "and cannot' can never be said"
+    )
