@@ -219,3 +219,31 @@ def test_preload_failure_leaves_todays_behaviour():
     leave ctx._v2_preloaded empty, and an empty preload renders no sections."""
     from app.pipeline.v2.frame import preload_sections
     assert preload_sections([], ()) == []
+
+
+def test_tool_manifest_is_in_the_build_context_allowlist():
+    """A Dockerfile COPY is NOT enough: .dockerignore is an ALLOWLIST (`*`
+    then `!sibling/`), so a sibling absent from it never reaches the builder
+    and the COPY silently gets nothing.
+
+    This exact defect shipped earlier today -- eval/ was COPYd, was not
+    allowlisted, and an endpoint 404'd in production behind nine green tests.
+    Caught this time by reading .dockerignore before the build finished rather
+    than after it failed.
+    """
+    import pathlib
+    df = pathlib.Path("Dockerfile").read_text()
+    di = pathlib.Path(".dockerignore").read_text()
+    # The TOP-LEVEL sibling is what the allowlist governs: `!mobius-chat/`
+    # admits mobius-chat/app and mobius-chat/eval alike. An earlier version of
+    # this test compared full paths and flagged six false positives -- a gate
+    # that cries wolf gets disabled, which is worse than no gate.
+    copied = {ln.split()[1].split("/")[0] for ln in df.splitlines()
+              if ln.startswith("COPY mobius-")}
+    allowed = {ln[1:].rstrip("/") for ln in di.splitlines()
+               if ln.startswith("!mobius-")}
+    missing = {c for c in copied if c not in allowed}
+    assert not missing, (
+        f"COPYd but not allowlisted in .dockerignore: {missing} -- the COPY "
+        f"will get nothing and the failure is silent"
+    )

@@ -19,6 +19,12 @@
 !mobius-contracts/
 !mobius-skills-core/
 !mobius-retriever/
+# 2026-09-12: toolreg (tool selection) is vendored like the others. The COPY in
+# the Dockerfile is NOT enough on its own -- this file is an ALLOWLIST, so a
+# sibling absent from it never reaches the builder and the COPY silently gets
+# nothing. Same defect as eval/ earlier today: an endpoint 404'd behind nine
+# green tests because the directory was never in the image.
+!mobius-tool-manifest/
 
 # ── Within each vendored sibling, exclude noise ──────────────────────
 # These patterns apply recursively regardless of which sibling; a
