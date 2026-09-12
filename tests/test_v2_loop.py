@@ -203,9 +203,9 @@ def test_the_prompt_SOURCE_is_recorded_per_round():
     provenance the value does not have.
     """
     from app.pipeline.react.prompts import _react_reasoning_system
-    prompt, source = L._v2_system_prompt(3, "copilot", None, _react_reasoning_system)
+    prompt, prov = L._v2_system_prompt(3, "copilot", None, _react_reasoning_system)
     assert prompt.strip(), "no prompt at all"
-    assert source in ("v2_blocks", "v1_fallback")
+    assert isinstance(prov, dict) and prov.get("source") in ("v2_composition", "v1_fallback")
     assert '"v2_prompt_source"' in _code(), "the source is computed and discarded"
 
 
@@ -236,3 +236,63 @@ def test_the_block_reader_is_REACTS_OWN_not_a_guessed_api():
     code = _code()
     assert "resolve_composition_sync" in code
     assert "prompt_blocks import get_block" not in code
+
+
+def test_prompt_provenance_names_the_COMPOSITION_not_a_binary_flag():
+    """The LLM seat's scoping, 2026-09-11: react.v2_governor reuses
+    response_shape / format_rules / tool_manifest / user_profile UNCHANGED and
+    replaces only the identity + critical_rules framing — the parts describing
+    v1's fixed "up to N rounds" machine, which v2 does not have.
+
+    So a binary "v2_blocks" is too coarse: a mostly-shared composition would
+    report itself as wholly v2's, and a later reader comparing arms would
+    believe the prompts differed far more than they did. The composition id,
+    hash and block manifest are what actually say which prompt ran — and they
+    are already how llm_calls attributes one.
+    """
+    import ast
+    fn = next(f for f in ast.walk(ast.parse(_src()))
+              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt")
+    src = ast.unparse(fn)
+    for field in ("composition_id", "composition_hash", "blocks", "variant_id"):
+        assert field in src, f"provenance omits {field}"
+
+
+def test_the_composition_is_read_off_the_REAL_attribute():
+    """`.system_prompt` on RenderedComposition — read off the dataclass, not
+    guessed. The first version tried `.text` / `.rendered`; neither exists, so
+    it would have returned None and fallen back to v1 FOREVER while the
+    provenance said v2.
+
+    That is the identical defect confessed one line above (importing a
+    get_block that does not exist), committed again in the same function:
+    reading the call site fixed the import, and then I guessed the RETURN
+    SHAPE instead of reading the class.
+    """
+    import ast
+    from app.services.prompt_manager import RenderedComposition
+    assert "system_prompt" in RenderedComposition.__dataclass_fields__
+    fn = next(f for f in ast.walk(ast.parse(_src()))
+              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt")
+
+    # PRESENCE IS NOT ENOUGH. A first version asserted "rc.system_prompt" was
+    # somewhere in the source — and a mutation that broke the GUARD
+    # (`getattr(rc, "text", None) or ...`) still passed, because the RETURN
+    # line mentioned the attribute. The eighth gate of mine today that was
+    # weaker than it looked. Assert over the attribute ACCESSES, so every read
+    # of the composition has to be a real field.
+    reads = {n.attr for n in ast.walk(fn)
+             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+             and n.value.id == "rc"}
+    assert reads, "the composition is never read"
+    real = set(RenderedComposition.__dataclass_fields__)
+    assert reads <= real, f"reads fields that do not exist: {reads - real}"
+    assert "system_prompt" in reads
+
+    # ...and no getattr() escape hatch on rc, which is how a guessed name
+    # sneaks back in while returning None instead of raising.
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr":
+            tgt = n.args[0] if n.args else None
+            assert not (isinstance(tgt, ast.Name) and tgt.id == "rc"), \
+                "getattr on the composition hides a wrong attribute name"

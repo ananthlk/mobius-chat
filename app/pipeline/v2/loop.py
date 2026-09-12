@@ -389,8 +389,8 @@ V2_MODULE_KEY = "react.v2_governor"
 
 
 def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
-                      v1_builder) -> tuple[str, str]:
-    """(prompt, source). `source` is "v2_blocks" or "v1_fallback", per round.
+                      v1_builder) -> tuple[str, dict]:
+    """(prompt, provenance). `provenance` names the composition, not a flag.
 
     The source is RECORDED rather than assumed. A run whose prompts silently
     came from v1 while the harness reported "prompts varied" would be the
@@ -417,9 +417,31 @@ def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
                 "user_profile_text": (user_profile or {}).get("rendered_prompt") or "",
             },
         )
-        body = getattr(rc, "text", None) or getattr(rc, "rendered", None) if rc else None
-        if body and str(body).strip():
-            return str(body), "v2_blocks"
+        # `.system_prompt`, read off the RenderedComposition DATACLASS, not
+        # guessed. My first version tried `.text` / `.rendered` -- neither
+        # exists -- which would have returned None and fallen back to v1
+        # forever WHILE THE SOURCE FIELD SAID v2. That is the identical defect
+        # I had just confessed one line above (importing a get_block that does
+        # not exist), committed again in the same function. Reading the call
+        # site fixed the import; I then guessed the RETURN SHAPE instead of
+        # reading the class.
+        if rc is not None and (rc.system_prompt or "").strip():
+            # The LLM seat's scoping (2026-09-11): react.v2_governor reuses
+            # response_shape / format_rules / tool_manifest / user_profile
+            # unchanged and replaces only the identity + critical_rules framing
+            # -- the parts describing v1's fixed "up to N rounds" machine.
+            #
+            # So a binary "v2_blocks" is TOO COARSE: a mostly-shared
+            # composition would report itself as wholly v2's. The composition
+            # id, hash and block manifest are what actually say which prompt
+            # ran, and they are already how llm_calls attributes a prompt.
+            return rc.system_prompt, {
+                "source": "v2_composition",
+                "composition_id": rc.composition_id,
+                "composition_hash": rc.composition_hash,
+                "blocks": [f"{k}@{v}" for k, v in (rc.manifest or ())],
+                "variant_id": rc.variant_id,
+            }
     except Exception as exc:
         logger.debug("[v2.loop] v2 prompt composition unavailable: %s", exc)
-    return v1_builder(max_rounds, mode, user_profile), "v1_fallback"
+    return v1_builder(max_rounds, mode, user_profile), {"source": "v1_fallback"}
