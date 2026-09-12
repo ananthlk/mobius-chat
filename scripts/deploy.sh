@@ -254,6 +254,11 @@ SET_ENV_VARS=(
     # without a deploy: `gcloud run services update --update-env-vars
     # MOBIUS_V2_FRAME_DECIDES=` takes ~90s. Empty default = observe only.
     "MOBIUS_V2_FRAME_DECIDES=${MOBIUS_V2_FRAME_DECIDES:-}"
+    # MOBIUS_V2_STEER: the governor names ONE gap in the round context
+    # (governor-react closure contract, Direction 1). v2 arm only. Empty =
+    # the governor decides and says nothing, which is what it did for its
+    # first 417 decisions. Off takes ~90s, same as FRAME_DECIDES.
+    "MOBIUS_V2_STEER=${MOBIUS_V2_STEER:-}"
     # Enables the A/B harness fork: honours a per-turn arm pin so both arms
     # run in the SAME SECONDS. Empty default = off, and the fork endpoint
     # returns 409 rather than silently degrading to a single arm.
