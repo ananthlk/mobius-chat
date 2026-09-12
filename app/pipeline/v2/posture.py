@@ -826,7 +826,14 @@ def explain(state: "RoundState", decision: "Decision") -> dict:
                      "query": (a.query or "")[:80],
                      # THE payload check, never the tool's own success flag --
                      # a tool can succeed and return nothing.
-                     "returned_payload": a.returned_payload}
+                     "returned_payload": a.returned_payload,
+                     # Whether this call is KNOWN to have aimed at this gap.
+                     # Without it the record shows three gaps carrying the same
+                     # one-payer query and gives a reader no way to see why
+                     # only one of them counted -- the exit mode reads as
+                     # arbitrary. A decision record must carry what the
+                     # decision actually read.
+                     "targeted": a.targeted}
                     for a in g.attempted_by
                 ],
                 # WHY this gap was passed over, when it was.

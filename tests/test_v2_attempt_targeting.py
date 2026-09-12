@@ -77,3 +77,33 @@ def test_exit_is_budget_not_capability_when_siblings_were_never_searched():
         "this assertion IS the defect; if it stops holding, the test above "
         "has stopped proving anything"
     )
+
+
+def test_targeted_survives_the_write_read_round_trip():
+    """A field the decision reads but the record omits is undebuggable.
+
+    The live record showed three gaps each carrying the same one-payer query
+    with no way to see why only one of them counted. Write and read are
+    asserted TOGETHER: a producer with no consumer is the defect this repo
+    has found a dozen times.
+    """
+    from app.pipeline.v2 import ledger
+    from app.pipeline.v2.posture import explain, select
+
+    g = _gap(PAYERS[1], [Attempt(round_index=1, tool="rag", query="molina",
+                                 returned_payload=False, targeted=False)])
+    state = _state([g])
+    written = explain(state, select(state))
+    row = written["open_gaps"][0]["attempts"][0]
+    assert row["targeted"] is False, "write path dropped `targeted`"
+
+    assert ledger.attempt_from_row(row).targeted is False, "read path dropped it"
+
+
+def test_rows_written_before_the_fix_replay_as_they_decided():
+    """No `targeted` key means a pre-fix row. It must default TRUE -- that is
+    what those turns actually did. Defaulting False would rewrite history into
+    decisions the governor never made."""
+    from app.pipeline.v2 import ledger
+    old_row = {"round": 1, "tool": "rag", "query": "q", "returned_payload": False}
+    assert ledger.attempt_from_row(old_row).targeted is True

@@ -47,6 +47,28 @@ class GapUpdate:
     provisional: bool = False                        # ERROR turns
 
 
+def attempt_from_row(a: dict) -> Attempt:
+    """One persisted attempt -> one Attempt. Extracted so the read path is
+    testable without a database: the write side lives in posture.explain and
+    the two must not drift."""
+    return Attempt(
+        round_index=int(a.get("round_index") or a.get("round") or 0),
+        tool=a.get("tool"),
+        model=a.get("model"),
+        query=a.get("query"),
+        # PAYLOAD check, never the tool's own success flag -- port hazard 9:
+        # the MCP adapter attaches a self-citing SourceRef on success, so
+        # trusting the flag makes exhaustion structurally unreachable for ~34
+        # tools.
+        returned_payload=bool(a.get("returned_payload")),
+        # Absent on rows written before 2026-09-12. TRUE is the pre-fix
+        # meaning (every attempt counted against every gap), so an old row
+        # replays as the governor actually decided rather than being
+        # retroactively reinterpreted by a newer default.
+        targeted=bool(a.get("targeted", True)),
+    )
+
+
 def load_open(thread_id: str) -> tuple[Gap, ...]:
     """One indexed read on (thread_id, status='open').
 
@@ -84,19 +106,7 @@ def load_open(thread_id: str) -> tuple[Gap, ...]:
             except Exception:
                 raw = []
         attempts = tuple(
-            Attempt(
-                round_index=int(a.get("round_index") or 0),
-                tool=a.get("tool"),
-                model=a.get("model"),
-                query=a.get("query"),
-                # PAYLOAD check, never the tool's own success flag -- port
-                # hazard 9: the MCP adapter attaches a self-citing SourceRef on
-                # success, so trusting the flag makes exhaustion structurally
-                # unreachable for ~34 tools.
-                returned_payload=bool(a.get("returned_payload")),
-            )
-            for a in raw
-            if isinstance(a, dict)
+            attempt_from_row(a) for a in raw if isinstance(a, dict)
         )
         out.append(
             Gap(
