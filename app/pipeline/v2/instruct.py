@@ -86,8 +86,22 @@ def _instruction(gap: Gap) -> str:
         return ("instruction: closure fell -- the last attempt moved away "
                 "from this gap. Return to what was working.")
 
-    # FLAT with attempts behind it. Same lever, same result.
     prior = ", ".join(f'"{a.query}"' for a in tried if a.query) or "(not recorded)"
+
+    # ONE ATTEMPT IS NOT A STALL. closure_trend() answers FLAT when it has
+    # fewer than two reports, which is correct for a TREND and wrong as advice:
+    # with closure unreported (its producer is not built yet), every gap would
+    # render "not moving, change the approach" after a single try. That is the
+    # could-not-check / checked-false collapse arriving as a prompt -- telling
+    # the model a lever failed when it has been pulled once.
+    #
+    # Caught by rendering the block rather than reading the predicate.
+    if len(tried) < 2:
+        return ("instruction: this gap has been searched once and is still "
+                f"open. Previous query: {prior}. Ask for the part it did not "
+                "return -- a reworded version of the same query returns the "
+                "same evidence.")
+
     return ("instruction: this gap is not moving. Previous queries: "
             f"{prior}. Change the approach -- a reworded version of the same "
             "query returns the same evidence.")
@@ -123,8 +137,6 @@ def _discover_block(gap: Gap, remaining: tuple[Gap, ...]) -> str:
         "a gap. If nothing is missing, say so and close it.",
         "do not: repeat the query you just ran. It returned what it returned; "
         "the next round is for what it did not.",
-        'report progress per gap in evidence_review.gaps as '
-        '{"text": "...", "closure": 0-100, "why": "..."}',
     ])
 
 
@@ -161,9 +173,21 @@ def governor_block(gap: Gap | None, *, remaining: tuple[Gap, ...] = (),
     if others:
         lines.append("still open after this one: "
                      + "; ".join(g.text for g in others))
-    # Asked for by id so a rewording can still be matched to this gap -- gap
-    # ids are content-addressed, so drift mints a new id and resets the age
-    # and lever counts that make `stuck` reachable at all.
-    lines.append(f'report progress for this gap in evidence_review.gaps as '
-                 f'{{"id": "{gap.gap_id}", "closure": 0-100, "why": "..."}}')
+    # ── WHY THIS BLOCK DOES NOT ASK FOR `closure` ──────────────────────────
+    #
+    # It did, for about an hour. The LLM/prompt seat owns evidence_review's
+    # schema and pointed my own rule back at me: "one place asking for it is
+    # right, two is a contradiction waiting for whoever debugs it next."
+    # A per-round block and a response_shape block asking for the same object
+    # in two wordings is how the two drift and neither is authoritative.
+    #
+    # So the SHAPE of the per-gap object is theirs; WHICH gap to work this
+    # round is mine. Until they ship it, `closure_by` stays empty and every
+    # rule reading it behaves exactly as it did before it existed -- see
+    # closure_trend()'s "fewer than two reports is FLAT".
+    #
+    # THIS IS A CONSUMER WITH NO PRODUCER, DELIBERATELY AND TEMPORARILY. It is
+    # named here so the next reader does not mistake an empty ledger for "react
+    # reported no progress" -- the could-not-check / checked-false collapse
+    # that this whole contract exists to end.
     return "\n".join(lines)

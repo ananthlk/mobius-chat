@@ -113,8 +113,21 @@ def test_the_block_never_writes_the_query():
              attempts=(Attempt(round_index=1, tool="rag", query="sunshine care",
                                returned_payload=True, targeted=True),))
     block = governor_block(g, remaining=(g,))
-    for banned in ("search for:", "query:", "use the query"):
-        assert banned not in block.lower()
+
+    # THE PROPERTY, not a banned substring. An earlier version of this test
+    # banned "query:" -- which "Previous query: ..." trips while REPORTING
+    # history, the opposite of writing one. A fingerprint gate fails on the
+    # legitimate case and passes on the next illegitimate one.
+    #
+    # Every quoted string in the block must be something the governor was
+    # GIVEN: the gap's own text, or a query react actually ran. Anything else
+    # is the governor inventing a query.
+    import re
+    allowed = {g.text} | {a.query for a in g.attempted_by if a.query}
+    for quoted in re.findall(r'"([^"]+)"', block):
+        assert quoted in allowed, (
+            f"the governor put {quoted!r} in the prompt; it was never given it"
+        )
 
 
 def test_no_gap_means_no_block():
@@ -230,3 +243,47 @@ def test_the_governor_does_not_name_the_missing_parts_itself():
     # The question is quoted once, as the question. The governor must not emit
     # a list of sub-questions of its own devising.
     assert block.count("Molina") == 1, "the governor split the question itself"
+
+
+# ── the block asks for WHICH gap; the SHAPE of closure is the prompt seat's ──
+
+def test_the_block_does_not_ask_for_closure():
+    """LLM seat owns evidence_review's schema, and applied my own rule back at
+    me: one place asking for it is right, two is a contradiction waiting for
+    whoever debugs it next. WHICH gap is mine; the shape of the per-gap object
+    is theirs."""
+    from app.pipeline.v2.posture import Directive, seed_root_gap
+    g = _gap(SUN, "S384280",
+             attempts=(Attempt(round_index=2, tool="rag", query="q",
+                               returned_payload=True, targeted=True),))
+    root = seed_root_gap("a question")
+    for block in (governor_block(g, remaining=(g,), directive=Directive.CLOSE),
+                  governor_block(root, remaining=(root,), round_index=2)):
+        assert "closure" not in block.lower(), (
+            "the block is asking for a field the prompt seat owns"
+        )
+
+
+def test_one_attempt_is_not_a_stall():
+    """closure_trend() answers FLAT with fewer than two reports -- correct for
+    a TREND, wrong as ADVICE. With closure unreported (no producer yet), every
+    gap would be told "not moving, change the approach" after a single try:
+    could-not-check read as checked-false, arriving as a prompt.
+
+    Found by rendering the block, not by reading the predicate.
+    """
+    from app.pipeline.v2.posture import Directive
+    one = _gap(SUN, "S384280",
+               attempts=(Attempt(round_index=2, tool="rag", query="q1",
+                                 returned_payload=True, targeted=True),))
+    block = governor_block(one, remaining=(one,), directive=Directive.CLOSE)
+    assert "not moving" not in block
+    assert "searched once" in block
+
+    two = _gap(SUN, "S384280",
+               attempts=(Attempt(round_index=2, tool="rag", query="q1",
+                                 returned_payload=True, targeted=True),
+                         Attempt(round_index=3, tool="rag", query="q2",
+                                 returned_payload=True, targeted=True)))
+    block2 = governor_block(two, remaining=(two,), directive=Directive.CLOSE)
+    assert "not moving" in block2, "two pulls of the same lever IS a stall"
