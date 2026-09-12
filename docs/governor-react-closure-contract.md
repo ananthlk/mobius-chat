@@ -59,9 +59,26 @@ R2+  governor names ONE gap  →  react works it    →  closure per gap
      └─ closure 0 after a targeted attempt → CAPABILITY, on evidence
 ```
 
-Round 1 already works: `react.response_shape` v5 asks for `gaps_open` on
-round 1 and a three-payer question yields three gaps at `opened_round=1`.
-Steps 2 onward are what this contract adds.
+Round 1 asks the question AS ASKED. `react.response_shape` v5 requests
+`gaps_open` on round 1, and that stays — naming the parts is how the governor
+gets real gaps at round 2 instead of a seeded root.
+
+**But naming the parts is a REPORT, not a plan.** Ananth, 2026-09-12:
+
+> *"i dont think rag should necessarily compare and contrast the 3 payor query
+> to 3 gaps.. that is immature... the old instruction actually works.. compare..
+> get info.. round 2, explore what is missing and create gaps.. our tools can
+> decompose and get better answers."*
+
+Measured: a broad three-payer query had rag search all three payers through its
+own slot decomposition in ~30s; a single-payer query spent 73s covering one.
+Retriever confirmed the mechanism — every entity becomes its own slot
+(`orchestrator.py:786-828`). **The tool decomposes better than a surface split,
+and the split costs rounds the promise does not have.**
+
+An earlier version of this line treated a surface split at round 1 as the goal.
+It is not. Steps 2 onward are what this contract adds; round 1 is unchanged and
+deliberately unsteered.
 
 ---
 
