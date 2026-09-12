@@ -5975,6 +5975,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if getattr(ctx, "orchestrator_version", "v1") == "v2":
             try:
                 from app.pipeline.v2 import contract as _v2c
+                # store directly HERE, and only here: the round row is
+                # CONTRACT telemetry (append-only, what react claimed at a
+                # moment), not memory. The memory manager owns what is
+                # REMEMBERED; it does not own the transcript of what was said.
+                # Conflating them would put a policy layer in front of a log.
                 from app.pipeline.v2 import store as _v2store
                 _v2_resp = _v2c.parse(decision if isinstance(decision, dict) else None)
                 _v2store.save_round(_v2c.to_row(
@@ -5982,18 +5987,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     correlation_id=(ctx.correlation_id or ""),
                     thread_id=(ctx.thread_id or ""),
                     round_index=rn))
-                # THE LEDGER THAT STOPS US RE-SENDING. Facts carry across
-                # turns at ~100 chars each; the passages behind them cost
-                # ~9,000. Only grounded facts are stored -- a fact with no
-                # document cannot be checked later and would re-enter the next
-                # turn as an unsourced claim.
-                _v2store.record_evidence(
-                    (ctx.thread_id or ""),
-                    correlation_id=(ctx.correlation_id or ""),
-                    useful=[{"document": f.document, "page": f.page,
-                             "fact": f.fact}
-                            for f in _v2_resp.facts if f.grounded],
-                    not_useful=_v2_resp.not_useful)
+                # THE LEDGER THAT STOPS US RE-SENDING, through the MEMORY
+                # MANAGER. It owns which tier a verdict lands in and what is
+                # refused -- ungrounded facts are dropped there, loudly,
+                # because a fact with no document would re-enter the next turn
+                # as an unsourced claim wearing the authority of memory.
+                from app.pipeline.v2 import memory as _v2mem
+                _v2mem.remember(ctx, facts=_v2_resp.facts,
+                                not_useful=_v2_resp.not_useful)
                 logger.info("[v2.contract] cid=%s round=%s shape=%s facts=%d "
                             "not_useful=%d problems=%s",
                             (ctx.correlation_id or "")[:8], rn,

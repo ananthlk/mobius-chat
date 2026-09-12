@@ -380,21 +380,31 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
     #
     # Fail-soft: a store that is down must not cost the turn its in-turn
     # memory, so this only ever ADDS to what the rounds already produced.
+    # ── WHAT THIS THREAD ALREADY KNOWS ──────────────────────────────────
+    # Through the MEMORY MANAGER, never the store directly. Ananth: "YOU NEED
+    # A MEMORY MANAGER MODULE TO DO THIS UNLESS THERE IS ALREADY ONE THAT
+    # WORKS" -- there was not: ctx._evidence_memory (turn, chunks),
+    # persistence/memory.py (worker, session state) and thread_evidence
+    # (thread, facts) did not know about each other, and reading the store
+    # from here would have made this a fourth.
+    #
+    # v2/memory.py owns WHICH tier answers and how much rides along; this
+    # function only asks. Stored facts lead the USEFUL block because they are
+    # already judged and cost ~100 characters where their passages cost ~9,000.
     stored_useful: list[str] = []
     try:
-        from app.pipeline.v2 import store as _v2store
-        _su, _snu = _v2store.load_evidence(str(getattr(ctx, "thread_id", "") or ""))
-        for _f in _su:
-            # The FACT is what we re-send, with its provenance attached so it
-            # stays checkable. Falling back to the label alone when a row has
-            # no fact text keeps an older row usable instead of dropping it.
-            _line = (f"{_f['fact']} [{_f['label']}]" if _f.get("fact")
-                     else str(_f.get("label") or ""))
-            if _line and _line not in stored_useful:
-                stored_useful.append(_line)
-        for _l in _snu:
+        from app.pipeline.v2 import memory as _v2mem
+        _rc = _v2mem.recall(ctx)
+        stored_useful = list(_rc.facts)
+        for _l in _rc.not_useful:
             if _l and _l not in discarded:
                 discarded.append(_l)
+        if _rc.unavailable:
+            # NOT swallowed. An empty memory and an unreachable one produce the
+            # same empty list and carry opposite advice.
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "[v2.memory] degraded for this turn: %s", "; ".join(_rc.unavailable))
     except Exception:
         pass
 
