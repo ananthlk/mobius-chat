@@ -127,6 +127,23 @@ class Attempt:
     model: str | None = None
     query: str | None = None
     returned_payload: bool = False
+    # Did this call actually target THIS gap?
+    #
+    # Wired 2026-09-12. state_from_ctx appended every round's call to EVERY
+    # open gap, so one "Molina care management philosophy" search marked the
+    # Sunshine and UnitedHealthcare gaps attempted too. exhausted() then read
+    # three attempted-and-empty gaps and returned CAPABILITY -- "we tried and
+    # cannot" -- for two payers nobody had ever searched, while 113 Sunshine
+    # chunks sat in the corpus.
+    #
+    # False does NOT mean "did not target this gap". It means NOT KNOWN to
+    # have targeted it, and the two must not be collapsed: the predicates
+    # below count only targeted attempts, so an unattributable call now
+    # leaves a gap untried (BUDGET, continuation honest) rather than
+    # falsely exhausted (CAPABILITY, terminal). Could-not-check is not
+    # checked-false, and the expensive direction of that mistake is the one
+    # that tells a user we looked when we did not.
+    targeted: bool = True
 
 
 # posture -> measured proxy. `basis` names WHICH measurement, so a reader can
@@ -341,8 +358,19 @@ def trend(history: tuple[int, ...]) -> Trend:
     return Trend.FLAT
 
 
+def targeted_attempts(gap: Gap) -> tuple[Attempt, ...]:
+    """The attempts we KNOW were aimed at this gap.
+
+    Every "has this gap been tried?" question routes through here, so the
+    answer cannot drift between predicates. An attempt whose target could not
+    be established is excluded -- see Attempt.targeted for why the unknown
+    case must not count as tried.
+    """
+    return tuple(a for a in gap.attempted_by if a.targeted)
+
+
 def distinct_levers(gap: Gap) -> int:
-    return len({(a.tool, a.model) for a in gap.attempted_by})
+    return len({(a.tool, a.model) for a in targeted_attempts(gap)})
 
 
 def stuck(gap: Gap, current_round: int) -> bool:
@@ -350,7 +378,7 @@ def stuck(gap: Gap, current_round: int) -> bool:
     return (
         gap.age(current_round) >= STUCK_AGE_ROUNDS
         and distinct_levers(gap) >= STUCK_MIN_LEVERS
-        and not any(a.returned_payload for a in gap.attempted_by)
+        and not any(a.returned_payload for a in targeted_attempts(gap))
     )
 
 
@@ -497,7 +525,8 @@ def unreachable(gap: Gap, current_round: int) -> bool:
     flattering error this distinction exists to prevent."""
     return bool(
         stuck(gap, current_round)
-        or (gap.attempted_by and not any(a.returned_payload for a in gap.attempted_by))
+        or (targeted_attempts(gap)
+            and not any(a.returned_payload for a in targeted_attempts(gap)))
     )
 
 
@@ -733,7 +762,8 @@ def exit_mode(state: RoundState) -> ExitMode:
     # A gap never attempted is BUDGET -- we ran out before trying it, which is a
     # different fact and carries the opposite advice about continuing.
     def exhausted(g: Gap) -> bool:
-        return bool(g.attempted_by) and not any(a.returned_payload for a in g.attempted_by)
+        _tried = targeted_attempts(g)
+        return bool(_tried) and not any(a.returned_payload for a in _tried)
 
     if all(exhausted(g) for g in material):
         return ExitMode.CAPABILITY

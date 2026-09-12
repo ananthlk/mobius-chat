@@ -19,6 +19,7 @@ observer that can break the thing it observes is not an observer.
 from __future__ import annotations
 
 import logging
+import re
 
 from app.pipeline.v2.posture import (
     explain, gap_id_for, jaccard,
@@ -111,6 +112,67 @@ def map_directive(directive: str | None, reason: str | None = None) -> Posture |
     return DIRECTIVE_TO_POSTURE.get(d)
 
 
+_STOPWORDS = frozenset("""
+a an and are as at be by for from has have how in into is it its of on or
+that the their this to was were what when where which who why with
+""".split())
+
+
+def _tokens(text: str) -> set[str]:
+    """Lowercase word set, stopwords removed. No stemming: a token that only
+    MIGHT be the same word is not evidence that a gap was searched."""
+    out: set[str] = set()
+    for raw in re.split(r"[^a-z0-9]+", (text or "").lower()):
+        if len(raw) > 2 and raw not in _STOPWORDS:
+            out.add(raw)
+    return out
+
+
+def _targeting(gaps: list[str], query: str | None) -> dict[str, bool]:
+    """Which of this round's open gaps did this query actually aim at?
+
+    THE RULE: a gap's DISTINCTIVE tokens are the ones its siblings do not
+    share. On "care management philosophy for Molina, Sunshine and UHC" the
+    three gaps share "care management philosophy" and are distinguished only
+    by the payer name -- so the payer name is the only token that can witness
+    which gap a query targeted. A gap is targeted iff at least one of its
+    distinctive tokens appears in the query.
+
+    Derived from the SIBLING SET rather than a fixed list, because what
+    distinguishes gaps is a property of the question, not of healthcare. On a
+    3x3 payer/topic question the distinctive tokens are payer AND topic, and
+    both must be absent for a gap to be judged unaimed.
+
+    Two deliberate fallbacks, both to TRUE, because the cost of wrongly
+    marking a gap unaimed is a round we did not need to buy, while the cost of
+    wrongly marking it aimed is telling a user we searched when we did not:
+      * no query recorded  -> unknown; keep prior behaviour, attribute to all
+      * a gap with no distinctive tokens (single gap, or siblings identical)
+        -> nothing could discriminate it, so the query is as much its as
+        anyone's
+    """
+    if not query or not gaps:
+        return {}
+    if len(gaps) < 2:
+        # Targeting is a RELATIVE fact: it only means anything when a rival
+        # gap could have been the intended one. With a single gap open, the
+        # round's one call belongs to it whatever the query says -- and the
+        # distinctive-token rule below would compute the whole token set as
+        # distinctive and answer False on any rewording.
+        return {gaps[0]: True}
+    qt = _tokens(query)
+    per_gap = {g: _tokens(g) for g in gaps}
+    out: dict[str, bool] = {}
+    for g, toks in per_gap.items():
+        shared: set[str] = set()
+        for other, o_toks in per_gap.items():
+            if other != g:
+                shared |= (toks & o_toks)
+        distinctive = toks - shared
+        out[g] = True if not distinctive else bool(distinctive & qt)
+    return out
+
+
 def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
                    promise_latency_s: float, round_cost_s: float,
                    acting_cost_s: float) -> RoundState | None:
@@ -168,13 +230,15 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
             # how an observer starts costing what it observes.
             _running = str(enr.get("running_answer") or "").strip()
             returned = bool(closed) or bool(_running)
+            _aimed = _targeting(gaps, query)
             for g in gaps:
                 attempts_by_text.setdefault(g, [])
                 if tool:
                     attempts_by_text[g].append(
                         Attempt(round_index=int((r or {}).get("round") or 0),
                                 tool=tool, query=query,
-                                returned_payload=returned))
+                                returned_payload=returned,
+                                targeted=_aimed.get(g, True)))
 
         opened_at: dict[str, int] = {}
         for r in rounds:
