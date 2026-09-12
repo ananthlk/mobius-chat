@@ -4533,7 +4533,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
             _plan = _v2pre.plan(_offer_keys)
             if not _plan.is_empty:
-                _t_pre = _pp_time_mod.monotonic()
+                # Own import, NOT _pp_time_mod: that name is bound at :4649,
+                # a hundred lines BELOW this block, so referencing it here
+                # raised UnboundLocalError and the fail-soft swallowed it --
+                # preload logged, did nothing, and the turn looked normal.
+                #
+                # Second time tonight (see "kept"): reaching for a local that
+                # is assigned further down a 6,900-line function. In a file
+                # this long, "is it in scope here?" is not answerable by
+                # reading nearby code.
+                import time as _preload_time
+                _t_pre = _preload_time.monotonic()
                 ctx._v2_preloaded = _v2pre.execute(
                     _plan,
                     lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter),
@@ -4546,7 +4556,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     ",".join(_plan.execute),
                     sum(1 for r in ctx._v2_preloaded if r.get("ok")),
                     ",".join(_plan.suggest),
-                    _pp_time_mod.monotonic() - _t_pre,
+                    _preload_time.monotonic() - _t_pre,
                 )
         except Exception as _pre_e:      # pragma: no cover
             logger.warning("[v2.preload] failed cid=%s: %s",

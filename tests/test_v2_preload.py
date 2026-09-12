@@ -258,3 +258,63 @@ def test_tool_manifest_is_in_the_build_context_allowlist():
         f"COPYd but not allowlisted in .dockerignore: {missing} -- the COPY "
         f"will get nothing and the failure is silent"
     )
+
+
+def test_preload_does_not_reference_locals_bound_later():
+    """LIVE: "[v2.preload] failed: cannot access local variable
+    '_pp_time_mod'" -- bound 100 lines BELOW the preload block. The fail-soft
+    swallowed it, so preload logged, did nothing, and the turn looked normal.
+
+    Second UnboundLocalError tonight from the same cause (see `kept`). In a
+    6,900-line function "is this name in scope here?" is not answerable by
+    reading nearby code, so this is asserted over the AST: every Name the
+    preload block LOADS must be bound at or above it, or be a global/import.
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    tree = ast.parse(src)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef)
+               and any("MOBIUS_V2_PRELOAD" in ast.dump(x) for x in ast.walk(n))),
+              None)
+    assert fn is not None, "preload block not found"
+
+    start = next(n.lineno for n in ast.walk(fn)
+                 if isinstance(n, ast.Constant) and n.value == "MOBIUS_V2_PRELOAD")
+    # Locals assigned at or before the preload block, plus its own imports.
+    bound = {t.id for n in ast.walk(fn) if isinstance(n, ast.Assign)
+             and n.lineno <= start + 60
+             for t in n.targets if isinstance(t, ast.Name)}
+    bound |= {a.asname or a.name for n in ast.walk(fn)
+              if isinstance(n, ast.Import) and n.lineno <= start + 60
+              for a in n.names}
+    bound |= {a.asname or a.name for n in ast.walk(fn)
+              if isinstance(n, ast.ImportFrom) and n.lineno <= start + 60
+              for a in n.names}
+    bound |= {a.arg for a in fn.args.args}
+    # Lambda parameters, except-handler names, and module-level functions are
+    # all legitimately in scope and are NOT function-locals bound later.
+    # Omitting them made the first version of this gate flag five false
+    # positives -- and a gate that cries wolf gets deleted, which is worse than
+    # no gate. Same correction as the .dockerignore gate an hour ago.
+    bound |= {a.arg for n in ast.walk(fn) if isinstance(n, ast.Lambda)
+              for a in n.args.args}
+    bound |= {n.name for n in ast.walk(fn)
+              if isinstance(n, ast.ExceptHandler) and n.name}
+    bound |= {n.name for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef)}
+
+    # Names the block READS that look like function-locals (leading underscore)
+    # and are not bound above it.
+    late = set()
+    for n in ast.walk(fn):
+        if not (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)):
+            continue
+        if not (start <= n.lineno <= start + 60):
+            continue
+        if n.id.startswith("_") and n.id not in bound:
+            late.add(n.id)
+    assert not late, (
+        f"preload reads locals bound later in the function: {sorted(late)}"
+    )
