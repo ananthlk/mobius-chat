@@ -5861,11 +5861,27 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 len(_round_attachments), rn, getattr(ctx, "correlation_id", None),
                 [len(a.get("data_b64") or "") for a in _round_attachments],
             )
+        # v2's output ceiling comes from v2/prompts.py and is passed
+        # EXPLICITLY; None leaves v1 on react/prompts.py's own floor, which is
+        # where it was measured. A floor never lowers a caller's ask, so v2 gets
+        # its headroom without react/prompts.py knowing an arm exists — the
+        # ungated version of this raise moved BOTH arms and would have made
+        # every A/B number measure two changes at once.
+        # GATED BEFORE THE IMPORT, not inside the helper. round_max_tokens()
+        # already returns None for v1, but that still runs v2 code and imports
+        # a v2 module on v1's path -- and an import error there would break the
+        # arm that is supposed to be untouched. v1 executes nothing of v2's.
+        _v2_round_tokens = None
+        if str(getattr(ctx, "orchestrator_version", "v1")) == "v2":
+            from app.pipeline.v2 import prompts as _v2pr
+            _v2_round_tokens = _v2pr.round_max_tokens(ctx)
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,
             ctx=ctx,
             stage=f"react_{rn}",
+            **({"max_tokens": _v2_round_tokens}
+               if _v2_round_tokens is not None else {}),
             composition_id=_reasoning_composition_id,
             composition_hash=_reasoning_composition_hash,
             reasoning_depth=_bandit_reasoning_depth,
