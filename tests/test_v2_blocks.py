@@ -159,3 +159,51 @@ def test_roles_render_in_the_order_the_work_runs():
     assert r == ["role_judge", "role_summarise", "role_communicate"]
     txt = assemble(f)[0]
     assert txt.index("— JUDGE") < txt.index("— SUMMARISE") < txt.index("— COMMUNICATE")
+
+
+# ── the critic round: the enricher, as a role ───────────────────────────────
+# Ananth, 2026-09-12: "the round after = next steps + critic .. this allows us
+# to bypass the integrate enricher .. its just another loop"
+
+def _draft():
+    return Facts(question=Q, preloaded=(("rag", True, "17 passages"),),
+                 useful=("Molina_manual.pdf p5",),
+                 discarded=("Exhibit_II-A.pdf (none useful)",))
+
+
+def test_an_answer_turns_the_next_round_into_critic_plus_next_steps():
+    f = Facts(**{**_draft().__dict__, "answer": "Molina emphasises whole-person care."})
+    assert _roles(assemble(f)[1]) == ["role_critic", "role_next_steps"]
+
+
+def test_the_critic_round_carries_the_answer_and_the_evidence_it_came_from():
+    """The enrichment module critiqued a finished answer WITHOUT the evidence
+    behind it, so it could only judge tone. As a role it holds both."""
+    f = Facts(**{**_draft().__dict__, "answer": "Molina emphasises whole-person care."})
+    txt, rendered, _ = assemble(f)
+    assert "answer" in rendered and "preloaded" in rendered and "useful" in rendered
+    assert "Molina emphasises whole-person care." in txt
+    assert txt.index("[THE QUESTION]") < txt.index("[THE ANSWER GIVEN") \
+           < txt.index("[ALREADY RETRIEVED")
+
+
+def test_no_round_both_drafts_and_critiques():
+    """Asking one round to write the answer and review it is how a model
+    rubber-stamps its own text -- and it is also what would breach the cap."""
+    drafting = {"role_judge", "role_plan", "role_summarise", "role_communicate"}
+    critiquing = {"role_critic", "role_next_steps"}
+    for ans in ("", "some answer"):
+        for f in (Facts(question=Q, answer=ans, preloaded=(("rag", True, "x"),)),
+                  Facts(question=Q, answer=ans, useful=("d p1",)),
+                  Facts(question=Q, answer=ans, gaps=(("S1", "g"),),
+                        suggest=("web_scrape",), preloaded=(("rag", True, "x"),))):
+            r = set(_roles(assemble(f)[1]))
+            assert not (r & drafting and r & critiquing), (ans, r)
+            assert len(r) <= MAX_ROLES, (ans, r)
+
+
+def test_whitespace_is_not_an_answer():
+    """`answer` is the round selector; a blank string that is not falsy would
+    put the loop into critic mode with nothing to critique."""
+    f = Facts(**{**_draft().__dict__, "answer": "   \n  "})
+    assert "role_critic" not in _roles(assemble(f)[1])

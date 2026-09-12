@@ -47,10 +47,14 @@ from typing import Callable
 class Slot(IntEnum):
     """Render order. Identity first (who am I, who is asking), then role
     (what am I doing), then context (what do I have), then the ask."""
-    TOOL_IDENTITY = 1
-    USER_IDENTITY = 2
-    ROLE = 3
-    QUESTION = 4
+    TOOL_IDENTITY = 10
+    USER_IDENTITY = 20
+    ROLE = 30
+    QUESTION = 40
+    # The draft answer, when there IS one. Sits between the question and the
+    # evidence because that is what the critic round reads in that order:
+    # what was asked, what we said, what we said it from.
+    ANSWER = 45
     # Three separate slots, NOT one shared slot with an alphabetical tiebreak.
     # They were THIS_ROUND=5 together, and sorting by (slot, id) put
     # "suggest" before "this_round" -- so the prompt read "here are tools you
@@ -60,12 +64,12 @@ class Slot(IntEnum):
     #
     # The real sequence: what already came back, then which gap this round is
     # for, then what you may ask for next.
-    EVIDENCE = 5        # already retrieved, judge this
-    TARGET = 6          # work this gap and no other
-    TOOLS = 7           # tools you may request next
-    USEFUL = 8          # previous answers you found useful
-    NOT_USEFUL = 9      # info you did NOT find useful
-    COMPLETE = 10       # mark as complete
+    EVIDENCE = 50       # already retrieved, judge this
+    TARGET = 60         # work this gap and no other
+    TOOLS = 70         # tools you may request next
+    USEFUL = 80        # previous answers you found useful
+    NOT_USEFUL = 90    # info you did NOT find useful
+    COMPLETE = 100     # mark as complete
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,9 @@ class Facts:
     # react's own running judgement, carried forward.
     useful: tuple[str, ...] = ()              # what it kept and why it mattered
     discarded: tuple[str, ...] = ()           # what it saw and rejected
+    # The answer already written this turn, if one has been. Its PRESENCE is
+    # what turns the next round into the critic round -- see _drafting().
+    answer: str = ""
     can_complete: bool = True
 
 
@@ -102,6 +109,27 @@ class Block:
     # the EVIDENCE/TARGET/TOOLS comment above describes, one level down. Roles
     # run in the order the work runs: judge -> plan -> summarise -> communicate.
     rank: int = 0
+
+
+def _drafting(f: Facts) -> bool:
+    """True while the answer is still being WRITTEN.
+
+    Ananth, 2026-09-12: "the round after = next steps + critic .. this allows
+    us to bypass the integrate enricher .. and bypass a whole module by
+    allowing react to consume those roles.. its just another loop"
+
+    That is the whole mechanism. Enrichment was a separate module that read a
+    finished answer and bolted critique and next steps onto it -- a second
+    system, with its own model call, its own failure mode, and no access to the
+    evidence the answer came from. As a ROLE it is just the next turn of the
+    loop react is already in, holding everything react already holds.
+
+    Which means the roles split cleanly in two by one fact: has an answer been
+    written yet. Before -- judge, plan, summarise, communicate. After --
+    critic, next steps. Nothing renders on both sides, so no round exceeds the
+    cap and no round is asked to draft and review the same text at once.
+    """
+    return not f.answer.strip()
 
 
 def _bullets(items) -> str:
@@ -127,7 +155,7 @@ REGISTRY: tuple[Block, ...] = (
 
     # ── ROLE: two jobs, rendered only when each is real ──────────────────
     Block("role_judge", Slot.ROLE, rank=1,
-          when=lambda f: bool(f.preloaded),
+          when=lambda f: _drafting(f) and (bool(f.preloaded)),
           render=lambda f: "[YOUR ROLE — JUDGE] Evidence has already been "
                            "retrieved for you below. Read it and decide: does "
                            "it answer the question? Name every part it does "
@@ -138,7 +166,7 @@ REGISTRY: tuple[Block, ...] = (
           # PLAN needs something to plan FOR. Rendering it with no gap asks
           # react to choose a tool for nothing -- the round-1 contradiction
           # that had it searching twice.
-          when=lambda f: bool(f.gaps) and bool(f.suggest),
+          when=lambda f: _drafting(f) and (bool(f.gaps) and bool(f.suggest)),
           render=lambda f: "[YOUR ROLE — PLAN] For each gap still open, say "
                            "which tool would close it. Name the tool in your "
                            "gap report; you are not calling it this round.",
@@ -154,7 +182,7 @@ REGISTRY: tuple[Block, ...] = (
           # round, or kept from an earlier one. Not gated on completeness: a
           # PARTIAL answer written from real evidence is the correct outcome on
           # a multi-part question, and the grounding contract says so.
-          when=lambda f: bool(f.preloaded or f.useful),
+          when=lambda f: _drafting(f) and (bool(f.preloaded or f.useful)),
           render=lambda f: "[YOUR ROLE — SUMMARISE] Write the best answer the "
                            "kept evidence supports, and say plainly which "
                            "parts it does not cover. A partial answer from "
@@ -177,8 +205,8 @@ REGISTRY: tuple[Block, ...] = (
           # negation of role_plan's condition. That keeps any single round at
           # or under MAX_ROLES without a cap that silently drops a role: a
           # round still choosing tools is not the round that delivers.
-          when=lambda f: bool(f.preloaded or f.useful)
-                         and not (bool(f.gaps) and bool(f.suggest)),
+          when=lambda f: _drafting(f) and (bool(f.preloaded or f.useful)
+                         and not (bool(f.gaps) and bool(f.suggest))),
           render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
                            "user reads. Answer every part they asked, in the "
                            "order they asked it, naming each one. Cite the "
@@ -187,10 +215,36 @@ REGISTRY: tuple[Block, ...] = (
                            "the reader to notice the omission.",
           owner="governor"),
 
+    Block("role_critic", Slot.ROLE, rank=5,
+          # Replaces the enrichment module's critique pass. It has what that
+          # module never had: the evidence the answer was written from, and the
+          # record of what was rejected getting there.
+          when=lambda f: not _drafting(f),
+          render=lambda f: "[YOUR ROLE — CRITIC] Read the answer above against "
+                           "the evidence below it. Name any claim the evidence "
+                           "does not support, any part of the question it "
+                           "quietly skipped, and any place it sounds more "
+                           "certain than the evidence allows. If it is sound, "
+                           "say so — do not invent a criticism.",
+          owner="governor"),
+
+    Block("role_next_steps", Slot.ROLE, rank=6,
+          when=lambda f: not _drafting(f),
+          render=lambda f: "[YOUR ROLE — NEXT STEPS] Say what would actually "
+                           "close what is still open: the specific document, "
+                           "payer, or question to go after. Only steps this "
+                           "answer's own gaps call for — not generic advice.",
+          owner="governor"),
+
     Block("question", Slot.QUESTION,
           when=lambda f: bool(f.question),
           render=lambda f: f"[THE QUESTION] {f.question}",
           owner="chat"),
+
+    Block("answer", Slot.ANSWER,
+          when=lambda f: not _drafting(f),
+          render=lambda f: "[THE ANSWER GIVEN — critique this]\n" + f.answer,
+          owner="governor"),
 
     Block("this_round", Slot.TARGET,
           when=lambda f: bool(f.targeted_gap),
@@ -238,10 +292,19 @@ REGISTRY: tuple[Block, ...] = (
 
 
 # Ananth: "no more than 2 or 3 roles judge, plan, summarise", then
-# "FINAL = SUMMARIZE + COMMUNICATE". Four roles EXIST; the cap is per ROUND,
-# and the `when` conditions -- not a truncation -- are what hold it: PLAN and
-# COMMUNICATE are mutually exclusive by construction (a round still choosing
-# tools is not the round that delivers), so no round can reach four.
+# "FINAL = SUMMARIZE + COMMUNICATE", then "the round after = next steps +
+# critic". SIX roles exist; the cap is per ROUND, and the `when` conditions --
+# not a truncation -- are what hold it. Two exclusions do all the work:
+#
+#   _drafting(f)           splits {judge, plan, summarise, communicate}
+#                          from {critic, next_steps}. Nothing spans it.
+#   plan needs a tool to
+#   suggest; communicate    keeps the drafting side at three.
+#   needs nothing left to
+#   suggest
+#
+# A cap enforced by SLICING would silently drop whichever role sorted last, and
+# a missing instruction is invisible in the output it fails to produce.
 MAX_ROLES = 3
 
 
