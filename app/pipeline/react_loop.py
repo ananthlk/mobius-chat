@@ -4905,10 +4905,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                "falling back to unfiltered preload", _off_e)
                 _tool_inputs = _tool_reasons = _tool_ceilings = {}
 
+            # Turn state Tool Manifest cannot see. They rank from the question
+            # and the catalogue; whether THIS thread has uploads is ours.
+            _turn_state = {
+                "thread_uploads": len(
+                    getattr(ctx, "thread_document_uploads", None)
+                    or getattr(ctx, "instant_rag_documents", None) or []),
+            }
             _plan = _v2pre.plan(_offer_keys,
                                 inputs=_tool_inputs or None,
                                 reasons=_tool_reasons or None,
-                                ceilings=_tool_ceilings or None)
+                                ceilings=_tool_ceilings or None,
+                                turn_state=_turn_state)
             # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
             # dev turn with no preload looked identical in the logs to a turn
             # where the block never executed -- and I spent a chase on exactly

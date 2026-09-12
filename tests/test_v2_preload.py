@@ -591,3 +591,35 @@ def test_a_tool_too_slow_to_preload_is_still_offerable():
               inputs={"rag": {"query": "Q"}, "slow": {"query": "Q"}},
               ceilings={"rag": 20000, "slow": 30000})
     assert "slow" not in pl.execute and "slow" in pl.suggest
+
+
+# ── preconditions this seat can check and Tool Manifest cannot ─────────────
+
+def test_a_tool_whose_precondition_is_knowably_false_is_not_run():
+    """MEASURED LIVE: search_uploaded_document was ranked into preload on a
+    payer-policy question and returned "No uploads on this thread." — a call we
+    could have known was pointless, because whether the THREAD has uploads is
+    turn state and estimate() ranks from the question and the catalogue.
+
+    NOT a judgement about usefulness — that is selection and it is theirs.
+    Its precondition is false RIGHT NOW, from state only this side holds."""
+    I = {k: {"query": "Q"} for k in ("rag", "search_uploaded_document")}
+    pl = plan(list(I), inputs=I, turn_state={"thread_uploads": 0})
+    assert "search_uploaded_document" not in pl.execute
+    assert "search_uploaded_document" in pl.suggest      # still offered
+
+
+def test_the_same_tool_runs_when_the_precondition_HOLDS():
+    """The gate is about this turn, not about the tool."""
+    I = {k: {"query": "Q"} for k in ("rag", "search_uploaded_document")}
+    pl = plan(list(I), inputs=I, turn_state={"thread_uploads": 3})
+    assert "search_uploaded_document" in pl.execute
+
+
+def test_unknown_turn_state_does_not_block_anything():
+    """Absent state is not a false precondition — inventing one would drop
+    tools for a reason nobody established."""
+    I = {k: {"query": "Q"} for k in ("rag", "search_uploaded_document")}
+    assert "search_uploaded_document" in plan(list(I), inputs=I).execute
+    assert "search_uploaded_document" in plan(list(I), inputs=I,
+                                              turn_state={}).execute

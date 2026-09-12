@@ -345,10 +345,33 @@ def question_input(schema: dict | None, question: str) -> dict:
     return {key_or_why: question} if ok else {}
 
 
+# Preconditions THIS SEAT can check and Tool Manifest cannot.
+#
+# Measured live: search_uploaded_document was ranked into preload on a
+# payer-policy question and returned "No uploads on this thread." — a call we
+# could have known was pointless, because whether the THREAD has uploads is
+# turn state, and estimate() ranks from the question and the catalogue.
+#
+# 🔴 THIS IS NOT A JUDGEMENT ABOUT USEFULNESS. I am not saying the tool is
+# unhelpful — that is selection and it is theirs. I am saying its precondition
+# is knowably FALSE right now, from state only this side holds. If the thread
+# had uploads it would run. And like every other preload exclusion, the tool
+# stays OFFERED to react in `suggest`.
+def unmet_precondition(tool: str, state: dict | None) -> str:
+    """Why this tool cannot possibly return anything on THIS turn, or ""."""
+    if not state:
+        return ""
+    if tool in ("search_uploaded_document", "list_thread_document_uploads"):
+        if state.get("thread_uploads") == 0:
+            return "no uploads on this thread — nothing for it to search"
+    return ""
+
+
 def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
          suggest_n: int = SUGGEST_N, inputs: dict | None = None,
          reasons: dict | None = None,
-         ceilings: dict | None = None) -> PreloadPlan:
+         ceilings: dict | None = None,
+         turn_state: dict | None = None) -> PreloadPlan:
     """Rank-ordered offer -> (execute, suggest, excluded).
 
     `offer_tool_keys` is Offer.tools in the order estimate() returned them --
@@ -395,6 +418,11 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
                 suggestable.append(key)
                 excluded.append((key, why))
                 continue
+        _unmet = unmet_precondition(key, turn_state)
+        if _unmet:
+            suggestable.append(key)
+            excluded.append((key, _unmet))
+            continue
         ranked.append(key)
 
     # ALWAYS means "whatever it ranks", NOT "whether or not it was offered".
