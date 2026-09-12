@@ -210,7 +210,10 @@ def test_the_prompt_SOURCE_is_recorded_per_round():
     from app.pipeline.react.prompts import _react_reasoning_system
     prompt, prov = L._v2_system_prompt(3, "copilot", None, _react_reasoning_system)
     assert prompt.strip(), "no prompt at all"
-    assert isinstance(prov, dict) and prov.get("source") in ("v2_composition", "v1_fallback")
+    # Sources, in order of authority: v2's own composition when the LLM seat
+    # ships it, react's LIVE composition, then the legacy builder.
+    assert isinstance(prov, dict)
+    assert prov.get("source") in ("v2_composition", "v1_composition", "v1_legacy")
     assert '"v2_prompt_source"' in _code(), "the source is computed and discarded"
 
 
@@ -334,3 +337,99 @@ def test_arm_and_loop_are_INDEPENDENT():
     orch = _orch()
     i = orch.index('if ab_loop in ("v1", "v2"):')
     assert "ab_arm" not in orch[i:i + 300], "the loop pin reads the arm pin"
+
+
+# ── the two defects the first live turn exposed ─────────────────────────────
+
+def test_the_model_response_is_parsed_with_REACTS_parser():
+    """_call_llm_json RETURNS A STRING. My first version did
+    `raw if isinstance(raw, dict) else {}` — which was therefore ALWAYS {}.
+    Every round parsed as unusable, the loop bailed on its own
+    MAX_UNUSABLE_ROUNDS fuse, and published an EMPTY answer that everything
+    downstream then filled with an UNGROUNDED one: zero tool calls, zero
+    sources, a fluent three-payer comparison the corpus never supported.
+
+    Third return-shape guessed today (get_block, RenderedComposition, this).
+    The gates I had asserted that the imports RESOLVE — never that a round
+    produces a usable decision.
+    """
+    code = _code()
+    assert "_parse_react_decision_json(raw)" in code, "the response is not parsed"
+    assert "isinstance(raw, dict)" not in code, "the dict-shape guess is back"
+    # and it uses react's parser rather than a second one that would drift
+    assert "from app.pipeline.react.parsing import _parse_react_decision_json" in _src()
+
+
+def test_a_round_parses_a_REAL_model_response():
+    """Behaviour, not imports. Drives react's parser with the shapes a model
+    actually emits — bare, fenced, and wrapped in prose."""
+    from app.pipeline.react.parsing import _parse_react_decision_json as parse
+    for raw in (
+        '{"thought":"t","tool":"rag","inputs":{"query":"x"},"is_complete":false}',
+        '```json\n{"thought":"t","tool":"rag","inputs":{"query":"x"},"is_complete":false}\n```',
+        'preamble {"tool":"rag","inputs":{},"is_complete":false} trailing',
+    ):
+        d = parse(raw) or {}
+        assert d.get("tool") == "rag", raw[:40]
+
+
+def test_an_empty_answer_DEFERS_to_v1_instead_of_publishing_a_void():
+    """My own rule, written into the framing hook this morning and NOT written
+    here: "finalising an empty answer turns a governor decision into a blank
+    screen, which is worse than the round it is trying to save."
+
+    Live it was worse than a blank screen. The loop handed _finalize_response
+    an empty string and everything downstream composed an answer from NOTHING.
+    A void does not stay a void; it gets filled.
+    """
+    code = _code()
+    assert "if not answer.strip():" in code, "an empty answer still publishes"
+    i = code.index("if not answer.strip():")
+    block = code[i:i + 900]
+    assert "run_react as _v1_loop" in block and "_v1_loop(ctx" in block, \
+        "an empty result does not defer to the known-good loop"
+    assert "return" in block
+    # the deferral must happen BEFORE the publish, or it publishes anyway
+    assert i < code.index("_finalize_response(ctx, answer")
+
+
+def test_the_deferral_is_RECORDED():
+    """A turn that silently fell back to v1 while labelled v2 would put v1's
+    behaviour in v2's column — the comparison would be measuring v1 twice."""
+    assert "v2_loop_deferred_to_v1" in _code()
+
+
+def test_the_prompt_is_REACTS_LIVE_one_with_a_tool_manifest():
+    """Ananth: "is this a prompt thing — check v1 prompt." It was.
+
+    react builds its round prompt at react_loop.py:4807 via
+    resolve_react_system_prompt_v2 whenever MOBIUS_PROMPT_SOURCE=composition,
+    which is SET in dev. I used `_react_reasoning_system` — the legacy builder
+    react's own comments call "rarely hit live" — AND passed no allowed_tools.
+    A prompt whose tool manifest is empty gives the model nothing to call,
+    which is exactly the "no usable tool call" that made every round unusable
+    on the first live run.
+    """
+    from app.pipeline.react.prompts import _react_reasoning_system
+    prompt, prov = L._v2_system_prompt(
+        10, "agentic", None, _react_reasoning_system,
+        allowed_tools=None, agent_role="explore")
+    assert prov["source"] in ("v2_composition", "v1_composition", "v1_legacy")
+    assert prov["source"] != "v1_fallback", "the museum-piece fallback is back"
+    # the prompt must actually offer tools, or the model cannot call one
+    assert "rag" in prompt.lower(), "the prompt carries no tool manifest"
+    assert len(prompt) > 5000
+
+
+def test_allowed_tools_reaches_every_prompt_path():
+    """react passes ctx.allowed_tools into BOTH its builders. Omitting it is
+    how the manifest goes empty — and an empty manifest is indistinguishable,
+    from the outside, from a model that simply chose not to call a tool."""
+    code = _code()
+    assert 'allowed_tools=getattr(ctx, "allowed_tools", None)' in code
+    src = _src()
+    i = src.index("def _v2_system_prompt")
+    body = src[i:]
+    assert "resolve_react_system_prompt_v2(" in body
+    assert "allowed_tools, agent_role)" in body, "the composition path drops allowed_tools"
+    assert "allowed_tools=allowed_tools" in body, "the legacy path drops allowed_tools"

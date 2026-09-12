@@ -130,6 +130,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         react_chat_mode_label,
         react_max_iterations_for_mode,
     )
+    from app.pipeline.react.parsing import _parse_react_decision_json
     from app.pipeline.react_loop import (
         _execute_tool_with_retry,
         _finalize_response,
@@ -221,16 +222,31 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             system, prompt_source = _v2_system_prompt(
                 max_rounds, mode, getattr(ctx, "user_profile", None),
                 _react_reasoning_system,
+                allowed_tools=getattr(ctx, "allowed_tools", None),
+                agent_role=_agent_role_for(decision.posture),
             )
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
-            raw = _call_llm_json(system, user, ctx=ctx, stage="planner")
+            raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
+                                 stage=f"react_{rn}")
             res.rounds[-1]["v2_prompt_source"] = prompt_source
         except Exception as exc:
             logger.warning("[v2.loop] round %s model call failed: %s", rn, exc)
             res.stopped_by = "model_error"
             break
 
-        decision_json = raw if isinstance(raw, dict) else {}
+        # _call_llm_json RETURNS A STRING. My first version did
+        # `raw if isinstance(raw, dict) else {}`, which was therefore ALWAYS
+        # {} -- every round parsed as unusable, the loop bailed on its own
+        # MAX_UNUSABLE_ROUNDS fuse, and it published an EMPTY answer that
+        # everything downstream then filled with an ungrounded one. Zero tool
+        # calls, zero sources, a confident three-payer comparison with nothing
+        # behind it.
+        #
+        # Third return-shape I guessed today (get_block, RenderedComposition,
+        # this). react's own parser handles the fence-stripping and balanced
+        # -object extraction; reimplementing it would be a second parser to
+        # drift.
+        decision_json = _parse_react_decision_json(raw) or {}
         tool = (decision_json.get("tool") or "").strip() or None
         answer = (decision_json.get("answer") or "").strip()
 
@@ -306,6 +322,36 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         pass
 
     answer = res.answer or _best_running_answer(ctx) or ""
+
+    # ── AN EMPTY ANSWER MUST NOT PUBLISH ────────────────────────────────────
+    # My own rule, written into the framing hook this morning and NOT written
+    # here: "finalising an empty answer turns a governor decision into a blank
+    # screen, which is worse than the round it is trying to save."
+    #
+    # Live it was worse than a blank screen. The loop handed _finalize_response
+    # an empty string and everything downstream composed an answer from
+    # NOTHING -- zero tool calls, zero sources, and a fluent three-payer
+    # comparison the corpus never supported. A void does not stay a void; it
+    # gets filled.
+    #
+    # So a loop that produced nothing DEFERS to v1 rather than publishing its
+    # absence. v1's loop is the known-good path; handing it the turn costs
+    # latency and yields a grounded answer, which is the right trade every
+    # time.
+    if not answer.strip():
+        logger.warning(
+            "[v2.loop] cid=%s produced NO answer (rounds=%d stopped_by=%s) -- "
+            "handing the turn to v1's loop rather than publishing a void",
+            (getattr(ctx, "correlation_id", "") or "")[:8],
+            len(res.rounds), res.stopped_by)
+        try:
+            ctx.v2_loop_deferred_to_v1 = True
+            ctx.v2_stopped_by = res.stopped_by
+        except Exception:
+            pass
+        from app.pipeline.react_loop import run_react as _v1_loop
+        _v1_loop(ctx, emitter=emitter)
+        return
     logger.info("[v2.loop] cid=%s DONE rounds=%d stopped_by=%s exit=%s len=%d",
                 (getattr(ctx, "correlation_id", "") or "")[:8],
                 len(res.rounds), res.stopped_by, res.exit_mode, len(answer))
@@ -388,8 +434,24 @@ def _best_running_answer(ctx: Any) -> str:
 V2_MODULE_KEY = "react.v2_governor"
 
 
+def _agent_role_for(posture) -> str:
+    """Which react composition this posture wants.
+
+    react selects a composition per round from its directive
+    (governor.directive_to_agent_role). The postures map onto the same three
+    roles, so v2 asks for the composition its posture implies rather than
+    always taking round-1's.
+    """
+    return {
+        "explore": "explore", "validate": "critique",
+        "narrow": "synthesize", "alternatives": "synthesize",
+        "communicate": "draft", "frame": "explore",
+    }.get(getattr(posture, "value", str(posture)), "explore")
+
+
 def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
-                      v1_builder) -> tuple[str, dict]:
+                      v1_builder, *, allowed_tools=None,
+                      agent_role: str = "explore") -> tuple[str, dict]:
     """(prompt, provenance). `provenance` names the composition, not a flag.
 
     The source is RECORDED rather than assumed. A run whose prompts silently
@@ -444,4 +506,34 @@ def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
             }
     except Exception as exc:
         logger.debug("[v2.loop] v2 prompt composition unavailable: %s", exc)
-    return v1_builder(max_rounds, mode, user_profile), {"source": "v1_fallback"}
+    # ── REACT'S LIVE COMPOSITION PATH ───────────────────────────────────────
+    # Ananth: "is this a prompt thing — check v1 prompt." It was.
+    #
+    # react builds its round prompt at react_loop.py:4807 via
+    # resolve_react_system_prompt_v2 whenever MOBIUS_PROMPT_SOURCE=composition
+    # -- which is SET in dev. I used `_react_reasoning_system` instead, the
+    # legacy builder react itself describes as "rarely hit live", AND passed no
+    # allowed_tools. A prompt whose tool manifest is empty gives the model
+    # nothing to call, which produces exactly the "no usable tool call" that
+    # made every round unusable on the first live run.
+    #
+    # So the fallback is react's REAL prompt, not a museum piece of it.
+    try:
+        from app.pipeline.react.prompts import resolve_react_system_prompt_v2
+
+        resolved = resolve_react_system_prompt_v2(
+            max_rounds, mode, user_profile, allowed_tools, agent_role)
+        if resolved is not None and (resolved.system_prompt or "").strip():
+            return resolved.system_prompt, {
+                "source": "v1_composition",
+                "agent_role": agent_role,
+                "composition_id": resolved.composition_id,
+                "composition_hash": resolved.composition_hash,
+            }
+    except Exception as exc:
+        logger.debug("[v2.loop] react composition unavailable: %s", exc)
+
+    # Last resort: the legacy builder, WITH allowed_tools this time.
+    return (v1_builder(max_rounds, mode, user_profile,
+                       allowed_tools=allowed_tools),
+            {"source": "v1_legacy", "agent_role": agent_role})
