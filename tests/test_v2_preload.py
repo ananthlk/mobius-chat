@@ -233,15 +233,26 @@ def test_tool_manifest_is_in_the_build_context_allowlist():
     """
     import pathlib
     df = pathlib.Path("Dockerfile").read_text()
-    di = pathlib.Path(".dockerignore").read_text()
+    # BOTH filters, because they are different files and only one of them is
+    # the one that matters. deploy.sh passes deploy/.gcloudignore via
+    # --ignore-file, so THAT governs what reaches Cloud Build; .dockerignore
+    # governs the builder once the tarball is there. Editing only .dockerignore
+    # cost two failed builds -- the directory never entered the tarball, and
+    # the COPY failed with "file not found in build context".
+    di = (pathlib.Path(".dockerignore").read_text()
+          + "\n@@GCLOUD@@\n"
+          + pathlib.Path("deploy/.gcloudignore").read_text())
     # The TOP-LEVEL sibling is what the allowlist governs: `!mobius-chat/`
     # admits mobius-chat/app and mobius-chat/eval alike. An earlier version of
     # this test compared full paths and flagged six false positives -- a gate
     # that cries wolf gets disabled, which is worse than no gate.
     copied = {ln.split()[1].split("/")[0] for ln in df.splitlines()
               if ln.startswith("COPY mobius-")}
-    allowed = {ln[1:].rstrip("/") for ln in di.splitlines()
-               if ln.startswith("!mobius-")}
+    docker_part, gcloud_part = di.split("@@GCLOUD@@")
+    allow = lambda txt: {ln[1:].rstrip("/") for ln in txt.splitlines()
+                         if ln.startswith("!mobius-")}
+    # A sibling must clear BOTH: absent from either one and it never arrives.
+    allowed = allow(docker_part) & allow(gcloud_part)
     missing = {c for c in copied if c not in allowed}
     assert not missing, (
         f"COPYd but not allowlisted in .dockerignore: {missing} -- the COPY "
