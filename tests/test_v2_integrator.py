@@ -215,3 +215,36 @@ def test_a_single_part_question_still_falls_back_to_the_question():
     out = assemble(question="timely filing for Sunshine", answer="a",
                    facts=(), open_gaps=(), all_parts=())
     assert len(out.coverage) == 1
+
+
+# ── truncated is not malformed, and they need opposite fixes ────────────────
+
+def test_a_truncated_reply_says_TRUNCATED_and_names_the_budget():
+    """MEASURED against gemini-2.5-flash with the real prompt:
+         max_tokens=900  -> 166 chars, cut mid-word
+         max_tokens=3000 -> 936 chars, cut mid-word
+         max_tokens=8000 -> complete, parses
+    The budget includes THINKING tokens, so sizing it to the visible ~900-char
+    reply truncates. The first live run reported "was not JSON" for a reply
+    that was perfectly good JSON with its tail missing, and that wrong
+    diagnosis sent me to the prompt."""
+    out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
+              decision=_decision(),
+              runner=_runner(critic='```json\n{"summary": "the answer accur'))
+    assert any("TRUNCATED" in p and "CRITIC_MAX_TOKENS" in p for p in out.problems)
+    assert not any("was not JSON" in p for p in out.problems)
+
+
+def test_genuinely_malformed_still_says_not_json():
+    out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
+              decision=_decision(), runner=_runner(critic="I think it looks fine!"))
+    assert any("was not JSON" in p for p in out.problems)
+
+
+def test_empty_string_evidence_does_not_count_as_evidence():
+    """LIVE CASE: the critic returned status=supported with evidence [""] for a
+    fact that had no document. An empty string is not a citation."""
+    out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
+              decision=_decision(),
+              runner=_runner(critic='{"parts":[{"part":"UHC","status":"supported","evidence":[""]}]}'))
+    assert out.critique[0].status == "unobservable"

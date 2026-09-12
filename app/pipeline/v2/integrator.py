@@ -49,9 +49,23 @@ logger = logging.getLogger(__name__)
 CRITIC_BLOCK = "v2.integrator.critic"
 NEXT_STEPS_BLOCK = "v2.integrator.next_steps"
 
-# Both calls are bounded: they read an answer and a fact list, never passages.
-CRITIC_MAX_TOKENS = 900
-NEXT_STEPS_MAX_TOKENS = 500
+# 🔴 THESE BUDGETS INCLUDE THINKING TOKENS, which is why they look large for
+# such small outputs.
+#
+# Measured against gemini-2.5-flash with the real critic prompt:
+#     max_tokens=900   -> 166 chars, cut mid-word
+#     max_tokens=3000  -> 936 chars, cut mid-word
+#     max_tokens=8000  -> complete, parses
+#
+# The visible reply is ~900 characters. Sizing the budget to THAT truncates,
+# because the model spends most of it thinking before emitting anything. The
+# first live integration run reported "critique was not JSON" and the reply was
+# in fact perfectly good JSON with its tail missing -- a wrong diagnosis that
+# sent me looking at the prompt.
+#
+# Cost is unaffected by the ceiling: we pay for tokens produced, not offered.
+CRITIC_MAX_TOKENS = 8000
+NEXT_STEPS_MAX_TOKENS = 3000
 
 
 @dataclass(frozen=True)
@@ -399,6 +413,20 @@ def _settle(fut, name, ran, problems):
         return ""
 
 
+def _truncated(raw) -> bool:
+    """Did the reply stop mid-object rather than arrive malformed?
+
+    A truncated reply and an unparseable one need OPPOSITE fixes -- raise the
+    budget vs change the prompt -- and reporting both as "was not JSON" sent me
+    to the prompt for a reply that was already correct.
+    """
+    s = str(raw or "").strip()
+    if "{" not in s:
+        return False
+    body = s[s.find("{"):]
+    return body.count("{") > body.count("}")
+
+
 def _loads(raw):
     if not raw:
         return None
@@ -428,7 +456,12 @@ def _loads(raw):
 def _parse_critique(raw, problems) -> tuple[tuple[PartVerdict, ...], str]:
     d = _loads(raw)
     if not isinstance(d, dict):
-        if raw:
+        if _truncated(raw):
+            problems.append(
+                f"critique TRUNCATED at {len(str(raw))} chars — the reply was "
+                f"valid JSON with its tail missing; raise CRITIC_MAX_TOKENS "
+                f"(currently {CRITIC_MAX_TOKENS}), do not change the prompt")
+        elif raw:
             problems.append("critique was not JSON")
         return (), ""
     out = []
@@ -454,7 +487,11 @@ def _parse_critique(raw, problems) -> tuple[tuple[PartVerdict, ...], str]:
 def _parse_next_steps(raw, problems) -> tuple[str, ...]:
     d = _loads(raw)
     if not isinstance(d, dict):
-        if raw:
+        if _truncated(raw):
+            problems.append(
+                f"next_steps TRUNCATED at {len(str(raw))} chars — raise "
+                f"NEXT_STEPS_MAX_TOKENS (currently {NEXT_STEPS_MAX_TOKENS})")
+        elif raw:
             problems.append("next_steps was not JSON")
         return ()
     return tuple(str(s).strip() for s in (d.get("next_steps") or [])
