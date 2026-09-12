@@ -4884,47 +4884,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 logger.info("[v2.preload] estimate unavailable (%s); rag only", _tr_e)
                 _offer_keys = ["rag"]
 
-            # THE TOOLS' OWN DECLARED INPUTS. Without these, preload sent
-            # {"query": <the user's question>} to every planned tool, so an
-            # appeals-playbook lookup and an ICD-10/NPI lookup both ran against
-            # a care-management policy question -- the playbook logged
-            # "Checking playbook for ?" and the healthcare lookup timed out.
-            # Read from the registry, never a list kept here: a second opinion
-            # about what a tool takes rots the first time a skill changes.
-            _tool_schemas: dict = {}
-            try:
-                from app.skills import registry as _sk_reg
-                for _k in _offer_keys:
-                    # The tool key IS the skill name for everything except
-                    # rag, which _execute_tool dispatches as "search_corpus"
-                    # (see the SkillCall at :1759). That one alias is the whole
-                    # mapping -- a general tool->skill table maintained here
-                    # would be a second opinion about dispatch, and it would
-                    # disagree with _execute_tool the first time either moved.
-                    _sp = _sk_reg.get("search_corpus" if _k == "rag" else _k)
-                    if _sp is not None:
-                        _tool_schemas[_k] = getattr(_sp, "inputs_schema", {}) or {}
-            except Exception as _sch_e:   # pragma: no cover
-                logger.warning("[v2.preload] schema lookup failed (%s); "
-                               "falling back to unfiltered preload", _sch_e)
-                _tool_schemas = {}
-
-            # DECLARED WORST CASE, per tool, from the offer itself.
-            # Tool Manifest, 2026-09-12: 46 of 49 declared tools have NO
-            # ceiling, and estimate() prices worst case as `ceiling or p50` --
-            # so those 46 are budget-checked against their TYPICAL cost.
-            # healthcare_query declared 800ms and took 30s. The governor will
-            # not spend unbounded unpriced time before react has spoken.
+            # WHAT TO CALL EACH TOOL WITH — Tool Manifest's, not ours.
+            # ToolOffer.inputs names the call; None means the question cannot
+            # supply the tool's required arguments, and preload_reason says
+            # why. I previously read each skill's inputs_schema and decided
+            # this myself; Ananth: "why are you doing this and not
+            # tool_manifest". Their catalogue had healthcare_query's key as
+            # `question` all along — my guess of `query` is what sent a policy
+            # question into a 30s ICD-10 lookup.
+            _tool_inputs: dict = {}
+            _tool_reasons: dict = {}
             _tool_ceilings: dict = {}
             try:
                 for _t in (getattr(_off, "tools", None) or []):
-                    _tool_ceilings[_t.tool_key] = getattr(
-                        _t, "declared_ceiling_ms", None)
-            except Exception:      # pragma: no cover
-                _tool_ceilings = {}
+                    _tool_inputs[_t.tool_key] = getattr(_t, "inputs", None)
+                    _tool_reasons[_t.tool_key] = getattr(_t, "preload_reason", "") or ""
+                    _tool_ceilings[_t.tool_key] = getattr(_t, "declared_ceiling_ms", None)
+            except Exception as _off_e:   # pragma: no cover
+                logger.warning("[v2.preload] offer read failed (%s); "
+                               "falling back to unfiltered preload", _off_e)
+                _tool_inputs = _tool_reasons = _tool_ceilings = {}
 
             _plan = _v2pre.plan(_offer_keys,
-                                schemas=_tool_schemas or None,
+                                inputs=_tool_inputs or None,
+                                reasons=_tool_reasons or None,
                                 ceilings=_tool_ceilings or None)
             # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
             # dev turn with no preload looked identical in the logs to a turn
@@ -4963,7 +4946,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _plan,
                     lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter),
                     _pre_q,
-                    schemas=_tool_schemas or None,
+                    inputs=_tool_inputs or None,
                 )
                 ctx._v2_suggest = _plan.suggest
                 # ROLE comes from Tool Manifest's own `reason` for offering the

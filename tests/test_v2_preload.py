@@ -5,7 +5,7 @@ Ananth, 2026-09-12: "preload the top 2 + rag ... load the tool outputs + leave
 a generalized list of the next 3 tool choices for react to suggest."
 """
 from app.pipeline.v2.preload import (
-    ALWAYS_PRELOAD, EXECUTE_RANKED, NEVER_PRELOAD, SUGGEST_N, plan,
+    ALWAYS_PRELOAD, EXECUTE_RANKED, NEVER_PRELOAD, SUGGEST_N, execute, plan,
 )
 
 # The real offer for the three-payer question, in estimate()'s rank order.
@@ -461,71 +461,57 @@ def test_an_empty_plan_is_logged_not_skipped_silently():
     assert "offered=" in block and "excluded=" in block
 
 
-# ── a tool is preloaded only if it can act on the QUESTION ALONE ────────────
+# ── what to call a tool with comes from the OFFER, not from us ─────────────
 #
-# Ananth, 2026-09-12, from a live dev trace: "we loaded 4 tools and 2 rags
-# before react .. the first load was about appeals and the second load was
-# about healthcare tool".
-#
-# He was right and it was mine. execute() sent {"query": question} to EVERY
-# planned tool, so an appeals-playbook lookup and an ICD-10/NPI lookup both ran
-# against "what is the care management philosophy for Molina, Sunshine and
-# UHC". The playbook logged "Checking playbook for ?"; the healthcare lookup
-# TIMED OUT — wall clock spent before react spoke, for nothing.
-
-from app.pipeline.v2.preload import preloadable, question_input
-
-_SCHEMAS = {
-    "rag": {"properties": {"query": {}, "citable_required": {}}},
-    "healthcare_query": {"properties": {"question": {}}},
-    "web_scrape": {"properties": {"url": {}, "scrape_mode": {}}, "required": ["url"]},
-    "payor_lookup": {"properties": {"payor": {}, "field": {}}, "required": ["field"]},
-}
+# Ananth: "why are you doing this and not tool_manifest.. they have select 2
+# tools + rag". This module used to read each skill's inputs_schema and decide
+# for itself whether a tool could run on the question — a judgement about Tool
+# Manifest's offer, made inside a consumer. ToolOffer now carries `inputs` and
+# `preload_reason`, so the seat that chose the tool names the call.
 
 
-def test_the_question_goes_under_the_key_the_tool_declares():
-    """search_corpus declares `query`; healthcare_query declares `question`.
-    We sent `query` to both, so one received nothing it recognised."""
-    assert question_input(_SCHEMAS["rag"], "Q") == {"query": "Q"}
-    assert question_input(_SCHEMAS["healthcare_query"], "Q") == {"question": "Q"}
+def test_the_offer_names_the_call_and_we_do_not_invent_it():
+    """Their catalogue had healthcare_query's key as `question` the whole time.
+    My schema guess sent `query`, and a policy question went into a 30s ICD-10
+    lookup."""
+    seen = {}
+    pl = plan(["rag", "healthcare_query"],
+              inputs={"rag": {"query": "Q"}, "healthcare_query": {"question": "Q"}})
+    execute(pl, lambda t, i: seen.update({t: dict(i)}) or {"ok": True},
+            "Q", inputs={"rag": {"query": "Q"},
+                         "healthcare_query": {"question": "Q"}})
+    assert seen["healthcare_query"] == {"question": "Q"}
+    assert seen["rag"]["query"] == "Q"
 
 
-def test_a_tool_needing_something_the_question_cannot_supply_is_excluded():
-    ok, why = preloadable(_SCHEMAS["web_scrape"])
-    assert not ok and "url" in why
-
-
-def test_a_required_field_blocks_even_when_a_question_key_exists():
-    """payor_lookup takes `payor` but REQUIRES `field`. A question alone makes
-    the call meaningless even though a free-text key is present."""
-    ok, why = preloadable({"properties": {"payor": {}, "query": {}},
-                           "required": ["field"]})
-    assert not ok and "field" in why
-
-
-def test_UNKNOWN_IS_NOT_YES():
-    """appeals_get_playbook is an MCP tool with no schema in this registry.
-    Guessing that it takes a question is exactly what produced "Checking
-    playbook for ?"."""
-    ok, why = preloadable(None)
-    assert not ok and "cannot tell" in why
-    ok, why = preloadable({})
-    assert not ok
-
-
-def test_plan_excludes_with_a_REASON_not_silently():
-    pl = plan(["rag", "web_scrape", "appeals_get_playbook"], schemas=_SCHEMAS)
+def test_inputs_None_means_DO_NOT_EXECUTE_not_call_with_nothing():
+    """28 of 29 MCP signatures disagree with their live inputSchema, so an
+    empty dict would have us invoke a tool with no arguments and read the
+    failure as the tool's fault."""
+    pl = plan(["rag", "appeals_get_playbook"],
+              inputs={"rag": {"query": "Q"}, "appeals_get_playbook": None},
+              reasons={"appeals_get_playbook": "requires ['payor']"})
     assert pl.execute == ("rag",)
-    reasons = dict(pl.excluded)
-    assert "web_scrape" in reasons and "url" in reasons["web_scrape"]
-    assert "appeals_get_playbook" in reasons
+    assert dict(pl.excluded)["appeals_get_playbook"] == "requires ['payor']"
 
 
-def test_no_schemas_supplied_leaves_behaviour_unchanged():
-    """Without schemas this module has no basis to judge, and silently dropping
-    every tool would be worse than the bug it fixes."""
-    pl = plan(["rag", "web_scrape"], schemas=None)
-    assert "web_scrape" in pl.execute or "web_scrape" in pl.suggest
+def test_the_reason_comes_from_the_seat_that_decided():
+    """Tool Manifest asked us to keep the exclusion logging but take the reason
+    from them — better than re-deriving it at the point of use."""
+    pl = plan(["x"], inputs={"x": None}, reasons={"x": "declares no free-text argument"})
+    assert dict(pl.excluded)["x"] == "declares no free-text argument"
+
+
+def test_a_missing_reason_still_says_something():
+    pl = plan(["x"], inputs={"x": None}, reasons={})
+    assert dict(pl.excluded)["x"]
+
+
+def test_no_inputs_supplied_leaves_behaviour_unchanged():
+    """Callers that pass nothing keep the old fallback — which is the invention
+    that caused the bug, so it is the fallback and never the default."""
+    pl = plan(["rag", "x"], inputs=None)
+    assert "rag" in pl.execute
 
 
 # ── unpriced time is not spent speculatively ────────────────────────────────
@@ -567,14 +553,41 @@ def test_an_excluded_tool_is_still_offered_to_react():
     the turn starts. react may still call it, where the spend follows a
     decision instead of preceding one."""
     pl = plan(["rag", "slow_tool", "other_tool"],
-              schemas={k: {"properties": {"query": {}}}
-                       for k in ("rag", "slow_tool", "other_tool")},
+              inputs={k: {"query": "Q"} for k in ("rag", "slow_tool", "other_tool")},
               ceilings={"rag": 20000, "slow_tool": None, "other_tool": 2000})
     assert "slow_tool" not in pl.execute
     assert any(k == "slow_tool" for k, _ in pl.excluded)
 
 
 def test_no_ceilings_supplied_leaves_behaviour_unchanged():
-    pl = plan(["rag", "x"], schemas={k: {"properties": {"query": {}}} for k in ("rag", "x")},
+    pl = plan(["rag", "x"], inputs={k: {"query": "Q"} for k in ("rag", "x")},
               ceilings=None)
     assert "x" in pl.execute or "x" in pl.suggest
+
+
+def test_not_preloadable_is_not_not_offerable():
+    """🔴 CAUGHT BY READING THE INTEGRATION OUTPUT, NOT BY A TEST.
+
+    On the real offer, excluding non-preloadable tools from `suggest` as well
+    as `execute` left react with an EMPTY tool list — a capability removal,
+    which this module's own header calls the failure that cost 50 turns.
+
+    A tool that cannot run on a bare QUESTION is exactly the tool react should
+    be told about: react can supply the payor, the url, the carc. Preloadability
+    gates EXECUTION only."""
+    pl = plan(["rag", "appeals_get_playbook", "web_scrape"],
+              inputs={"rag": {"query": "Q"}, "appeals_get_playbook": None,
+                      "web_scrape": None},
+              reasons={"appeals_get_playbook": "requires ['payor']",
+                       "web_scrape": "requires ['url']"})
+    assert pl.execute == ("rag",)
+    assert "appeals_get_playbook" in pl.suggest and "web_scrape" in pl.suggest
+
+
+def test_a_tool_too_slow_to_preload_is_still_offerable():
+    """react calling it later is a DECISION, not a guess — the spend follows
+    the choice instead of preceding it."""
+    pl = plan(["rag", "slow"],
+              inputs={"rag": {"query": "Q"}, "slow": {"query": "Q"}},
+              ceilings={"rag": 20000, "slow": 30000})
+    assert "slow" not in pl.execute and "slow" in pl.suggest
