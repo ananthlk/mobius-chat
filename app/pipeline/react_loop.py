@@ -4795,8 +4795,9 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     if (os.environ.get("MOBIUS_V2_STEER", "").strip() == "1"
                             and getattr(ctx, "orchestrator_version", "v1") == "v2"
                             and rn > 1):
-                        from app.pipeline.v2 import instruct as _v2i
+                        from app.pipeline.v2 import frame as _v2fr
                         from app.pipeline.v2 import posture as _v2ip
+                        from app.pipeline.v2 import statements as _v2st
 
                         _steer_state = _v2ip.effective_state(_v2ps)
                         _v2ps_decision = _v2ip.select(_steer_state)
@@ -4822,16 +4823,59 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         # round is for finding gaps or closing them would be a
                         # second author of the decision, and the row would
                         # explain a choice the prompt did not make.
-                        ctx._v2_governor_block = _v2i.governor_block(
-                            _steer_gap, remaining=_steer_state.open_gaps,
+                        # `kept` and `proposes_complete` describe the PREVIOUS
+                        # round -- they are the model's output and do not exist
+                        # until it has spoken. The dissent therefore carries
+                        # forward exactly one round: the post-round hook records
+                        # that react proposed complete, and THIS block asks
+                        # about it. Asking in the same round it happened is
+                        # impossible, not merely inconvenient.
+                        _prev_enr = {}
+                        for _r in reversed(list(getattr(ctx, "react_trace_rounds", None) or [])):
+                            if isinstance(_r, dict) and _r.get("enrichment"):
+                                _prev_enr = _r["enrichment"] or {}
+                                break
+                        _v2_kept = _prev_enr.get("kept")
+                        _v2_ctx = _v2st.Ctx(
+                            state=_steer_state,
                             round_index=rn,
-                            directive=_v2ps_decision.directive,
+                            max_rounds=max_it,
+                            tier=(getattr(_pp_contract, "tier", None) or "normal"),
+                            model_proposes_complete=bool(
+                                getattr(ctx, "_v2_proposed_complete", False)),
+                            kept=int(_v2_kept) if isinstance(_v2_kept, int) else 0,
+                            gap_status=(_gap_status or ""),
+                            extensions_used=_pp_extension_rounds_used,
+                            gap=_steer_gap,
                         )
+                        ctx._v2_governor_block, _v2_sel = _v2fr.render(
+                            _v2_ctx, _v2ps_decision.posture)
+                        # Fires ONCE. Leaving it set would re-ask the dissent
+                        # every round after a single proposal -- nagging, and
+                        # it would make the compliance signal meaningless.
+                        ctx._v2_proposed_complete = False
                         if ctx._v2_governor_block:
+                            # WHAT WAS SENT, per round. compliance.observe_turn
+                            # judges statements against the trace at turn end,
+                            # and re-deriving what was sent would make a second
+                            # author of the record.
+                            if not hasattr(ctx, "v2_statements_sent"):
+                                ctx.v2_statements_sent = {}
+                            ctx.v2_statements_sent[rn] = [
+                                {"id": _s.id,
+                                 "gaps": [g.text for g in _steer_state.open_gaps],
+                                 "target": (_steer_gap.text if _steer_gap else None)}
+                                for _s in _v2_sel.statements
+                            ]
                             logger.info(
-                                "[v2.steer] cid=%s round=%s gap=%s text=%r",
+                                "[v2.steer] cid=%s round=%s posture=%s gap=%s "
+                                "sent=%s dropped=%s",
                                 (ctx.correlation_id or "")[:8], rn,
-                                _steer_gap.gap_id, _steer_gap.text[:60],
+                                _v2ps_decision.posture.value,
+                                (_steer_gap.gap_id if _steer_gap else None),
+                                ",".join(x.id for x in _v2_sel.statements),
+                                ",".join(_v2_sel.dropped_by_conflict
+                                         + _v2_sel.dropped_by_cap) or "-",
                             )
                 except Exception as _v2pe:  # pragma: no cover
                     logger.warning("[v2.shadow] pre-round hook failed: %s", _v2pe)
@@ -5408,7 +5452,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # Kept chunks are evidence ARRIVING. A running answer is
                     # evidence USED. Reading the second as a proxy for the
                     # first turns a slow synthesis into a capability verdict.
-                    "kept": (len(_keep_raw) if isinstance(_keep_raw, list) else 0),
+                    # Read from _evidence_review, NOT from _keep_raw: that
+                    # local is bound only inside `if _evidence_review:` above,
+                    # and this dict is also built on the (thought and no
+                    # review) path -- where referencing it raises
+                    # UnboundLocalError and takes the whole round with it.
+                    "kept": len(_evidence_review.get("keep") or []) if (
+                        _evidence_review
+                        and isinstance(_evidence_review.get("keep"), list)
+                    ) else 0,
                     # Per-gap closure (governor-react closure contract v1).
                     # ABSENT until the prompt seat lands the field; carried
                     # through untouched so the governor sees exactly what the
@@ -5904,6 +5956,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                         model_proposes_complete=True,
                                         affordable=_v2p.spendable(_v2_state),
                                     )
+                                    # The dissent's producer. react proposed
+                                    # complete THIS round; the frame cannot ask
+                                    # about it until the NEXT one, because the
+                                    # block is built before the model speaks.
+                                    # Consumed and cleared there -- see the
+                                    # pre-round hook.
+                                    ctx._v2_proposed_complete = True
                                     logger.info(
                                         "[v2.exec] cid=%s round=%s v1=%s -> v2=%s "
                                         "posture=%s%s",

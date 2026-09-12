@@ -273,7 +273,21 @@ def test_applied_is_set_at_the_substitution_not_at_the_end_of_the_block():
     an earlier return is dead code."""
     src = _react_src()
     i = src.index("STEP 2: v2 DECIDES")
-    block = src[i:i + 5000]
+
+    # A REAL BOUNDARY, not a character count. This was `src[i:i + 5000]`, and
+    # eight lines added above pushed '"v2_applied"' past 5000 -- the test then
+    # failed with "substring not found", which reads like the code lost the
+    # feature rather than the window losing the code. The same fixed-window
+    # trap in the other direction ends a slice mid-comment and makes the
+    # assertion test an empty region, where it passes while proving nothing.
+    #
+    # Both markers are real code, so the window tracks edits instead of
+    # drifting away from them.
+    j = src.index('"v2_applied"', i)
+    block = src[i:j + len('"v2_applied"')]
+    assert "_v2_applied = True" in block, (
+        "the substitution flag is no longer set inside this block"
+    )
     assert block.index("_v2_applied = True") < block.index('"v2_applied"')
 
 
