@@ -135,3 +135,44 @@ def test_no_preload_renders_no_sections():
     and must be a no-op until it is switched on."""
     from app.pipeline.v2.frame import preload_sections
     assert preload_sections([], ()) == []
+
+
+# ── execution ───────────────────────────────────────────────────────────────
+
+def test_every_planned_tool_appears_in_the_result():
+    """A tool missing from the result reads to react as never-attempted --
+    the exact collapse this contract exists to end."""
+    from app.pipeline.v2.preload import execute
+    p = plan(OFFER)
+    got = execute(p, lambda t, i: {"ok": True, "summary": "x"}, "q")
+    assert [g["tool"] for g in got] == list(p.execute)
+
+
+def test_a_raising_tool_does_not_take_the_turn():
+    from app.pipeline.v2.preload import execute
+    def runner(tool, inputs):
+        if tool == "rag":
+            raise RuntimeError("boom")
+        return {"ok": True, "summary": "fine"}
+    got = execute(plan(OFFER), runner, "q")
+    assert got[0]["tool"] == "rag" and got[0]["ok"] is False
+    assert "errored" in got[0]["summary"]
+    assert all(g["ok"] for g in got[1:]), "one failure must not fail the rest"
+
+
+def test_execution_is_sequential_and_stays_that_way():
+    """Concurrency here is unsafe: _execute_tool assigns ctx.sources,
+    ctx.plan, ctx.answer_set and ctx.react_bypass_integrate. Two tools in
+    flight on one ctx clobber each other. The saving was ~1.2s of 11.6s
+    because fan-out already made rag's internal work concurrent."""
+    import ast
+    import inspect
+    from app.pipeline.v2 import preload as P
+    tree = ast.parse(inspect.getsource(P))
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for banned in ("ThreadPoolExecutor", "gather", "as_completed", "Thread"):
+        assert banned not in names, (
+            f"{banned} appeared in preload: concurrent _execute_tool on one "
+            f"shared ctx races on ctx.sources and ctx.react_bypass_integrate"
+        )

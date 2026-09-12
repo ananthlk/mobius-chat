@@ -107,3 +107,51 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
         excluded.append((key, "ranked below the suggestion window"))
 
     return PreloadPlan(tuple(execute), tuple(suggest), tuple(excluded))
+
+
+# ── EXECUTION ───────────────────────────────────────────────────────────────
+#
+# 🔴 SEQUENTIAL, DELIBERATELY. The obvious design is a ThreadPoolExecutor over
+# the planned tools, and it is unsafe here: _execute_tool mutates fifteen ctx
+# attributes and several are ASSIGNMENTS, not appends --
+#
+#     ctx.sources = ...        ctx.plan = ...       ctx.answer_set = ...
+#     ctx.final_message = ...  ctx.react_bypass_integrate = ...
+#
+# Two tools in flight on one ctx clobber each other's sources, and a
+# react_bypass_integrate=True from either short-circuits the whole turn. This
+# is the same shared-mutable-state hazard Retriever flagged on their own
+# AsyncSession gather, one repo over.
+#
+# AND THE CONCURRENCY WAS WORTH ~1 SECOND. Measured/declared: rag ~10.4s with
+# fan-out, appeals_get_playbook 0.8s, healthcare_query 0.4s. Sequential ~11.6s
+# against a concurrent ~10.4s. The fan-out already made rag's internal work
+# concurrent -- which is where the real parallelism lives. Trading a race for
+# 10% is the wrong trade, and this session has spent its night removing a
+# mechanism that made exactly that kind of exchange invisible.
+#
+# If the tool mix ever changes so that two EXPENSIVE tools preload together,
+# revisit -- with isolated contexts, not with a shared one.
+
+def execute(pl: PreloadPlan, runner, question: str) -> list[dict]:
+    """Run the planned tools in order. `runner(tool, inputs) -> dict` is
+    injected so this stays testable without a network or a PipelineContext.
+
+    Returns [{tool, ok, summary}] for EVERY planned tool, including the ones
+    that returned nothing and the ones that raised. A tool missing from this
+    list would read to react as never-attempted.
+    """
+    out: list[dict] = []
+    for tool in pl.execute:
+        try:
+            res = runner(tool, {"query": question}) or {}
+            ok = bool(res.get("ok", True)) and not res.get("error")
+            out.append({"tool": tool, "ok": ok,
+                        "summary": str(res.get("summary") or "")[:200]})
+        except Exception as e:
+            # A preload tool that raises must not take the turn with it: the
+            # round still has the other tools' evidence, and "it errored" is a
+            # fact react can use.
+            out.append({"tool": tool, "ok": False,
+                        "summary": "errored: %s" % str(e)[:80]})
+    return out
