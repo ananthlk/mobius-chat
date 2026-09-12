@@ -92,18 +92,12 @@ RUN pip install --no-cache-dir -r /build/mobius-chat/requirements.txt
 COPY mobius-contracts/     /build/mobius-contracts/
 COPY mobius-skills-core/   /build/mobius-skills-core/
 COPY mobius-retriever/     /build/mobius-retriever/
-# mobius-tool-manifest is NOT vendored yet. Its pyproject.toml has no
-# [build-system] and no explicit packages, so setuptools flat-layout discovery
-# refuses: "Multiple top-level packages discovered" (toolreg, toolmanifest,
-# adapters, contracts, data, docs, ...). Reproduced locally; it is a one-line
-# fix in THEIR file and has been reported to that seat.
-#
-# Preload runs rag-only until it lands -- the fallback path logs
-# "[v2.preload] estimate unavailable"; it does not silently skip.
+COPY mobius-tool-manifest/ /build/mobius-tool-manifest/
 RUN pip install --no-cache-dir \
         /build/mobius-contracts \
         /build/mobius-skills-core \
-        /build/mobius-retriever
+        /build/mobius-retriever \
+        /build/mobius-tool-manifest
 
 # --- Chat application source ---
 # Only the subtrees the runtime actually needs. config/ and db/ go
