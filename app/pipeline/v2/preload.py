@@ -367,11 +367,38 @@ def unmet_precondition(tool: str, state: dict | None) -> str:
     return ""
 
 
+# 🔴 ONLY TOOLS THAT MADE A CLAIM ABOUT THIS QUESTION ARE EXECUTED.
+#
+# Tool Manifest, 2026-09-12, explaining a 15s waste neither of us had diagnosed
+# correctly — I called it a ranking defect, they found it was never ranked:
+#
+#     refuse                    gate       —
+#     appeals_get_playbook      ranked     0.0328   <- the only tools that made
+#     appeals_lookup_rules      ranked     0.0109      a claim about the question
+#     fetch_document            standard   —        <- no score, because no claim
+#     search_uploaded_document  standard   —
+#     rag                       default    —
+#
+# Standard-slot tools are offered IN CASE, never matched against the question,
+# exactly like rag. So preload was spending 15s on two tools that had never
+# said they were relevant, on a turn with a 31±8s promise.
+#
+# A SCORE IS A CLAIM. Executing a tool that carries none is speculating on
+# somebody's default, not acting on their judgement — and their own refusal
+# logic already says "the always-offered tools are not a claim about the
+# question at all".
+#
+# rag stays, by name, via ALWAYS_PRELOAD: Ananth ruled "no we will always do
+# rag", which is a product decision and not an inference from a slot.
+CLAIM_SLOTS = ("ranked",)
+
+
 def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
          suggest_n: int = SUGGEST_N, inputs: dict | None = None,
          reasons: dict | None = None,
          ceilings: dict | None = None,
-         turn_state: dict | None = None) -> PreloadPlan:
+         turn_state: dict | None = None,
+         slots: dict | None = None) -> PreloadPlan:
     """Rank-ordered offer -> (execute, suggest, excluded).
 
     `offer_tool_keys` is Offer.tools in the order estimate() returned them --
@@ -422,6 +449,15 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
         if _unmet:
             suggestable.append(key)
             excluded.append((key, _unmet))
+            continue
+        # Only when the caller supplied slots. A standard-slot tool is still
+        # OFFERED to react -- react can decide it wants a document fetch; that
+        # is a decision, where preloading it is a guess on a default.
+        if slots is not None and slots.get(key) not in CLAIM_SLOTS:
+            suggestable.append(key)
+            excluded.append((key, f"slot={slots.get(key) or 'unknown'} — offered "
+                                  "unconditionally, never scored against this "
+                                  "question, so it made no claim to act on"))
             continue
         ranked.append(key)
 

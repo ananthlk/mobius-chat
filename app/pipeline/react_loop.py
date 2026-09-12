@@ -4895,15 +4895,22 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             _tool_inputs: dict = {}
             _tool_reasons: dict = {}
             _tool_ceilings: dict = {}
+            _tool_slots: dict = {}
             try:
                 for _t in (getattr(_off, "tools", None) or []):
                     _tool_inputs[_t.tool_key] = getattr(_t, "inputs", None)
                     _tool_reasons[_t.tool_key] = getattr(_t, "preload_reason", "") or ""
                     _tool_ceilings[_t.tool_key] = getattr(_t, "declared_ceiling_ms", None)
+                    # slot: gate | ranked | default | standard | utility.
+                    # Only `ranked` carries a score, and a score is a claim
+                    # about THIS question. Tool Manifest froze that invariant
+                    # with a test after we found preload spending 15s on two
+                    # standard-slot tools that had never been matched.
+                    _tool_slots[_t.tool_key] = getattr(_t, "slot", None)
             except Exception as _off_e:   # pragma: no cover
                 logger.warning("[v2.preload] offer read failed (%s); "
                                "falling back to unfiltered preload", _off_e)
-                _tool_inputs = _tool_reasons = _tool_ceilings = {}
+                _tool_inputs = _tool_reasons = _tool_ceilings = _tool_slots = {}
 
             # Turn state Tool Manifest cannot see. They rank from the question
             # and the catalogue; whether THIS thread has uploads is ours.
@@ -4916,7 +4923,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 inputs=_tool_inputs or None,
                                 reasons=_tool_reasons or None,
                                 ceilings=_tool_ceilings or None,
-                                turn_state=_turn_state)
+                                turn_state=_turn_state,
+                                slots=_tool_slots or None)
             # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
             # dev turn with no preload looked identical in the logs to a turn
             # where the block never executed -- and I spent a chase on exactly
