@@ -1,0 +1,161 @@
+"""The modular round prompt: blocks assembled from what we know.
+
+Ananth, 2026-09-12:
+  "tool identity : Mobius ; user identity and preferences : Role identity :
+   Judge (existing answers, identify gaps) and Plan (identify best tools) ...
+   we also need a role as a summarizer. this is critical ... no more than 2 or
+   3 roles judge, plan, summarise"
+"""
+from app.pipeline.v2.blocks import MAX_ROLES, Facts, REGISTRY, Slot, assemble
+
+Q = "What is the care management philosophy of United Healthcare in FL?"
+
+
+def _roles(ids):
+    return [i for i in ids if i.startswith("role_")]
+
+
+# ── a block renders only when its fact exists ───────────────────────────────
+
+def test_absent_facts_render_no_block():
+    """An empty section asserts there is nothing there, which react cannot
+    tell apart from a section nobody filled in."""
+    _, rendered, skipped = assemble(Facts(question=Q))
+    assert "user_identity" in skipped, "rendered a user block with no user"
+    assert "preloaded" in skipped and "not_useful" in skipped
+    assert "question" in rendered
+
+
+def test_skipped_blocks_are_returned_not_discarded():
+    """"We did not know this" and "we chose not to say it" are different, and
+    a prompt that cannot say what it omitted cannot be debugged from output."""
+    _, rendered, skipped = assemble(Facts())
+    assert skipped, "assemble() reports nothing about what it left out"
+    assert set(rendered) & {"tool_identity"}
+
+
+# ── the three roles ─────────────────────────────────────────────────────────
+
+def test_never_more_than_three_roles():
+    f = Facts(question=Q, user_name="G", gaps=(("S1", "a gap"),),
+              targeted_gap="a gap", preloaded=(("rag", True, "15 passages"),),
+              suggest=("web_scrape",), useful=("doc p1",), discarded=("other.pdf",))
+    _, rendered, _ = assemble(f)
+    assert len(_roles(rendered)) <= MAX_ROLES == 3
+
+
+def test_round_one_judges_and_summarises_but_does_not_plan():
+    """PLAN with nothing to plan for asks react to choose a tool for nothing --
+    the round-1 contradiction that had it searching again after preload."""
+    _, rendered, _ = assemble(Facts(question=Q, preloaded=(("rag", True, "6 passages"),)))
+    assert "role_plan" not in rendered
+    # Preload that already answers IS allowed to deliver -- that is the whole
+    # point of preloading ("what is the timely filing limit" needs no round 2).
+    assert _roles(rendered) == ["role_judge", "role_summarise", "role_communicate"]
+
+
+def test_plan_requires_both_a_gap_and_a_tool_to_suggest():
+    gaps_only = assemble(Facts(question=Q, gaps=(("S1", "a gap"),)))[1]
+    tools_only = assemble(Facts(question=Q, suggest=("web_scrape",)))[1]
+    assert "role_plan" not in gaps_only
+    assert "role_plan" not in tools_only
+    both = assemble(Facts(question=Q, gaps=(("S1", "a gap"),),
+                          suggest=("web_scrape",)))[1]
+    assert "role_plan" in both
+
+
+def test_summarise_is_the_role_that_produces_the_deliverable():
+    """Judge and Plan can both succeed and leave nothing written: one names
+    gaps, the other names tools, and neither answers the question."""
+    _, rendered, _ = assemble(Facts(question=Q, useful=("doc p5",)))
+    assert "role_summarise" in rendered and "role_judge" not in rendered
+
+
+def test_no_evidence_means_no_summarise():
+    """Asking react to write an answer from nothing is how a confident,
+    ungrounded answer gets produced."""
+    _, rendered, _ = assemble(Facts(question=Q))
+    assert "role_summarise" not in rendered
+
+
+def test_a_round_with_evidence_always_has_a_role():
+    """Material with no role is a prompt that hands react evidence and never
+    says what to do with it."""
+    for f in (Facts(question=Q, preloaded=(("rag", True, "x"),)),
+              Facts(question=Q, useful=("doc p1",))):
+        _, rendered, _ = assemble(f)
+        assert _roles(rendered), "evidence rendered with no role"
+
+
+# ── the memory of rejection ─────────────────────────────────────────────────
+
+def test_rejected_documents_are_named_not_counted():
+    """"20 passages were read and not kept" is an instruction react cannot
+    follow -- it never learns which 20."""
+    f = Facts(question=Q, discarded=("Exhibit_II-A_MMA_Program.pdf (1 passage(s), none useful)",))
+    txt, rendered, _ = assemble(f)
+    assert "not_useful" in rendered
+    assert "Exhibit_II-A_MMA_Program.pdf" in txt
+
+
+def test_ordering_is_explicit_not_alphabetical():
+    """Three blocks once shared one slot and the tiebreak was alphabetical, so
+    "tools you may request" rendered BEFORE "work this gap and no other".
+    Prompt order decided by variable naming is an accident, not an ordering."""
+    slots = {b.id: b.slot for b in REGISTRY}
+    assert slots["preloaded"] < slots["this_round"] < slots["suggest"]
+    assert slots["useful"] < slots["not_useful"] < slots["complete"]
+    assert slots["role_judge"] == Slot.ROLE
+
+
+def test_every_block_declares_an_owner():
+    """Wording ownership is the thing that decides who may edit it without a
+    deploy. A block with no owner is prose nobody is responsible for."""
+    for b in REGISTRY:
+        assert b.owner in {"governor", "llm_seat", "chat"}, (b.id, b.owner)
+
+
+# ── COMMUNICATE: the role that addresses the asker, not the evidence ────────
+# Ananth, 2026-09-12: "FINAL = SUMMARIZE + COMMUNICATE".
+
+def test_final_round_is_summarise_plus_communicate():
+    f = Facts(question=Q, useful=("FL_manual.pdf p5",))
+    _, rendered, _ = assemble(f)
+    assert _roles(rendered) == ["role_summarise", "role_communicate"]
+
+
+def test_a_round_still_choosing_tools_does_not_communicate():
+    """COMMUNICATE is the answer the user reads. A round whose job is to pick
+    the next tool has not finished looking, and an answer written there reads
+    as final while the gap is still open."""
+    f = Facts(question=Q, preloaded=(("rag", True, "6 passages"),),
+              gaps=(("S1", "UHC not covered"),), suggest=("web_scrape",))
+    assert "role_communicate" not in _roles(assemble(f)[1])
+
+
+def test_plan_and_communicate_are_mutually_exclusive_by_construction():
+    """This, not a truncation, is what keeps any round at or under the cap.
+    A cap enforced by slicing would silently drop whichever role sorted last."""
+    for f in (Facts(question=Q, preloaded=(("rag", True, "x"),),
+                    gaps=(("S1", "g"),), suggest=("web_scrape",)),
+              Facts(question=Q, useful=("d p1",)),
+              Facts(question=Q, preloaded=(("rag", True, "x"),)),
+              Facts(question=Q, gaps=(("S1", "g"),), useful=("d p1",))):
+        r = _roles(assemble(f)[1])
+        assert not ("role_plan" in r and "role_communicate" in r), r
+        assert len(r) <= MAX_ROLES, r
+
+
+def test_communicate_needs_evidence_like_summarise():
+    assert "role_communicate" not in assemble(Facts(question=Q))[1]
+
+
+def test_roles_render_in_the_order_the_work_runs():
+    """Sorted by id, COMMUNICATE would print FIRST -- before the judging it
+    depends on -- because "c" precedes "j". Prompt order decided by a name is
+    the accident this module already documents one slot up."""
+    f = Facts(question=Q, preloaded=(("rag", True, "x"),), useful=("d p1",))
+    r = _roles(assemble(f)[1])
+    assert r == ["role_judge", "role_summarise", "role_communicate"]
+    txt = assemble(f)[0]
+    assert txt.index("— JUDGE") < txt.index("— SUMMARISE") < txt.index("— COMMUNICATE")

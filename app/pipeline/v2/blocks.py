@@ -96,6 +96,12 @@ class Block:
     when: Callable[[Facts], bool]
     render: Callable[[Facts], str]
     owner: str = "governor"     # who owns the WORDING; see statement_text.py
+    # Order WITHIN a slot. The four roles share Slot.ROLE, and the tiebreak was
+    # `id` -- which would have printed COMMUNICATE first, before the judging it
+    # depends on, purely because "c" sorts before "j". That is the same accident
+    # the EVIDENCE/TARGET/TOOLS comment above describes, one level down. Roles
+    # run in the order the work runs: judge -> plan -> summarise -> communicate.
+    rank: int = 0
 
 
 def _bullets(items) -> str:
@@ -120,7 +126,7 @@ REGISTRY: tuple[Block, ...] = (
           owner="chat"),
 
     # ── ROLE: two jobs, rendered only when each is real ──────────────────
-    Block("role_judge", Slot.ROLE,
+    Block("role_judge", Slot.ROLE, rank=1,
           when=lambda f: bool(f.preloaded),
           render=lambda f: "[YOUR ROLE — JUDGE] Evidence has already been "
                            "retrieved for you below. Read it and decide: does "
@@ -128,7 +134,7 @@ REGISTRY: tuple[Block, ...] = (
                            "NOT answer as a gap.",
           owner="governor"),
 
-    Block("role_plan", Slot.ROLE,
+    Block("role_plan", Slot.ROLE, rank=2,
           # PLAN needs something to plan FOR. Rendering it with no gap asks
           # react to choose a tool for nothing -- the round-1 contradiction
           # that had it searching twice.
@@ -136,6 +142,49 @@ REGISTRY: tuple[Block, ...] = (
           render=lambda f: "[YOUR ROLE — PLAN] For each gap still open, say "
                            "which tool would close it. Name the tool in your "
                            "gap report; you are not calling it this round.",
+          owner="governor"),
+
+    Block("role_summarise", Slot.ROLE, rank=3,
+          # THE ROLE THAT PRODUCES THE DELIVERABLE. Judge and Plan can both
+          # succeed and leave nothing written: one names gaps, the other names
+          # tools, and neither answers the question. Ananth, 2026-09-12: "we
+          # also need a role as a summarizer. this is critical."
+          #
+          # Renders whenever there is evidence to write FROM -- retrieved this
+          # round, or kept from an earlier one. Not gated on completeness: a
+          # PARTIAL answer written from real evidence is the correct outcome on
+          # a multi-part question, and the grounding contract says so.
+          when=lambda f: bool(f.preloaded or f.useful),
+          render=lambda f: "[YOUR ROLE — SUMMARISE] Write the best answer the "
+                           "kept evidence supports, and say plainly which "
+                           "parts it does not cover. A partial answer from "
+                           "real evidence is correct; a complete-looking "
+                           "answer that fills gaps from memory is not.",
+          owner="governor"),
+
+    Block("role_communicate", Slot.ROLE, rank=4,
+          # Ananth, 2026-09-12: "FINAL = SUMMARIZE + COMMUNICATE".
+          #
+          # SUMMARISE and COMMUNICATE are not the same job, and collapsing them
+          # is why a technically-correct final answer can still fail the person
+          # who asked. Summarise compresses the EVIDENCE: what does the kept
+          # material support. Communicate addresses the QUESTION: answer the
+          # parts asked, in the order asked, in their words -- a three-payer
+          # question gets three named answers, not one merged paragraph that
+          # happens to contain all three.
+          #
+          # Gated on there being nothing left to PLAN, which is exactly the
+          # negation of role_plan's condition. That keeps any single round at
+          # or under MAX_ROLES without a cap that silently drops a role: a
+          # round still choosing tools is not the round that delivers.
+          when=lambda f: bool(f.preloaded or f.useful)
+                         and not (bool(f.gaps) and bool(f.suggest)),
+          render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
+                           "user reads. Answer every part they asked, in the "
+                           "order they asked it, naming each one. Cite the "
+                           "evidence for each claim. Where a part is "
+                           "unanswered, say which part and why — do not leave "
+                           "the reader to notice the omission.",
           owner="governor"),
 
     Block("question", Slot.QUESTION,
@@ -188,6 +237,14 @@ REGISTRY: tuple[Block, ...] = (
 )
 
 
+# Ananth: "no more than 2 or 3 roles judge, plan, summarise", then
+# "FINAL = SUMMARIZE + COMMUNICATE". Four roles EXIST; the cap is per ROUND,
+# and the `when` conditions -- not a truncation -- are what hold it: PLAN and
+# COMMUNICATE are mutually exclusive by construction (a round still choosing
+# tools is not the round that delivers), so no round can reach four.
+MAX_ROLES = 3
+
+
 def assemble(f: Facts) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     """(text, rendered_block_ids, skipped_block_ids).
 
@@ -196,12 +253,17 @@ def assemble(f: Facts) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     omitted cannot be debugged from its output.
     """
     rendered, skipped = [], []
-    for b in sorted(REGISTRY, key=lambda b: (b.slot, b.id)):
+    for b in sorted(REGISTRY, key=lambda b: (b.slot, b.rank, b.id)):
         try:
             ok = bool(b.when(f))
         except Exception:
             ok = False
         (rendered if ok else skipped).append(b)
+    # A round with evidence and no role is a prompt that hands react material
+    # and never says what to do with it.
+    _roles = [b for b in rendered if b.slot is Slot.ROLE]
+    assert len(_roles) <= MAX_ROLES, [b.id for b in _roles]
+
     text = "\n".join(b.render(f) for b in rendered)
     return text, tuple(b.id for b in rendered), tuple(b.id for b in skipped)
 
