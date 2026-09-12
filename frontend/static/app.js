@@ -4015,10 +4015,35 @@ function _abLiveColumn(col, tier) {
   box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
   const head = document.createElement("div");
   head.className = "chat-ab-col-head";
-  head.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span><span class="chat-ab-col-role chat-ab-col-role--${col.served ? "served" : "shadow"}">${col.served ? "served \xB7 your thread" : "shadow \xB7 not served, fresh thread"}</span>`;
+  const heading = document.createElement("div");
+  heading.className = "chat-ab-col-heading";
+  heading.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span><span class="chat-ab-col-role chat-ab-col-role--${col.served ? "served" : "shadow"}">${col.served ? "served \xB7 your thread" : "shadow \xB7 not served, fresh thread"}</span>`;
+  const collapseBtn = document.createElement("button");
+  collapseBtn.className = "chat-ab-col-collapse";
+  collapseBtn.setAttribute("aria-label", "Collapse this column");
+  collapseBtn.textContent = "\u25BE";
+  collapseBtn.addEventListener("click", () => {
+    const collapsed = box.classList.toggle("chat-ab-col--collapsed");
+    collapseBtn.textContent = collapsed ? "\u25B8" : "\u25BE";
+    collapseBtn.setAttribute("aria-label", collapsed ? "Expand this column" : "Collapse this column");
+  });
+  head.appendChild(heading);
+  head.appendChild(collapseBtn);
   box.appendChild(head);
+  const bodyWrap = document.createElement("div");
+  bodyWrap.className = "chat-ab-col-body";
+  box.appendChild(bodyWrap);
+  const emits = document.createElement("details");
+  emits.className = "chat-ab-emits";
+  emits.open = true;
+  const emitsSum = document.createElement("summary");
+  emitsSum.className = "chat-ab-emits-summary";
+  emitsSum.textContent = "Thinking";
+  emits.appendChild(emitsSum);
   const trace = document.createElement("div");
   trace.className = "chat-ab-col-trace";
+  emits.appendChild(trace);
+  bodyWrap.appendChild(emits);
   const traceLines = [];
   const pushLine = (line) => {
     const t = (line || "").trim();
@@ -4032,10 +4057,9 @@ function _abLiveColumn(col, tier) {
     trace.scrollTop = trace.scrollHeight;
   };
   pushLine(`starting ${col.armId}\u2026`);
-  box.appendChild(trace);
   const answer = document.createElement("div");
   answer.className = "chat-ab-col-answer";
-  box.appendChild(answer);
+  bodyWrap.appendChild(answer);
   if (!col.cid) {
     pushLine("no correlation id for this arm \u2014 treat as a bug, not an empty answer");
     return box;
@@ -4085,7 +4109,7 @@ function _abLiveColumn(col, tier) {
             answer.className = "chat-ab-col-answer";
             answer.textContent = "(no renderable answer)";
           }
-          trace.classList.add("chat-ab-col-trace--done");
+          emits.open = false;
         });
         break;
       case "error":
@@ -4115,6 +4139,11 @@ function _abLiveColumn(col, tier) {
 function _renderAbAnswerInto(answer, env) {
   answer.className = "chat-ab-col-answer";
   answer.textContent = "";
+  const card = envelopeToAnswerCard(env.blocks || []);
+  if (card) {
+    answer.appendChild(renderAnswerCard(card, false, {}));
+    return;
+  }
   const { answerBody, sources } = renderEnvelope(env.blocks || [], {
     renderExtraBlock: (b) => {
       if (b.type === "tool_attribution") {

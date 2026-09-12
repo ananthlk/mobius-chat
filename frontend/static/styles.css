@@ -6699,21 +6699,42 @@ body.landing-state .composer-landing-chips {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 12px; border-bottom: 1px solid var(--mobius-border, #eef2f6); background: #fafbfc;
 }
+.chat-ab-col-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .chat-ab-col-arm { font-weight: 650; font-size: 13px; }
-.chat-ab-col-role { font-size: 10.5px; font-weight: 600; border-radius: 4px; padding: 1px 7px; }
+.chat-ab-col-role { font-size: 10.5px; font-weight: 600; border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
 .chat-ab-col-role--served { background: #ede9fe; color: #6d28d9; }
 .chat-ab-col-role--shadow { background: #f1f5f9; color: #64748b; }
+.chat-ab-col-collapse {
+  border: none; background: none; cursor: pointer; font-size: 13px; color: var(--mobius-text-muted, #64748b);
+  padding: 2px 6px; border-radius: 4px; flex: 0 0 auto;
+}
+.chat-ab-col-collapse:hover { background: #eef2f6; }
+.chat-ab-col--collapsed .chat-ab-col-body { display: none; }
+.chat-ab-col--collapsed { align-self: start; }
+
+/* Emits (thinking log) — collapsible <details>. */
+.chat-ab-emits { border-bottom: 1px dashed var(--mobius-border, #eef2f6); }
+.chat-ab-emits-summary {
+  cursor: pointer; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--mobius-text-muted, #94a3b8); padding: 7px 12px; list-style: none; user-select: none;
+}
+.chat-ab-emits-summary::-webkit-details-marker { display: none; }
+.chat-ab-emits-summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform .15s; }
+.chat-ab-emits[open] > .chat-ab-emits-summary::before { transform: rotate(90deg); }
 .chat-ab-col-trace {
   font-size: 11.5px; color: var(--mobius-text-muted, #64748b); line-height: 1.5;
-  max-height: 168px; overflow-y: auto; padding: 8px 12px; border-bottom: 1px dashed var(--mobius-border, #eef2f6);
+  max-height: 168px; overflow-y: auto; padding: 0 12px 8px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
-.chat-ab-col-trace--done { max-height: 96px; opacity: .8; }
 .chat-ab-trace-line { padding: 1px 0; }
 .chat-ab-trace-line::before { content: "› "; color: #a78bfa; }
-.chat-ab-col-answer { padding: 12px 14px; font-size: 13.5px; min-height: 40px; }
+.chat-ab-col-answer { padding: 10px 12px; font-size: 13.5px; min-height: 40px; }
 .chat-ab-col-answer--draft { color: var(--mobius-text-secondary, #475569); opacity: .9; }
 .chat-ab-col-answer--note { color: var(--mobius-text-muted, #94a3b8); font-style: italic; }
+/* The full answer card inside a column: strip the free-standing bubble's own width/margins so
+   it fills the column instead of centring like a chat bubble. */
+.chat-ab-col-answer .answer-card { margin: 0; max-width: 100%; }
+.chat-ab-col-answer .answer-card-bubble { max-width: 100%; }
 @media (max-width: 720px) { .chat-ab-split-grid { grid-template-columns: 1fr; } }
 
 .composer-agentic-label {

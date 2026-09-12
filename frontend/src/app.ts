@@ -671,14 +671,46 @@ function _abLiveColumn(
   const box = document.createElement("section");
   box.className = "chat-ab-col" + (col.served ? " chat-ab-col--served" : " chat-ab-col--shadow");
 
+  // Header: arm + served/shadow role + a whole-column collapse toggle (ask #2 — fold one, read
+  // the other). The role label survives the layout so column POSITION is never the only
+  // distinguisher between served and shadow.
   const head = document.createElement("div");
   head.className = "chat-ab-col-head";
-  head.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span>`
+  const heading = document.createElement("div");
+  heading.className = "chat-ab-col-heading";
+  heading.innerHTML = `<span class="chat-ab-col-arm">${col.armId}</span>`
     + `<span class="chat-ab-col-role chat-ab-col-role--${col.served ? "served" : "shadow"}">${col.served ? "served · your thread" : "shadow · not served, fresh thread"}</span>`;
+  const collapseBtn = document.createElement("button");
+  collapseBtn.className = "chat-ab-col-collapse";
+  collapseBtn.setAttribute("aria-label", "Collapse this column");
+  collapseBtn.textContent = "▾";
+  collapseBtn.addEventListener("click", () => {
+    const collapsed = box.classList.toggle("chat-ab-col--collapsed");
+    collapseBtn.textContent = collapsed ? "▸" : "▾";
+    collapseBtn.setAttribute("aria-label", collapsed ? "Expand this column" : "Collapse this column");
+  });
+  head.appendChild(heading);
+  head.appendChild(collapseBtn);
   box.appendChild(head);
 
+  const bodyWrap = document.createElement("div");
+  bodyWrap.className = "chat-ab-col-body";
+  box.appendChild(bodyWrap);
+
+  // Emits (thinking log) in a collapsible <details> (ask #1) — open while streaming so the live
+  // trace is visible, collapsible so it can be folded once read.
+  const emits = document.createElement("details");
+  emits.className = "chat-ab-emits";
+  emits.open = true;
+  const emitsSum = document.createElement("summary");
+  emitsSum.className = "chat-ab-emits-summary";
+  emitsSum.textContent = "Thinking";
+  emits.appendChild(emitsSum);
   const trace = document.createElement("div");
   trace.className = "chat-ab-col-trace";
+  emits.appendChild(trace);
+  bodyWrap.appendChild(emits);
+
   const traceLines: string[] = [];
   const pushLine = (line: string): void => {
     const t = (line || "").trim();
@@ -691,11 +723,10 @@ function _abLiveColumn(
     trace.scrollTop = trace.scrollHeight;
   };
   pushLine(`starting ${col.armId}…`);
-  box.appendChild(trace);
 
   const answer = document.createElement("div");
   answer.className = "chat-ab-col-answer";
-  box.appendChild(answer);
+  bodyWrap.appendChild(answer);
 
   if (!col.cid) {
     pushLine("no correlation id for this arm — treat as a bug, not an empty answer");
@@ -728,7 +759,7 @@ function _abLiveColumn(
         void _fetchEnvelopeOnce(col.cid).then((env) => {
           if (env && Array.isArray(env.blocks) && env.blocks.length) _renderAbAnswerInto(answer, env);
           else { answer.className = "chat-ab-col-answer"; answer.textContent = "(no renderable answer)"; }
-          trace.classList.add("chat-ab-col-trace--done");
+          emits.open = false;   // fold the trace once the answer lands; still one click to reopen
         });
         break;
       case "error":
@@ -760,11 +791,21 @@ function _abLiveColumn(
   return box;
 }
 
-/** Render an assistant envelope into a column's answer area via the PRODUCTION renderer, so a
- *  shadow answer is byte-for-byte what a served answer would look like. */
+/** Render an arm's answer into its column through the FULL production answer card — the same
+ *  renderAnswerCard the served bubble uses (Ananth #4: "identical, including the tabs"). This
+ *  gives both columns the same chrome — tabs, Sources tucked behind its own tab (so #3, sources
+ *  collapsed by default, is satisfied structurally), Details, actions — so any visible difference
+ *  is the orchestrator's, never the UI's. Falls back to raw renderEnvelope only if the card model
+ *  comes back empty. */
 function _renderAbAnswerInto(answer: HTMLElement, env: { blocks?: unknown[] }): void {
   answer.className = "chat-ab-col-answer";
   answer.textContent = "";
+  const card = envelopeToAnswerCard((env.blocks || []) as EnvBlock[]);
+  if (card) {
+    answer.appendChild(renderAnswerCard(card, false, {}));
+    return;
+  }
+  // Fallback: no card model → raw envelope body (still the production renderer).
   const { answerBody, sources } = renderEnvelope((env.blocks || []) as EnvBlock[], {
     renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
       if (b.type === "tool_attribution") {
