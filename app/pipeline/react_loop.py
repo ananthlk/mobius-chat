@@ -4885,6 +4885,19 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _offer_keys = ["rag"]
 
             _plan = _v2pre.plan(_offer_keys)
+            # SAY WHEN NOTHING WILL RUN. An empty plan skipped silently, so a
+            # dev turn with no preload looked identical in the logs to a turn
+            # where the block never executed -- and I spent a chase on exactly
+            # that distinction. This is the rule this module states everywhere
+            # and did not follow: a silent skip and a step that ran and found
+            # nothing are different facts.
+            if _plan.is_empty:
+                logger.info(
+                    "[v2.preload] NOTHING TO RUN cid=%s offered=%d keys=%s "
+                    "excluded=%s — react searches blind this round",
+                    (getattr(ctx, "correlation_id", "") or "")[:8],
+                    len(_offer_keys), ",".join(_offer_keys[:6]) or "-",
+                    ";".join(f"{k}:{w[:40]}" for k, w in (_plan.excluded or ())[:4]) or "-")
             try:
                 from app.pipeline.v2 import trace as _v2tr
                 _v2tr.emit_step(emitter, (ctx.correlation_id or ""),

@@ -437,3 +437,22 @@ def test_the_role_says_judge_when_evidence_is_already_in_hand():
                       suggest=("web_scrape",))
     assert "judge what has already been retrieved" in txt
     assert "find evidence that closes" not in txt
+
+
+def test_an_empty_plan_is_logged_not_skipped_silently():
+    """A preload that quietly does nothing is indistinguishable in the logs
+    from one that never executed.
+
+    Live 2026-09-12: a dev turn showed no [v2.preload] line at all, and the
+    only way to tell "the gate was false" from "the plan was empty" was to
+    read the source and guess. Both are legitimate outcomes; neither may be
+    silent. This is the rule the module states everywhere and did not follow.
+    """
+    src = open("app/pipeline/react_loop.py").read()
+    i = src.index("_plan = _v2pre.plan(_offer_keys)")
+    block = src[i:i + 1200]
+    assert "if _plan.is_empty:" in block
+    assert "NOTHING TO RUN" in block
+    # The diagnosis has to name what WAS offered, or the next reader is back
+    # to guessing which half failed.
+    assert "offered=" in block and "excluded=" in block
