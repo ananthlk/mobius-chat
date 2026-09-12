@@ -114,8 +114,23 @@ PRELOAD_TOKEN_BUDGET = int(os.environ.get("MOBIUS_V2_PRELOAD_TOKENS", "0")
 # we can count without a tokenizer. 4 chars/token is the standard rough
 # conversion and is named here so nobody reads the char numbers as exact.
 CHARS_PER_TOKEN = 4
-PER_FANOUT_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_PER_FANOUT", "6000") or 0)
-TOTAL_MAX_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_TOTAL_MAX", "24000") or 0)
+# DEFAULTS OFF. Ananth, 2026-09-12, after seeing the measurement: "no lets
+# leave it at the higher tokens".
+#
+#   uncapped   prompt 145,894 chars   48.2s   all three payers, full detail
+#   6k/arm     prompt  60,259 chars   51.1s   all three arms, Sunshine DEGRADED
+#
+# The cap bought no latency (inside run-to-run noise) and cost answer quality:
+# fanout_1 went 5->3 chunks and Sunshine fell back to "does not explicitly
+# outline a distinct care management philosophy". Prompt size is not the
+# latency lever here -- rag is ~12s and the reasoning round costs the same at
+# 60k as at 146k.
+#
+# 0 means NO CAP. The machinery stays, tested, for the day a question genuinely
+# needs bounding -- and for the posture machine, which can set these per ROUND
+# with a real budget behind the decision instead of a constant guessing.
+PER_FANOUT_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_PER_FANOUT", "0") or 0)
+TOTAL_MAX_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_TOTAL_MAX", "0") or 0)
 
 
 def _arm_of(src: dict) -> str:
