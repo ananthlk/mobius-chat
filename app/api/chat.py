@@ -97,6 +97,22 @@ class ChatRequest(BaseModel):
     two full pipelines, two model calls, two tool runs. That is the point of
     putting it behind a deliberate toggle rather than a default."""
 
+    ab_loop: Literal["v1", "v2"] | None = None
+    """HARNESS ONLY — run THIS turn on a specific orchestrator LOOP.
+
+    MOBIUS_V2_OWN_LOOP is service-wide, so the only way to try the governor's
+    own loop was to route every v2 turn through code that had never executed a
+    live turn. That is not a test, it is a cutover.
+
+    Honoured only when MOBIUS_V2_AB_FORK=1, the same gate as `ab_arm`, for the
+    same reason: a caller that can choose its loop can choose it per question
+    and hand back a comparison that is really a selection.
+
+    Independent of `ab_arm`: the ARM says which orchestrator's decisions run,
+    the LOOP says whose round sequence runs them. A v2 arm on v1's loop is the
+    substituted-decision build verified all day; a v2 arm on v2's loop is the
+    governor deciding its own sequence."""
+
     ab_arm: Literal["v1", "v2"] | None = None
     """HARNESS ONLY — pins this turn to one orchestrator instead of letting
     routing.assign() decide from MOBIUS_V2_PCT.
@@ -391,6 +407,8 @@ def post_chat(
     # never carries the pin cannot have it honoured downstream by accident.
     if body.ab_arm and os.environ.get("MOBIUS_V2_AB_FORK", "").strip() == "1":
         payload["ab_arm"] = body.ab_arm
+    if body.ab_loop and os.environ.get("MOBIUS_V2_AB_FORK", "").strip() == "1":
+        payload["ab_loop"] = body.ab_loop
     if body.is_continuation is not None:
         payload["is_continuation"] = bool(body.is_continuation)
     if isinstance(body.selection, dict) and body.selection:

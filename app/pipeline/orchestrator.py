@@ -421,6 +421,7 @@ def run_pipeline(
     selection: dict | None = None,
     promise: Any | None = None,
     ab_arm: str | None = None,
+    ab_loop: str | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -881,10 +882,21 @@ def run_pipeline(
             # decision to give v2 its own loop can be turned on independently:
             # a v2 turn with the flag off still runs v1's loop with v2's
             # substituted decision, which is the behaviour verified all day.
-            _v2_own_loop = (
-                os.environ.get("MOBIUS_V2_OWN_LOOP", "").strip() == "1"
-                and getattr(ctx, "orchestrator_version", "v1") == "v2"
-            )
+            # A PER-TURN PIN beats the service-wide flag, in both directions.
+            # Without it the only way to try the governor loop was to route
+            # every v2 turn through code that had never executed a live turn --
+            # a cutover, not a test. The pin is already gated in the API
+            # process (MOBIUS_V2_AB_FORK), so a payload carrying one is a
+            # harness turn by construction.
+            if ab_loop in ("v1", "v2"):
+                _v2_own_loop = (ab_loop == "v2")
+                logger.info("[v2] loop PINNED by harness cid=%s loop=%s",
+                            correlation_id[:8], ab_loop)
+            else:
+                _v2_own_loop = (
+                    os.environ.get("MOBIUS_V2_OWN_LOOP", "").strip() == "1"
+                    and getattr(ctx, "orchestrator_version", "v1") == "v2"
+                )
             _loop_fn = run_react
             if _v2_own_loop:
                 from app.pipeline.v2.loop import run_react_v2 as _loop_fn

@@ -157,7 +157,12 @@ def test_a_turn_runs_ONE_loop_never_both():
     running TWO TURNS, which is a different thing entirely."""
     src = _orch()
     i = src.index("ROUTE TO A LOOP")
-    block = src[i:i + 1800]
+    # Slice to a REAL boundary, not a character count. A fixed 1800-char window
+    # silently stopped short the moment the block grew, and an assertion over a
+    # truncated region tests nothing. Third time today; the fix is always the
+    # same and it is never the next magic number.
+    j = src.index("_loop_fn(ctx, emitter=on_thinking)", i) + 60
+    block = src[i:j]
     import re
     code = "\n".join(re.sub(r"#.*$", "", ln) for ln in block.splitlines())
     # exactly one invocation, through a selected function
@@ -296,3 +301,36 @@ def test_the_composition_is_read_off_the_REAL_attribute():
             tgt = n.args[0] if n.args else None
             assert not (isinstance(tgt, ast.Name) and tgt.id == "rc"), \
                 "getattr on the composition hides a wrong attribute name"
+
+
+def test_the_loop_can_be_pinned_PER_TURN_not_only_service_wide():
+    """MOBIUS_V2_OWN_LOOP is service-wide, so the only way to try the governor
+    loop was to route EVERY v2 turn through code that had never executed a live
+    turn. That is not a test, it is a cutover.
+
+    The pin rides the same gate as ab_arm (MOBIUS_V2_AB_FORK) for the same
+    reason: a caller that can choose its loop can choose it per question and
+    hand back a comparison that is really a selection.
+    """
+    chat = pathlib.Path("app/api/chat.py").read_text()
+    assert 'payload["ab_loop"] = body.ab_loop' in chat
+    i = chat.index('payload["ab_loop"]')
+    assert 'MOBIUS_V2_AB_FORK' in chat[max(0, i - 220):i], "the loop pin is ungated"
+    orch = _orch()
+    assert 'if ab_loop in ("v1", "v2"):' in orch
+    # the pin must WIN over the env flag, or a per-turn test cannot run while
+    # the service-wide flag is off
+    i = orch.index('if ab_loop in ("v1", "v2"):')
+    assert orch.index("MOBIUS_V2_OWN_LOOP", i) > i, "the env flag still overrides the pin"
+
+
+def test_arm_and_loop_are_INDEPENDENT():
+    """The ARM says whose decisions run; the LOOP says whose round sequence
+    runs them. A v2 arm on v1's loop is the substituted-decision build verified
+    all day. Collapsing them would make "try the new loop" silently also change
+    which orchestrator decides."""
+    chat = pathlib.Path("app/api/chat.py").read_text()
+    assert "ab_loop:" in chat and "ab_arm:" in chat
+    orch = _orch()
+    i = orch.index('if ab_loop in ("v1", "v2"):')
+    assert "ab_arm" not in orch[i:i + 300], "the loop pin reads the arm pin"
