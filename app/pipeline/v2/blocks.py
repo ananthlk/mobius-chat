@@ -247,9 +247,32 @@ REGISTRY: tuple[Block, ...] = (
           owner="governor"),
 
     Block("this_round", Slot.TARGET,
+          # 🔴 NAME THE QUERY'S MATERIAL, NOT JUST THE GAP.
+          #
+          # Ananth, 2026-09-12: "when asking to reframe .. it should state the
+          # full gap and question with the right payor all the details so that
+          # we can use it. it said ask a targeted question, but how".
+          #
+          # It said "Work this gap and no other: 'Sunshine Health's general
+          # care management philosophy'" and left react to invent the rest —
+          # which entity, which document, what the last query already returned.
+          # An instruction that names a goal without its material is a request
+          # to guess, and the guess is what produced a repeat query.
+          #
+          # So the block carries everything a query needs: the gap, the
+          # original question it came from, and what was already set aside so
+          # the same source is not asked for twice.
           when=lambda f: bool(f.targeted_gap),
-          render=lambda f: f"[THIS ROUND] Work this gap and no other: "
-                           f"{f.targeted_gap!r}",
+          render=lambda f: (
+              f"[THIS ROUND] Work this gap and no other:\n"
+              f"  gap:      {f.targeted_gap}\n"
+              + (f"  asked:    {f.question}\n" if f.question else "")
+              + (f"  avoid:    do not re-retrieve "
+                 + "; ".join(f.discarded[:3]) + "\n" if f.discarded else "")
+              + "  Write a query that names the specific entity and the thing "
+                "being asked about it — not the whole question again, and not "
+                "one word from it. If the last query returned the wrong "
+                "material, say what you need that it did not give you."),
           owner="governor"),
 
     Block("preloaded", Slot.EVIDENCE,

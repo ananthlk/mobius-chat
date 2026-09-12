@@ -280,3 +280,37 @@ def test_frame_sections_cannot_diverge_from_assemble():
         want = [i for i in assemble(f)[1] if i.startswith("role_")]
         got = [i for i in frame_sections(f)[1] if i.startswith("role_")]
         assert want == got, (want, got)
+
+
+# ── the reframe instruction must carry its material ────────────────────────
+
+def test_the_target_block_names_the_query_s_material_not_just_the_gap():
+    """Ananth, 2026-09-12: "when asking to reframe .. it should state the full
+    gap and question with the right payor all the details so that we can use
+    it. it said ask a targeted question, but how".
+
+    It said "Work this gap and no other: '<gap>'" and left react to invent the
+    rest — which entity, what the last query already returned. An instruction
+    that names a goal without its material is a request to guess, and the guess
+    is what produced a repeat query."""
+    f = Facts(question="care management philosophy for Molina, Sunshine, UHC",
+              targeted_gap="Sunshine Health's general care management philosophy",
+              discarded=("SH-PRO-BH-PSR.pdf p5",),
+              preloaded=(("rag", True, "15"),))
+    txt, _, _ = assemble(f)
+    blk = txt[txt.index("[THIS ROUND]"):]
+    assert "Sunshine Health's general care management philosophy" in blk
+    assert "care management philosophy for Molina" in blk, "the question is missing"
+    assert "SH-PRO-BH-PSR.pdf p5" in blk, "already-rejected source not named"
+    assert "names the specific entity" in blk
+
+
+def test_the_target_block_degrades_when_there_is_less_to_say():
+    """A first round has no rejections and may have no question text. The block
+    must not render empty labels — an empty field asserts there is nothing
+    there, which react cannot tell from a field nobody filled."""
+    f = Facts(targeted_gap="UHC philosophy", preloaded=(("rag", True, "1"),))
+    blk = assemble(f)[0]
+    blk = blk[blk.index("[THIS ROUND]"):]
+    assert "avoid:" not in blk and "asked:" not in blk
+    assert "UHC philosophy" in blk

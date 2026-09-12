@@ -62,3 +62,83 @@ def round_max_tokens(ctx) -> int | None:
     if str(getattr(ctx, "orchestrator_version", "v1")) != "v2":
         return None
     return ROUND_MAX_TOKENS
+
+
+# ── v2's RESPONSE SHAPE, in the SYSTEM prompt where shapes are obeyed ───────
+#
+# MEASURED: stating this in the governor block (a USER-message addendum) was
+# not enough. Across runs of one question with identical code, react returned
+# facts[] sometimes and v1's shape other times — and strengthening the wording
+# from "ALSO RETURN these two keys" to a complete superseding object did NOT
+# fix it. The authoritative response shape lives in the 51,670-character SYSTEM
+# prompt; an addendum in the user message does not outrank it.
+#
+# So v2 appends to the SYSTEM prompt. react/prompts.py is untouched and stays
+# pristine for v1 — Ananth: "why llm seat.. because they own us the right
+# output??" No: that file is shared, and putting facts[] in it would start
+# asking v1 for facts too. v2's shape is v2's, and this is where it goes.
+RESPONSE_SHAPE_SUFFIX = """
+
+── ADDITIONAL REQUIRED KEYS (orchestrator v2) ──
+Your JSON response must ALSO contain these two keys. Everything described
+above still applies; these are added, nothing is replaced.
+
+  "facts": [{"fact": "<one thing you now know, in one sentence>",
+             "document": "<the document it came from>",
+             "page": <page number>}]
+      Only what THIS round's evidence supports, one sentence each. A fact with
+      no document is DROPPED — it cannot be checked later, so it must not be
+      remembered as if it could.
+
+  "not_useful": ["<document, or document p<page>, that you read and are NOT using>"]
+      What you looked at and rejected. Recorded so no later round retrieves or
+      re-reads it.
+
+Omitting facts[] means this turn learns NOTHING: the evidence dies with the
+round and the next round starts blind."""
+
+
+# ── DOMAIN CONTEXT ─────────────────────────────────────────────────────────
+#
+# Ananth, 2026-09-12: "not sending the program context makes react less of a
+# healthcare analyst .. case management and care management are
+# interchangeable".
+#
+# He is right and it showed in the answers: react treated "care management" and
+# "case management" as different things and reported a gap for Sunshine Health
+# while holding passages about its case management programme.
+#
+# 🔴 INTERIM, AND SOURCED WHERE IT CAN BE. Terminology is the Lexicon seat's —
+# a list maintained here is a second vocabulary that drifts from theirs the
+# first time either changes. Payer aliases already come from
+# config/payer_normalization.yaml (their file, not mine). The equivalences
+# below are the minimum needed for the questions we are testing, and they are
+# marked as interim rather than presented as a vocabulary.
+DOMAIN_CONTEXT = """
+
+── DOMAIN CONTEXT (Florida Medicaid managed care) ──
+You are reading payer policy documents as a healthcare policy analyst.
+
+TERMS THAT MEAN THE SAME THING in these manuals — treat a passage using one as
+evidence for a question asking the other:
+  • care management ≡ case management ≡ care coordination ≡ care management
+    program / model
+  • member ≡ enrollee ≡ beneficiary
+  • provider manual ≡ provider handbook ≡ provider reference guide
+  • prior authorization ≡ PA ≡ pre-service review ≡ prior approval
+  • timely filing ≡ claim submission deadline ≡ filing limit
+
+A payer describing its "case management program" IS describing its care
+management approach. Do not report a gap for a term when the evidence uses its
+equivalent."""
+
+
+def system_suffix(ctx) -> str:
+    """v2's additions to the reasoning system prompt. Empty for v1.
+
+    Returns "" rather than v1's text for a non-v2 arm: a v2 module must never
+    hand v1 a value it chose.
+    """
+    if str(getattr(ctx, "orchestrator_version", "v1")) != "v2":
+        return ""
+    return DOMAIN_CONTEXT + RESPONSE_SHAPE_SUFFIX

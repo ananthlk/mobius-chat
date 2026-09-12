@@ -5928,6 +5928,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if str(getattr(ctx, "orchestrator_version", "v1")) == "v2":
             from app.pipeline.v2 import prompts as _v2pr
             _v2_round_tokens = _v2pr.round_max_tokens(ctx)
+            # v2's SYSTEM-prompt additions: domain context and the response
+            # shape. Measured: stating the shape in the governor block (a user
+            # message) was not enough — the authoritative shape is in the
+            # system prompt and an addendum below it does not outrank it.
+            # react/prompts.py is untouched; v1 gets none of this.
+            _v2_sys_suffix = _v2pr.system_suffix(ctx)
+            if _v2_sys_suffix:
+                reasoning_system = (reasoning_system or "") + _v2_sys_suffix
             # HOW REACT IS BEING INVOKED — everything decided before the model
             # answers. Ananth: "i want to know how react was invoked.. a whole
             # series of which model etc." The MODEL is deliberately absent

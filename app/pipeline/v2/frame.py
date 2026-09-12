@@ -265,18 +265,44 @@ def render(c: ST.Ctx, posture: Posture,
     # last tool result and means nothing once the chunks are gone. A fact with
     # a document and page survives them, can be checked, and re-sends next turn
     # in ~100 characters where its passage costs ~9,000.
-    parts.append("[ALSO RETURN — these two keys, alongside your normal JSON]")
+    # 🔴 A COMPLETE OBJECT THAT SUPERSEDES, NOT AN ADDENDUM.
+    #
+    # Ananth: "why llm seat.. because they own us the right output??" — and he
+    # was right to push. I had proposed asking another seat to add facts[] to
+    # react/prompts.py's response_shape. That file is SHARED BY BOTH ARMS, so
+    # the fix would have started asking v1 for facts too: a prompt change to
+    # the control arm, which is the contamination I reverted two hours ago.
+    # v2's response shape is v2's, and it belongs here.
+    #
+    # WHY THE ADDENDUM FORM FAILED. §11 previously said "ALSO RETURN these two
+    # keys, alongside your normal JSON" — a footnote to an authoritative
+    # schema. Measured across runs of one question with identical code, react
+    # returned facts[] sometimes and v1's shape other times. A model handed a
+    # complete object and a footnote emits the complete object; that is a
+    # prompt-design flaw of mine, not react disobeying.
+    #
+    # So this states the WHOLE object and says plainly that it replaces the
+    # earlier one. It is the same object plus two keys -- never a different
+    # contract -- because a second, genuinely different shape would be two
+    # authors of one response.
+    parts.append("[YOUR RESPONSE — this object REPLACES the JSON shape "
+                 "described earlier in this prompt]")
+    parts.append("  It is that same object with TWO ADDITIONAL KEYS. Keep "
+                 "every field you were already returning; add these.")
     parts.append('  "facts": [{"fact": "<one thing you now know, in one '
                  'sentence>", "document": "<the document it came from>", '
                  '"page": <page number>}]')
     parts.append("     Only what THIS round's evidence supports. A fact with "
-                 "no document is dropped — we cannot check it later, so it "
+                 "no document is DROPPED — we cannot check it later, so it "
                  "must not be remembered as if we could.")
     parts.append('  "not_useful": ["<document or document p<page> you read '
                  'and are NOT using>"]')
-    parts.append("     What you looked at and rejected. It is recorded so no "
-                 "later round retrieves or re-reads it — this is the only way "
-                 "that knowledge survives the turn.")
+    parts.append("     What you looked at and rejected. Recorded so no later "
+                 "round retrieves or re-reads it — this is the only way that "
+                 "knowledge survives the turn.")
+    parts.append("  Returning the earlier shape WITHOUT facts[] means this "
+                 "turn learns nothing: the evidence dies with the round and "
+                 "the next round starts blind.")
 
     # ── the ack ─────────────────────────────────────────────────────────────
     parts.append("[ACK — return these in your JSON as \"ack\": {...}]")
