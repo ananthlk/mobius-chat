@@ -387,19 +387,24 @@ include keep, running_answer, or gaps_closed, there is nothing to review yet:
   "inputs": {<tool-specific inputs>},
   "is_complete": false
 }
-gaps_open here is a REPORT of what the question asks for, not a work queue. Listing multiple parts
-does NOT mean searching them one at a time — your round-1 query/inputs must still cover the WHOLE
-question as asked, naming every part gaps_open lists. rag decomposes a query across named entities
-internally and searches them together; narrowing your own query to just the first item in the list
-throws that away and turns one round into several. (Live finding, 2026-09-12: three separate runs of
-a three-payer question all opened three gaps correctly, then narrowed the actual tool call to
-"starting with" just the first one — the model read its own list as a plan. Don't.)
+gaps_open here is a REPORT of what the question asks for, not a work queue you narrate a plan
+against. Naming multiple parts does NOT mean you've committed to a round-by-round schedule for
+covering them — decide THIS round's query on its own merits (what's likely to retrieve well right
+now), not because the list obligates a particular order. Do not narrate a multi-round plan in
+"thought" (e.g. "I'll start with X, then cover Y and Z") — you don't know yet how many rounds this
+will take or what the evidence will look like, and a stated plan tends to just... happen, whether or
+not it was the right one. (Live finding, 2026-09-12: three separate runs of a three-payer question
+all opened three gaps correctly, then the model said "starting with" one payer in its own thought —
+reading its own list as a queue rather than a report. This is what to avoid; it is NOT an instruction
+about how many entities belong in one query, which is your judgment call based on what you know about
+the tools available this turn.)
 Example — single-part (the common case): "What are Sunshine Health's timely filing deadlines?" →
-gaps_open: []; inputs name Sunshine Health only, because that's the whole question.
+gaps_open: [].
 Example — multi-part (named on the question's face): "Compare timely filing deadlines for Sunshine,
 Humana and Aetna" → gaps_open: ["Sunshine timely filing deadline", "Humana timely filing deadline",
-"Aetna timely filing deadline"], and inputs name ALL THREE payers in the SAME query — not "starting
-with Sunshine." The list reports the question's parts; the query still asks the question whole.
+"Aetna timely filing deadline"] — the list documents the three parts. Whether this round's query
+targets one of them or more than one is your call, made fresh each round; the list is not a promise
+about which order you'll get to the others.
 
 Tool call (need more evidence) — include "evidence_review" whenever this is NOT your first
 round (i.e. earlier tool results are present in context above):
@@ -434,6 +439,7 @@ on: it's the record of which chunks actually grounded the answer you're about to
   "sources": [],
   "confidence": "high"
 }"""
+
 
 REACT_GROUNDING_CONTRACT_TEXT = 'GROUNDING CONTRACT — every factual claim in your answer must trace to something a tool actually returned this turn. This holds regardless of whether the fact is true, and regardless of whether it\'s a specific number or a general statement — a correct-sounding sentence built from background knowledge is exactly as ungrounded as a wrong one, because it\'s delivered in the same confident voice a sourced answer uses. A reader cannot tell the difference from the outside; that\'s what makes it worse than a claim that\'s visibly wrong.\n\nReasoning over what was retrieved is your job — do it freely. Summarizing, comparing, computing, and restructuring the evidence you actually kept into a clearer shape is not recall. Supplying a fact that no tool call surfaced IS recall, even when you\'re confident it\'s correct.\n\nThe common, correct outcome on a multi-part question is PARTIAL, not all-or-nothing — report what you found, and say plainly what you did not:\n  Example: "Compare timely filing deadlines for Molina, Sunshine, and UHC" — a tool returns Molina\'s deadline but nothing usable for Sunshine or UHC.\n    Correct: state Molina\'s deadline as found. For Sunshine and UHC, say directly that it wasn\'t found in available materials — do NOT fill in the other two from what you already know about these payers just because the answer\'s shape expects three entries.\n    Wrong: answer all three, completing Sunshine and UHC from background knowledge so the comparison looks whole.\n\nIf NO tool call returned anything usable for the question at all, that\'s the same rule at its edge, not a different one: say plainly that it wasn\'t found in available materials — do not compose a full, structured, confident-sounding answer to fill the space where a grounded one would have gone. A structured comparison with zero retrieved sources behind it is not a lesser version of a real answer; it\'s the specific failure this rule exists to stop, and it\'s exactly as risky when it names entities, relationships, or general facts as when it names a rate or a deadline.\n\nDoes NOT apply to:\n  - A knowledge-base tool\'s own return (e.g. product_help_search for "what is Mobius" questions) — that tool\'s result IS the grounding; it\'s a different corpus, not your own background knowledge.\n  - Asking the user a clarifying question — that states no fact at all, grounded or not, and is a legitimate outcome on its own.\n  - Arithmetic or reformatting applied to evidence you already kept this turn — that\'s reasoning over what was retrieved, not recall.'
 

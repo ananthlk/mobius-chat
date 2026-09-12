@@ -131,8 +131,34 @@ def _react_block_specs() -> list[BlockSpec]:
         # plus a positive worked example (the multi-part example's inputs
         # now name all three payers in one query, not "starting with" one)
         # rather than relying on the gaps_open field alone to imply it.
+        #
+        # v7 (2026-09-12, Governor seat withdrawal): v6 asserted "rag
+        # decomposes a query across named entities internally and searches
+        # them together" as the justification for telling react to cover
+        # every named part in one round-1 query. FALSE -- confirmed by
+        # reading mobius-rag's app/services/retriever/shape/reformat.py::
+        # _dispatch directly: Contour.EXACT passes straight through to ONE
+        # PRECISE slot, unchanged text and all; the only fan-out trigger
+        # anywhere in Gate/Reformat is UNDERSPECIFIED + underspecified_kind
+        # == "explore_siblings" (lexicon-domain-facet ambiguity, unrelated
+        # to named-entity count). The file's own comment confirms an
+        # entity-count-based auto-decomposition was tried and REVERTED
+        # 2026-07-29 (Ananth's direct call) for producing spurious facets
+        # at broad scale. Governor's original "~30s broad vs ~73s narrowed"
+        # measurement mis-attributed three sequential single-round HTTP
+        # calls to one fan-out call -- never checked the field (call
+        # boundaries) that would have told the two apart.
+        # v7 keeps the part that IS verified -- 3/3 live traces of the
+        # model narrating a sequential plan ("starting with Molina") in
+        # its own "thought" field, treating gaps_open as a queue -- and
+        # drops the mechanism claim plus the "put every entity in one
+        # query" remedy that depended on it, since neither "one combined
+        # query" nor "one query per entity" is proven better without the
+        # named-entity fan-out capability RAG does not currently have.
+        # Left the actual per-round query shape to the model's own
+        # judgment rather than prescribe an unsupported tactic.
         BlockSpec("react.response_shape", "static", "system", react_prompts.REACT_RESPONSE_SHAPE_TEXT,
-                  owner="react-agent", version=6),
+                  owner="react-agent", version=7),
         # react.output_intent_instruction (v1/v2/v3) REMOVED from the
         # composition (2026-07-30 revert, see react.response_shape's note
         # above) — no longer a member of any active composition. Its
