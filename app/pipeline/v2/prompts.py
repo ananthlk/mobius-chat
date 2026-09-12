@@ -98,39 +98,55 @@ Omitting facts[] means this turn learns NOTHING: the evidence dies with the
 round and the next round starts blind."""
 
 
-# ── DOMAIN CONTEXT ─────────────────────────────────────────────────────────
+# ── WHO YOU ARE WORKING FOR ────────────────────────────────────────────────
 #
-# Ananth, 2026-09-12: "not sending the program context makes react less of a
-# healthcare analyst .. case management and care management are
-# interchangeable".
+# Ananth, 2026-09-12, correcting my first attempt: "that is too specific.. i am
+# saying react needs to know it is part of mobius and what we do and i think
+# that will solve a lot of the gaps".
 #
-# He is right and it showed in the answers: react treated "care management" and
-# "case management" as different things and reported a gap for Sunshine Health
-# while holding passages about its case management programme.
+# My first version was a synonym table (care management ≡ case management, …).
+# Too narrow twice over: it only covers terms I happened to notice, and
+# terminology belongs to the Lexicon seat anyway. The general fix is that an
+# analyst who knows the domain does not need the table — they read for the
+# CONCEPT, not the label, because they know what the reader is going to do with
+# the answer.
 #
-# 🔴 INTERIM, AND SOURCED WHERE IT CAN BE. Terminology is the Lexicon seat's —
-# a list maintained here is a second vocabulary that drifts from theirs the
-# first time either changes. Payer aliases already come from
-# config/payer_normalization.yaml (their file, not mine). The equivalences
-# below are the minimum needed for the questions we are testing, and they are
-# marked as interim rather than presented as a vocabulary.
-DOMAIN_CONTEXT = """
+# GROUNDED, NOT INVENTED. The platform name and module map come from
+# docs/platform-definition.json ("Mobius RCM Network", 44 modules). The domains
+# below are the ones this codebase actually implements tools for — appeals
+# (CARC/denial playbooks), credentialing/roster, prior auth, timely filing,
+# care management, claims — not a market description I wrote. Anything I could
+# not verify from the repo is absent rather than plausible.
+PRODUCT_CONTEXT = """
 
-── DOMAIN CONTEXT (Florida Medicaid managed care) ──
-You are reading payer policy documents as a healthcare policy analyst.
+── WHO YOU ARE WORKING FOR ──
+You are part of MOBIUS RCM NETWORK. Mobius helps healthcare provider
+organisations work with payer policy: appeals and denials, prior
+authorisation, credentialing, claims and timely filing, care management.
 
-TERMS THAT MEAN THE SAME THING in these manuals — treat a passage using one as
-evidence for a question asking the other:
-  • care management ≡ case management ≡ care coordination ≡ care management
-    program / model
-  • member ≡ enrollee ≡ beneficiary
-  • provider manual ≡ provider handbook ≡ provider reference guide
-  • prior authorization ≡ PA ≡ pre-service review ≡ prior approval
-  • timely filing ≡ claim submission deadline ≡ filing limit
+WHO IS ASKING. The people using this are operators inside provider
+organisations — revenue cycle staff, credentialing teams, clinical operations,
+compliance. They are not asking out of curiosity. They are about to do
+something: submit a claim, file an appeal, enrol a provider, design a care
+programme, or decide whether a payer's rule applies to them.
 
-A payer describing its "case management program" IS describing its care
-management approach. Do not report a gap for a term when the evidence uses its
-equivalent."""
+WHAT YOU ARE READING. Payer provider manuals, policies, fee schedules and
+contracts — mostly Florida Medicaid managed care. These are operational
+documents written by payers for providers.
+
+WHAT THIS MEANS FOR HOW YOU READ THEM
+  • Read for the CONCEPT, not the label. These manuals describe the same
+    operational thing under different names, and a payer describing its "case
+    management program" is describing its care management approach. If the
+    evidence answers the question under a different word, it answers the
+    question — do not report a gap for the label.
+  • An operator needs what the manual SAYS and what it means for them. A
+    citation they can check beats a fluent summary they cannot.
+  • Payers differ, and the differences are the point. When several are asked
+    about, what each one does is more useful than what they have in common.
+  • If something is genuinely not in the corpus, say so plainly and say which
+    payer and which topic — that is an actionable answer in this domain, not a
+    failure."""
 
 
 def system_suffix(ctx) -> str:
@@ -141,4 +157,4 @@ def system_suffix(ctx) -> str:
     """
     if str(getattr(ctx, "orchestrator_version", "v1")) != "v2":
         return ""
-    return DOMAIN_CONTEXT + RESPONSE_SHAPE_SUFFIX
+    return PRODUCT_CONTEXT + RESPONSE_SHAPE_SUFFIX
