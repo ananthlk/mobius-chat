@@ -34,7 +34,8 @@ Spec: docs/governor-react-closure-contract.md (Direction 1).
 from __future__ import annotations
 
 from app.pipeline.v2.posture import (
-    Band, Gap, Trend, closure_trend, latest_closure, targeted_attempts,
+    ROOT_GAP_ID, Band, Directive, Gap, Trend, closure_trend, latest_closure,
+    targeted_attempts,
 )
 
 HEADER = "[Governor]"
@@ -92,8 +93,44 @@ def _instruction(gap: Gap) -> str:
             "query returns the same evidence.")
 
 
+def _discover_block(gap: Gap, remaining: tuple[Gap, ...]) -> str:
+    """Round 2's real job: say what is MISSING, and name it as gaps.
+
+    Ananth, 2026-09-12: *"i dont think rag should necessarily compare and
+    contrast the 3 payor query to 3 gaps.. that is immature... the old
+    instruction actually works.. compare.. get info.. round 2, explore what is
+    missing and create gaps.. our tools can decompose and get better answers."*
+
+    THE CORRECTION THIS ENCODES. Splitting a question by its SURFACE -- one
+    gap per payer named in the sentence -- predicts where the evidence will be
+    thin instead of observing it. It also costs rounds the turn does not have:
+    measured, a broad three-payer query had rag search all three payers in
+    ~30s through its own slot decomposition, while a single-payer query spent
+    73s covering one. The tool decomposes better than a surface split does.
+
+    So gaps are DISCOVERED from what came back, not predicted from the
+    question. The governor asks for that review; it does not perform it --
+    naming the missing pieces itself would be a second decomposer, and a
+    decomposition only the governor can see has no consumer.
+    """
+    return "\n".join([
+        HEADER,
+        "round 2 of this turn: review, do not re-ask.",
+        f'the question: "{gap.text}"',
+        "instruction: compare what you now have against what was asked. Name "
+        "EACH part that is still missing or thin as its own gap in "
+        "evidence_review.gaps_open -- a part you have already covered is not "
+        "a gap. If nothing is missing, say so and close it.",
+        "do not: repeat the query you just ran. It returned what it returned; "
+        "the next round is for what it did not.",
+        'report progress per gap in evidence_review.gaps as '
+        '{"text": "...", "closure": 0-100, "why": "..."}',
+    ])
+
+
 def governor_block(gap: Gap | None, *, remaining: tuple[Gap, ...] = (),
-                   round_index: int = 0) -> str | None:
+                   round_index: int = 0,
+                   directive: Directive | None = None) -> str | None:
     """The block appended to the round context, or None when there is nothing
     to steer.
 
@@ -103,6 +140,14 @@ def governor_block(gap: Gap | None, *, remaining: tuple[Gap, ...] = (),
     """
     if gap is None:
         return None
+
+    # THE ROOT GAP IS THE QUESTION. Telling react to "close" it restates what
+    # it already has, which is the immature split this block exists to avoid.
+    # Whenever the ledger still holds only the root -- or the machine says
+    # DISCOVER -- the round is for finding out what is missing, not for
+    # closing something nobody has named yet.
+    if gap.gap_id == ROOT_GAP_ID or directive is Directive.DISCOVER:
+        return _discover_block(gap, remaining)
 
     lines = [
         HEADER,

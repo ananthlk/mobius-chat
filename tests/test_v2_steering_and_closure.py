@@ -179,3 +179,54 @@ def test_the_steering_is_arm_scoped_and_revertible():
     window = code[i:i + 400]
     assert "orchestrator_version" in window, "steering is not arm-scoped"
     assert "rn > 1" in window, "steering must not fire on the decomposition round"
+
+
+# ── round 2 discovers gaps; it does not close a question ────────────────────
+
+def test_the_root_gap_is_never_rendered_as_something_to_close():
+    """Ananth, 2026-09-12: splitting a question by its SURFACE -- one gap per
+    payer named in the sentence -- is immature. The root gap IS the question;
+    telling react to "close" it restates what it already has.
+
+    Measured: a broad three-payer query had rag search all three through its
+    own slot decomposition in ~30s, while a single-payer query spent 73s on
+    one. The tool decomposes better than a surface split.
+    """
+    from app.pipeline.v2.posture import ROOT_GAP_ID, seed_root_gap
+    root = seed_root_gap("care management philosophy for Molina, Sunshine and UHC")
+    block = governor_block(root, remaining=(root,), round_index=2)
+    assert "close this gap" not in block
+    assert "review, do not re-ask" in block
+    assert "still missing or thin" in block
+
+
+def test_discover_directive_renders_the_review_block_for_any_gap():
+    from app.pipeline.v2.posture import Directive
+    g = _gap(SUN, "S384280")
+    block = governor_block(g, remaining=(g,), round_index=2,
+                           directive=Directive.DISCOVER)
+    assert "review, do not re-ask" in block
+
+
+def test_a_discovered_gap_is_closed_not_rediscovered():
+    from app.pipeline.v2.posture import Directive
+    g = _gap(SUN, "S384280",
+             attempts=(Attempt(round_index=2, tool="rag", query="q",
+                               returned_payload=True, targeted=True),),
+             closures=(Closure(2, 30),))
+    block = governor_block(g, remaining=(g,), round_index=3,
+                           directive=Directive.CLOSE)
+    assert "close this gap" in block
+    assert "review, do not re-ask" not in block
+
+
+def test_the_governor_does_not_name_the_missing_parts_itself():
+    """A decomposition only the governor can see has no consumer -- the defect
+    this whole contract exists to end. It ASKS for the review; react performs
+    it."""
+    from app.pipeline.v2.posture import seed_root_gap
+    root = seed_root_gap("care management philosophy for Molina, Sunshine and UHC")
+    block = governor_block(root, remaining=(root,), round_index=2)
+    # The question is quoted once, as the question. The governor must not emit
+    # a list of sub-questions of its own devising.
+    assert block.count("Molina") == 1, "the governor split the question itself"

@@ -4799,10 +4799,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         from app.pipeline.v2 import posture as _v2ip
 
                         _steer_state = _v2ip.effective_state(_v2ps)
+                        _v2ps_decision = _v2ip.select(_steer_state)
                         _steer_gap = _v2ip.worth_spending(_steer_state)
+                        # The machine's own DISCOVER/CLOSE call, not a second
+                        # one: a block that decided for itself whether the
+                        # round is for finding gaps or closing them would be a
+                        # second author of the decision, and the row would
+                        # explain a choice the prompt did not make.
                         ctx._v2_governor_block = _v2i.governor_block(
                             _steer_gap, remaining=_steer_state.open_gaps,
                             round_index=rn,
+                            directive=_v2ps_decision.directive,
                         )
                         if ctx._v2_governor_block:
                             logger.info(
