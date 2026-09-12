@@ -90,13 +90,35 @@ class TestDeterministicFormat:
         result = deterministic_format(draft)
         assert result["sections"] == []
 
-    def test_too_many_pairs_not_promoted(self):
-        """More than 6 colon-lines usually means the regex is over-matching
-        prose, not real structured notes -- stay conservative."""
-        lines = [f"Item {i}: value {i}" for i in range(8)]
-        draft = "\n".join(lines)
+    def test_scattered_colon_lines_not_promoted(self):
+        """More than 6 colon-lines SCATTERED THROUGH PROSE means the regex is
+        over-matching sentences, not finding real structured notes -- stay
+        conservative.
+
+        2026-09-12 (ENVELOPE_CLASSIFIER_SPEC.md): this test used to assert
+        the same thing for 8 CONSECUTIVE colon lines, which was the wrong
+        predicate. The count was standing in for evidence it does not
+        actually carry -- eight unbroken "Label: Value" lines are structure
+        by construction, and abstaining on them produced a wall of prose
+        where a table was plainly right (found on a real 9-line block of
+        appeal deadlines). Contiguity is the signal; the count guards only
+        the scattered case, which is what this now pins."""
+        draft = "\n".join(
+            f"Item {i}: value {i}\nSome intervening prose about item {i}."
+            for i in range(8)
+        )
         result = deterministic_format(draft)
         assert result["sections"] == []
+
+    def test_a_contiguous_run_of_many_pairs_becomes_a_table(self):
+        """The other half of the rule above: an unbroken run is structure,
+        however long, and routes to a table rather than abstaining."""
+        draft = "\n".join(f"Item {i}: value {i}" for i in range(8))
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "table"
+        assert len(sec["data"]["rows"]) == 8
 
     def test_direct_answer_still_has_bolded_facts_when_sections_present(self):
         draft = "Initial filing: 180 days\nResubmission: 90 days"

@@ -91,6 +91,133 @@ ALWAYS_PRELOAD = ("rag",)
 PRELOAD_TOKEN_BUDGET = int(os.environ.get("MOBIUS_V2_PRELOAD_TOKENS", "0")
                            or 0)
 
+# ── THE KNOB THAT IS ACTUALLY ENFORCED ──────────────────────────────────────
+#
+# Ananth, 2026-09-12: "it is not enforced so we need a knob for it.. per fan
+# out and total not to exceed".
+#
+# MEASURED: rag ignores token_budget_for_retrieval. Identical results with and
+# without it, in both caller modes, n=2 each:
+#     chat.default  budget=6000 -> 17 chunks | budget=None -> 17 chunks
+#     chat.copilot  budget=2000 ->  1 chunk  | budget=None ->  1 chunk
+# So the cap has to be applied on THIS side of the wire, on what came back.
+#
+# PER ARM, NOT GLOBAL. A global top-K makes the fan-out arms compete and the
+# lowest-ranked entity loses outright -- on the three-payer question UHC has
+# exactly ONE chunk against Sunshine's ten, so any global trim removes UHC
+# first and the answer reads complete with a payer silently missing. Every
+# chunk carries slot_id / payer / retrieval_arms, so the arm is known and does
+# not have to be guessed by re-parsing the question (which would make chat a
+# second author of rag's own decomposition).
+#
+# Tokens are the user-facing unit (Ananth's "6k per fan out"); chars are what
+# we can count without a tokenizer. 4 chars/token is the standard rough
+# conversion and is named here so nobody reads the char numbers as exact.
+CHARS_PER_TOKEN = 4
+PER_FANOUT_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_PER_FANOUT", "6000") or 0)
+TOTAL_MAX_TOKENS = int(os.environ.get("MOBIUS_V2_PRELOAD_TOTAL_MAX", "24000") or 0)
+
+
+def _arm_of(src: dict) -> str:
+    """Which fan-out arm produced this chunk.
+
+    slot_id first -- it is rag's own identifier for the arm. `payer` is the
+    fallback because on a named-entity fan-out it IS the arm, and it keeps the
+    grouping meaningful when slot_id is absent. document_name last: two
+    documents can belong to one arm, so it over-splits, but over-splitting is
+    safe here (each gets a smaller share) where under-splitting is not (two
+    entities sharing one budget is the collision we are removing).
+    """
+    for key in ("slot_id", "payer"):
+        v = src.get(key)
+        if v not in (None, "", "unknown"):
+            return f"{key}:{v}"
+    return "doc:" + str(src.get("document_name") or "?")
+
+
+def _render_chunk(s: dict) -> str:
+    """One chunk as react will read it: provenance, then text.
+
+    React cites what it reads, so the document and page travel WITH the
+    passage. Text with no provenance is how a citation marker ends up pointing
+    at nothing -- which this session has already produced once.
+    """
+    name = str(s.get("document_name") or "?")
+    pg = s.get("page_number")
+    head = f"[{name}" + (f" p{pg}]" if pg is not None else "]")
+    return f"{head}\n{s.get('text')}"
+
+
+def fair_share(sources: list[dict], *,
+               per_arm_tokens: int = 0,
+               total_tokens: int = 0) -> tuple[str, list[dict], dict]:
+    """Select chunks ROUND-ROBIN across fan-out arms, under two caps.
+
+    Returns (text, kept, report). `report` names, per arm, how many chunks it
+    had and how many were kept -- because "this arm was trimmed" and "this arm
+    returned nothing" are different facts and the summary must not collapse
+    them into a smaller number.
+
+    Round-robin is the whole point: every arm gets its first chunk before any
+    arm gets its second. Rank-ordered selection under a global cap is what
+    drops a payer.
+    """
+    per_arm_chars = max(0, per_arm_tokens) * CHARS_PER_TOKEN
+    total_chars = max(0, total_tokens) * CHARS_PER_TOKEN
+
+    arms: dict[str, list[dict]] = {}
+    for s in sources or []:
+        if isinstance(s, dict) and str(s.get("text") or "").strip():
+            arms.setdefault(_arm_of(s), []).append(s)
+    if not arms:
+        return "", [], {}
+
+    # Arms keep rag's own ordering within themselves -- it ranked them and this
+    # module does not re-rank. Two rankers would be two authors.
+    order = list(arms.keys())
+    kept: list[dict] = []
+    used_total = 0
+    used_arm = {a: 0 for a in order}
+    idx = {a: 0 for a in order}
+
+    progress = True
+    while progress:
+        progress = False
+        for arm in order:
+            i = idx[arm]
+            if i >= len(arms[arm]):
+                continue
+            s = arms[arm][i]
+            # RENDERED size, not raw text size. The caps must bound what
+            # actually enters the prompt; counting only the chunk body let the
+            # provenance headers push the payload past a cap the caller was
+            # told was a ceiling. Measured overshoot was small (12,050 against
+            # 12,000) and small is not the point -- "not to exceed" either
+            # holds or it is a suggestion.
+            n = len(_render_chunk(s)) + 2      # +2 for the "\n\n" join
+            if per_arm_chars and used_arm[arm] + n > per_arm_chars:
+                idx[arm] = len(arms[arm])      # this arm is full
+                continue
+            if total_chars and used_total + n > total_chars:
+                # Total reached: stop entirely rather than skipping ahead to a
+                # smaller chunk, which would silently prefer short passages.
+                progress = False
+                break
+            kept.append(s)
+            used_arm[arm] += n
+            used_total += n
+            idx[arm] = i + 1
+            progress = True
+        else:
+            continue
+        break
+
+    parts = [_render_chunk(s) for s in kept]
+    report = {a: {"had": len(arms[a]),
+                  "kept": sum(1 for k in kept if _arm_of(k) == a)}
+              for a in order}
+    return "\n\n".join(parts), kept, report
+
 
 @dataclass(frozen=True)
 class PreloadPlan:

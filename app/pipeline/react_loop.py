@@ -1364,7 +1364,34 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     #
     # The text is returned here and seeded as a virtual tool result by the
     # caller, which is the channel build_reasoning_context already renders.
-    _payload = res.get("result") or res.get("answer") or ""
+    # PAYLOAD FROM `sources`, NOT `result`.
+    #
+    # `result` is whatever the synthesis path produced and its size swings with
+    # which model answered: measured 141,074 chars on one run and 463 on
+    # another (a fast-mode hedge after the model was credit-blocked) for the
+    # same retrieval. `sources` is the retrieval itself -- deterministic, and
+    # every chunk carries the fan-out arm that produced it, which is what makes
+    # a per-arm cap possible at all.
+    #
+    # Falls back to `result` when there are no sources, so a tool that returns
+    # prose instead of chunks still reaches react.
+    from app.pipeline.v2 import preload as _v2pl
+    _srcs = res.get("sources") or []
+    _fair_text, _fair_kept, _fair_report = _v2pl.fair_share(
+        _srcs,
+        per_arm_tokens=_v2pl.PER_FANOUT_TOKENS,
+        total_tokens=_v2pl.TOTAL_MAX_TOKENS)
+    if _fair_text:
+        _payload = _fair_text
+        # PER ARM, logged. A single "kept 15 of 56" cannot distinguish an arm
+        # that was trimmed from an arm that returned nothing -- and it is the
+        # second that loses a payer.
+        logger.info("[v2.preload.fairshare] tool=%s arms=%d kept=%d of %d %s",
+                    tool, len(_fair_report), len(_fair_kept), len(_srcs),
+                    "; ".join(f"{a}={r['kept']}/{r['had']}"
+                              for a, r in _fair_report.items()))
+    else:
+        _payload = res.get("result") or res.get("answer") or ""
     # PAYLOAD SIZE IS THE SIGNAL. A preload that returns a 460-char synthesis
     # and one that returns 147k of passages are indistinguishable in every
     # other field -- same tool, same ok, same passage COUNT -- and the

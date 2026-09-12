@@ -529,9 +529,14 @@ class TestMultiSection:
         )
         assert deterministic_format(draft, multi_section=True)["sections"] == []
 
-    def test_multi_section_is_off_by_default(self):
-        """Single-section is what ships; the segmented path is opt-in until
-        Phase 2 wires and A/Bs it."""
+    def test_multi_section_is_on_by_default(self):
+        """Flipped 2026-09-12 after measuring shape loss on long drafts. The
+        single-section path stays reachable as an explicit fallback."""
         default = deterministic_format(self.MIXED)["sections"]
-        explicit_single = deterministic_format(self.MIXED, multi_section=False)["sections"]
-        assert default == explicit_single
+        explicit_multi = deterministic_format(self.MIXED, multi_section=True)["sections"]
+        assert default == explicit_multi
+        assert len(default) > 1
+
+    def test_single_section_remains_reachable(self):
+        sections = deterministic_format(self.MIXED, multi_section=False)["sections"]
+        assert len(sections) == 1
