@@ -125,3 +125,42 @@ def test_a_string_only_emitter_still_gets_the_headline():
 
 def test_no_emitter_is_not_a_crash():
     T.emit_step(None, "cid", T.memory_step(_Recall()))
+
+
+# ── one call must not read as two ───────────────────────────────────────────
+
+def test_the_preload_result_is_past_tense_and_emitted_once():
+    """🔴 THE BUG ANANTH CAUGHT. The stream showed:
+
+        ◌ preload: running rag, appeals_get_playbook, healthcare_query
+        ... rag's own chatter, 48 candidates, 15 passages ...
+        ◌ Pre-loading evidence before reasoning: rag · appeals_get_playbook
+        ✓ rag → 15 passage(s)
+
+    One rag call, two reports, and the SECOND one phrased as if starting. He
+    read it as rag running twice before react, and that reading was reasonable.
+    Intent and result are both worth emitting — a 12s preload with no line
+    looks frozen — but they must be tensed so nobody has to count."""
+    started = T.preload_step(("rag", "appeals_get_playbook"), (), ())
+    done = T.preload_done_step([{"tool": "rag", "ok": True, "summary": "15 passages"}], 12.4)
+    assert "running" in started.headline
+    assert "preloaded" in done.headline and "running" not in done.headline
+    assert "Pre-loading" not in done.headline
+    assert started.stage != done.stage
+
+
+def test_tools_that_returned_nothing_are_counted_in_the_headline():
+    """A timed-out tool must not hide inside a success line."""
+    s = T.preload_done_step([{"tool": "rag", "ok": True, "summary": "15 passages"},
+                             {"tool": "healthcare_query", "ok": False, "summary": ""}])
+    assert "1 returned nothing" in s.headline
+    assert any("healthcare_query" in d and "returned nothing" in d for d in s.detail)
+
+
+def test_an_all_empty_preload_says_so_rather_than_claiming_success():
+    s = T.preload_done_step([{"tool": "rag", "ok": False, "summary": ""}])
+    assert "returned nothing" in s.headline and "✓" not in s.headline
+
+
+def test_no_preload_at_all_is_distinct_from_an_empty_one():
+    assert "react starts with no evidence" in T.preload_done_step([]).headline

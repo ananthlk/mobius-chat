@@ -4968,20 +4968,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # governor reads as silence while rag narrates in detail.
                 # Ananth, 2026-09-12: "the react emits are missing, we need to
                 # add them else it is confusing".
-                _pre_ok = [r for r in ctx._v2_preloaded if r.get("ok")]
-                _pre_empty = [r for r in ctx._v2_preloaded if not r.get("ok")]
-                if _pre_ok:
-                    emit("◌ Pre-loading evidence before reasoning: "
-                         + " · ".join(str(r.get("tool")) for r in _pre_ok))
-                    for _r in _pre_ok:
-                        emit(f"  ✓ {_r.get('tool')} → {_r.get('summary')}")
-                # "Ran and found nothing" is a DIFFERENT fact from "was never
-                # run", and the user is owed the distinction for the same
-                # reason react is -- it changes what to ask next.
-                for _r in _pre_empty:
-                    emit(f"  ⊘ {_r.get('tool')} → ran, returned nothing")
-                if ctx._v2_preloaded:
-                    emit("  → Judging what came back before searching again.")
+                # ONE result report, past tense. The intent headline already
+                # fired before the tools ran; a second present-tense line here
+                # made one rag call look like two in the stream.
+                _v2tr.emit_step(
+                    emitter, (ctx.correlation_id or ""),
+                    _v2tr.preload_done_step(
+                        ctx._v2_preloaded,
+                        _preload_time.monotonic() - _t_pre),
+                    thread_id=getattr(ctx, "thread_id", None))
                 logger.info(
                     "[v2.preload] cid=%s ran=%s ok=%d suggest=%s elapsed=%.1fs",
                     (ctx.correlation_id or "")[:8],

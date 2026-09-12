@@ -115,6 +115,42 @@ def fair_share_step(tool, report, kept, total) -> Step:
                  "starved": starved})
 
 
+def preload_done_step(results, elapsed_s=None) -> Step:
+    """What preload actually RETURNED — past tense, once.
+
+    🔴 THIS REPLACES A SECOND "Pre-loading evidence before reasoning" LINE that
+    fired AFTER execution in the present tense. With the intent headline
+    already emitted before the tools ran, and rag's own chatter in between, the
+    stream showed what looked like rag running TWICE. Ananth read it exactly
+    that way and asked why. One call, two reports, and the second one phrased
+    as if it were starting.
+
+    Intent and result are both worth emitting -- a 12-second preload with no
+    line looks frozen -- but they must be tensed so nobody has to count.
+    """
+    ok = [r for r in (results or []) if r.get("ok")]
+    empty = [r for r in (results or []) if not r.get("ok")]
+    took = f" in {elapsed_s:.1f}s" if elapsed_s is not None else ""
+    if not results:
+        head = "⊘ preload returned nothing — react starts with no evidence"
+    elif ok:
+        head = (f"✓ preloaded{took}: "
+                + " · ".join(str(r.get("tool")) for r in ok)
+                + (f" ({len(empty)} returned nothing)" if empty else ""))
+    else:
+        head = f"⊘ preload{took}: every tool ran and returned nothing"
+    detail = [f"  ✓ {r.get('tool')} → {r.get('summary')}" for r in ok]
+    # "Ran and found nothing" is a DIFFERENT fact from "was never run", and the
+    # user is owed the distinction for the same reason react is.
+    detail += [f"  ⊘ {r.get('tool')} → ran, returned nothing" for r in empty]
+    if results:
+        detail.append("  → Judging what came back before searching again.")
+    return Step("preload_done", head, tuple(detail),
+                {"ok": [r.get("tool") for r in ok],
+                 "empty": [r.get("tool") for r in empty],
+                 "elapsed_s": elapsed_s})
+
+
 def reply_step(resp, elapsed_s=None) -> Step:
     took = f" in {elapsed_s:.1f}s" if elapsed_s is not None else ""
     ungrounded = sum(1 for f in resp.facts if not f.grounded)
