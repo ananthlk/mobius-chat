@@ -1390,6 +1390,15 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
                     tool, len(_fair_report), len(_fair_kept), len(_srcs),
                     "; ".join(f"{a}={r['kept']}/{r['had']}"
                               for a, r in _fair_report.items()))
+        try:
+            from app.pipeline.v2 import trace as _v2tr_fs
+            _v2tr_fs.emit_step(
+                emitter, (getattr(ctx, "correlation_id", "") or ""),
+                _v2tr_fs.fair_share_step(tool, _fair_report,
+                                         len(_fair_kept), len(_srcs)),
+                thread_id=getattr(ctx, "thread_id", None))
+        except Exception:
+            pass
     else:
         _payload = res.get("result") or res.get("answer") or ""
     # PAYLOAD SIZE IS THE SIGNAL. A preload that returns a 460-char synthesis
@@ -4699,6 +4708,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # renders no frame sections, which is exactly today's behaviour. This must
     # be a no-op when anything is wrong, never a broken turn.
     ctx._v2_preloaded = []
+    # ── WHAT WE ALREADY KNOW, BEFORE SPENDING ANYTHING ──────────────────
+    # Emitted FIRST because it is the cheapest evidence there is, and because
+    # a reader cannot judge any retrieval number without knowing whether this
+    # turn started cold or warm.
+    if getattr(ctx, "orchestrator_version", "v1") == "v2":
+        try:
+            from app.pipeline.v2 import memory as _v2mem0
+            from app.pipeline.v2 import trace as _v2tr0
+            # ONE HEADLINE, EXPANDABLE. Ananth: "a top line but an expandable
+            # into everything underneath it" -- a stream where every step
+            # prints eight lines is the same opacity with more scrolling.
+            _v2tr0.emit_step(emitter, (ctx.correlation_id or ""),
+                             _v2tr0.memory_step(_v2mem0.recall(ctx)),
+                             thread_id=getattr(ctx, "thread_id", None))
+        except Exception as _memE:   # pragma: no cover
+            emit(f"  ↓ memory: unavailable ({type(_memE).__name__}) — "
+                 "this turn starts cold")
     ctx._v2_suggest = ()
     if (os.environ.get("MOBIUS_V2_PRELOAD", "").strip() == "1"
             and getattr(ctx, "orchestrator_version", "v1") == "v2"
@@ -4753,6 +4779,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _offer_keys = ["rag"]
 
             _plan = _v2pre.plan(_offer_keys)
+            try:
+                from app.pipeline.v2 import trace as _v2tr
+                _v2tr.emit_step(emitter, (ctx.correlation_id or ""),
+                                _v2tr.preload_step(_plan.execute, _plan.suggest,
+                                                   _plan.excluded),
+                                thread_id=getattr(ctx, "thread_id", None))
+            except Exception:
+                pass
             if not _plan.is_empty:
                 # Own import, NOT _pp_time_mod: that name is bound at :4649,
                 # a hundred lines BELOW this block, so referencing it here
@@ -5360,15 +5394,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             ctx, _steer_state,
                             targeted_gap=(_steer_gap.text if _steer_gap else ""),
                             preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
-                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()),
-                            # ONLY ASK WHEN WE COULD ACTUALLY GO AGAIN.
-                            # Feasible is ours (rounds left, budget); worth it
-                            # is theirs. Asking when we cannot afford it
-                            # invites a yes we cannot honour and teaches the
-                            # model its answer does not matter.
-                            next_round_feasible=(
-                                rn < max_it
-                                and (ctx.react_hard_ceiling_s or 0) > _pp_elapsed_s))
+                            suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
                             _v2_ctx, _v2ps_decision.posture,
                             directive=_v2ps_decision.directive,
@@ -5995,6 +6021,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 from app.pipeline.v2 import memory as _v2mem
                 _v2mem.remember(ctx, facts=_v2_resp.facts,
                                 not_useful=_v2_resp.not_useful)
+                from app.pipeline.v2 import trace as _v2tr
+                _v2tr.emit_step(emitter, (ctx.correlation_id or ""),
+                                _v2tr.reply_step(_v2_resp), round=rn,
+                                thread_id=getattr(ctx, "thread_id", None))
+                _v2tr.emit_step(
+                    emitter, (ctx.correlation_id or ""),
+                    _v2tr.remembered_step(
+                        sum(1 for f in _v2_resp.facts if f.grounded),
+                        sum(1 for f in _v2_resp.facts if not f.grounded),
+                        len(_v2_resp.not_useful)),
+                    round=rn, thread_id=getattr(ctx, "thread_id", None))
                 logger.info("[v2.contract] cid=%s round=%s shape=%s facts=%d "
                             "not_useful=%d problems=%s",
                             (ctx.correlation_id or "")[:8], rn,

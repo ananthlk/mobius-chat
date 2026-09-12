@@ -249,6 +249,35 @@ def render(c: ST.Ctx, posture: Posture,
     if not parts:
         return None, sel
 
+    # ── §11 THE V2 RESPONSE SHAPE ───────────────────────────────────────────
+    #
+    # Ananth, 2026-09-12: "okay lets build that" -- the contract asks for facts
+    # with provenance, and until the PROMPT asks for them react keeps returning
+    # v1's chunk numbers and the thread ledger stays empty. This is the block
+    # that closes that loop.
+    #
+    # ADDITIVE, NOT A REPLACEMENT. react/prompts.py's response_shape is the LLM
+    # seat's and still governs the base object; this asks for two extra keys
+    # alongside it. Rewriting their shape from here would be two authors on one
+    # object -- the defect this file's own header warns about.
+    #
+    # WHY FACTS AND NOT CHUNK NUMBERS: a chunk number is positional against the
+    # last tool result and means nothing once the chunks are gone. A fact with
+    # a document and page survives them, can be checked, and re-sends next turn
+    # in ~100 characters where its passage costs ~9,000.
+    parts.append("[ALSO RETURN — these two keys, alongside your normal JSON]")
+    parts.append('  "facts": [{"fact": "<one thing you now know, in one '
+                 'sentence>", "document": "<the document it came from>", '
+                 '"page": <page number>}]')
+    parts.append("     Only what THIS round's evidence supports. A fact with "
+                 "no document is dropped — we cannot check it later, so it "
+                 "must not be remembered as if we could.")
+    parts.append('  "not_useful": ["<document or document p<page> you read '
+                 'and are NOT using>"]')
+    parts.append("     What you looked at and rejected. It is recorded so no "
+                 "later round retrieves or re-reads it — this is the only way "
+                 "that knowledge survives the turn.")
+
     # ── the ack ─────────────────────────────────────────────────────────────
     parts.append("[ACK — return these in your JSON as \"ack\": {...}]")
     _ack_keys = ACK_KEYS + (NEXT_ROUND_ACK_KEYS if next_round_feasible else ())

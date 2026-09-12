@@ -218,6 +218,51 @@ def make_note(
     )
 
 
+def make_v2_trace(
+    correlation_id: str,
+    *,
+    stage: str,
+    headline: str,
+    detail: list[str] | None = None,
+    data: dict | None = None,
+    round: int | None = None,
+    thread_id: str | None = None,
+) -> EmitEnvelope:
+    """One v2 step: a meaningful top line, expandable into everything under it.
+
+    Ananth, 2026-09-12: "a top line but an expandable into everything
+    underneath it" -- after seeing a flat wall of emits and correctly rejecting
+    it. A stream where every step prints eight lines is not visibility; it is
+    the same opacity with more scrolling.
+
+    Same shape as make_retrieval_trace, which the FE already renders as a
+    collapsible panel: ``note`` is what shows, ``data`` is what expands. The
+    detail lines are ALSO carried as text so a terminal stream (and this
+    session's own local runs) can render them without the panel -- a signal
+    that is only legible in one client is a signal that gets debugged in none.
+
+    Diagnostic-only, like retrieval_trace: report_to_task_manager=False. These
+    describe how an answer was reached, not something a human must action.
+    """
+    return EmitEnvelope(
+        signal="v2_trace",
+        correlation_id=correlation_id,
+        note=headline,
+        data={
+            "stage": stage,
+            # The lines the panel shows when opened. Kept as rendered strings
+            # rather than raw structures: this is a human-facing trace, and a
+            # second formatter on the FE would be a second author of what the
+            # step means.
+            "detail": list(detail or []),
+            **(data or {}),
+        },
+        round=round,
+        thread_id=thread_id,
+        report_to_task_manager=False,
+    )
+
+
 def make_retrieval_trace(
     correlation_id: str,
     *,

@@ -619,3 +619,81 @@ class TestDirectAnswerSplit:
         block boundaries to split on."""
         card = deterministic_format(self.LONG, multi_section=False)
         assert "| Level |" in card["direct_answer"]
+
+
+class TestIntentCoercion:
+    """Rule 1 has to produce the format it promises.
+
+    build_section used to read one privileged field per format -- items for
+    bullets, table for table -- so a verdict of "bullets" over table-shaped
+    content returned None and the section silently vanished. The verdict said
+    one thing and the card showed nothing, which is worse than ignoring the
+    request outright because the trace claims success.
+    """
+
+    TABULAR = ContentPayload(
+        table=TableData(headers=("Level", "Deadline"),
+                        rows=(("Level 1", "90 days"), ("Level 2", "60 days")))
+    )
+    LISTY = ContentPayload(
+        items=tuple(Item(label=f"Requirement {i}") for i in range(4)), explicit_list=True
+    )
+    PAIRED = ContentPayload(pairs=(("Copay", "$25"), ("Filing", "180 days")))
+
+    def _section(self, payload, fmt):
+        verdict = classify_envelope(payload, IntentSignals(explicit_format=fmt))
+        assert verdict.rule_id == "intent.explicit"
+        return build_section(payload, verdict)
+
+    def test_table_content_asked_for_bullets(self):
+        section = self._section(self.TABULAR, "bullets")
+        assert section is not None
+        assert section["format"] == "bullets"
+        assert section["bullets"] == ["Level 1 — 90 days", "Level 2 — 60 days"]
+
+    def test_table_content_asked_for_steps(self):
+        section = self._section(self.TABULAR, "steps")
+        assert section["data"]["items"][0]["label"] == "Level 1 — 90 days"
+
+    def test_list_content_asked_for_a_table(self):
+        section = self._section(self.LISTY, "table")
+        assert section["data"]["headers"] == ["Item"]
+        assert section["data"]["rows"][0] == ["Requirement 0"]
+
+    def test_paired_content_asked_for_bullets(self):
+        section = self._section(self.PAIRED, "bullets")
+        assert section["bullets"] == ["Copay: $25", "Filing: 180 days"]
+
+    def test_paired_content_asked_for_a_table(self):
+        section = self._section(self.PAIRED, "table")
+        assert section["data"]["headers"] == ["Item", "Detail"]
+
+    def test_two_column_table_asked_for_stats(self):
+        section = self._section(self.TABULAR, "stats")
+        assert section["data"]["items"] == [
+            {"label": "Level 1", "value": "90 days"},
+            {"label": "Level 2", "value": "60 days"},
+        ]
+
+    def test_an_empty_payload_still_builds_nothing(self):
+        verdict = classify_envelope(ContentPayload(), IntentSignals(explicit_format="table"))
+        assert build_section(ContentPayload(), verdict) is None
+
+    def test_every_requestable_format_is_satisfiable(self):
+        """detect_explicit_format can only ever name these three. Each must be
+        buildable from every payload shape, or rule 1 is a promise the
+        renderer cannot keep."""
+        for fmt in ("table", "bullets", "steps"):
+            for payload in (self.TABULAR, self.LISTY, self.PAIRED):
+                assert self._section(payload, fmt) is not None, f"{fmt} from {payload}"
+
+    def test_coercion_does_not_change_shape_derived_rendering(self):
+        """The views resolve to the same field the shape rule matched on."""
+        for payload, expected_rule in (
+            (self.TABULAR, "shape.table"),
+            (self.LISTY, "shape.bullets"),
+            (self.PAIRED, "shape.stats"),
+        ):
+            verdict = classify_envelope(payload)
+            assert verdict.rule_id == expected_rule
+            assert build_section(payload, verdict) is not None

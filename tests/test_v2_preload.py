@@ -287,7 +287,24 @@ def test_preload_does_not_reference_locals_bound_later():
     start = next(n.lineno for n in ast.walk(fn)
                  if isinstance(n, ast.Constant) and n.value == "MOBIUS_V2_PRELOAD")
     # Locals assigned at or before the preload block, plus its own imports.
-    bound = {t.id for n in ast.walk(fn) if isinstance(n, ast.Assign)
+    # LOOP AND WITH TARGETS ARE BINDINGS TOO, and unlike assignments they are
+    # bound before their own body runs -- so they are NOT line-restricted. The
+    # gate counted only ast.Assign, which made every `for x in ...: use(x)`
+    # inside the block read as "used before bound" and fired on correct code.
+    # A gate that cries wolf gets ignored, and then it is not a gate.
+    bound = set()
+    for n in ast.walk(fn):
+        tgt = None
+        if isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+            tgt = n.target
+        if tgt is not None:
+            bound |= {t.id for t in ast.walk(tgt) if isinstance(t, ast.Name)}
+        if isinstance(n, (ast.With, ast.AsyncWith)):
+            for item in n.items:
+                if item.optional_vars is not None:
+                    bound |= {t.id for t in ast.walk(item.optional_vars)
+                              if isinstance(t, ast.Name)}
+    bound |= {t.id for n in ast.walk(fn) if isinstance(n, ast.Assign)
              and n.lineno <= start + 60
              for t in n.targets if isinstance(t, ast.Name)}
     bound |= {a.asname or a.name for n in ast.walk(fn)
