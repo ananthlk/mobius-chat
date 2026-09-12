@@ -98,10 +98,10 @@ def render(c: ST.Ctx, posture: Posture) -> tuple[str | None, ST.Selection]:
     other = [s for s in sel.statements if s.slot != ST.Slot.SETTLE]
     if settle:
         parts.append("[§8 IS THIS COMPLETE?]")
-        parts.extend(f"  - {s.text(c)}" for s in settle)
+        parts.extend(f"  - {ST.text_of(s, c)[0]}" for s in settle)
     if other:
         parts.append("[Governor — this round]")
-        parts.extend(f"  - {s.text(c)}" for s in other)
+        parts.extend(f"  - {ST.text_of(s, c)[0]}" for s in other)
 
     if not parts:
         return None, sel

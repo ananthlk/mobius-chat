@@ -102,7 +102,18 @@ class Statement:
     group: Group
     postures: frozenset[Posture]
     when: Callable[[Ctx], bool]
-    text: Callable[[Ctx], str]
+    # WORDING LIVES IN THE PROMPT DB, keyed by this. See statement_text.py.
+    # Selection is code -- tested, typed, and it must not change without a
+    # review. Wording is content -- it needs iterating without a deploy and a
+    # prompt seat owns it. One lambda held both an hour ago, which is how
+    # react_loop grew 6,900 lines of prose nobody can edit without shipping
+    # Python.
+    block_key: str
+    # What the wording interpolates, drawn from the ledger. The governor
+    # supplies FACTS; the block decides how to say them. A param the block does
+    # not use costs nothing; a fact the governor does not supply cannot be
+    # recovered by rewording.
+    params: Callable[[Ctx], dict] = lambda c: {}
     # Statements that may never be rendered alongside this one. react_loop
     # already uses `elif` for exactly this hazard: "you're not required to
     # stop" directly contradicts "do NOT request another tool call".
@@ -136,188 +147,127 @@ def _unattempted(c: Ctx) -> Gap | None:
 REGISTRY: tuple[Statement, ...] = (
 
     # ── E1 BOUND ────────────────────────────────────────────────────────────
-    Statement(
-        "SAF-1", Slot.BOUND, Group.SAFETY, ANY_POSTURE,
-        when=lambda c: c.max_rounds is not None and c.round_index >= c.max_rounds,
-        text=lambda c: "This is the final round. Answer from what you have; "
-                       "do not request another tool call.",
-        conflicts=frozenset({"CTL-5", "STR-1", "STR-2", "STR-3", "EVD-4"}),
-    ),
-    Statement(
-        "SAF-3", Slot.BOUND, Group.SAFETY, ANY_POSTURE,
-        when=lambda c: c.extensions_used >= c.extensions_max,
-        text=lambda c: "The extension ceiling is reached. This is the last "
-                       "round regardless of what is still open.",
-        conflicts=frozenset({"CTL-5", "EVD-4"}),
-    ),
-    Statement(
-        "CTL-4", Slot.BOUND, Group.CONTROL,
-        frozenset({Posture.NARROW, Posture.ALTERNATIVES, Posture.COMMUNICATE}),
-        when=lambda c: not spendable(c.state) and not may_overrun(c.state)[0],
-        text=lambda c: "The time budget is spent. Answer from what you have "
-                       "and say plainly what is still open.",
-        conflicts=frozenset({"CTL-5", "EVD-4", "STR-1", "STR-2", "STR-3"}),
-    ),
-    Statement(
-        "CTL-5", Slot.BOUND, Group.CONTROL, frozenset({Posture.EXPLORE, Posture.VALIDATE}),
-        when=lambda c: may_overrun(c.state)[0] and c.gap is not None,
-        text=lambda c: f"You are past the time target but converging. One more "
-                       f"round is authorised if it closes {_q(c.gap)!r} -- not "
-                       f"for polish.",
-    ),
+    Statement("SAF-1", Slot.BOUND, Group.SAFETY, ANY_POSTURE,
+              when=lambda c: c.max_rounds is not None and c.round_index >= c.max_rounds,
+              block_key="governor.saf_final_round",
+              conflicts=frozenset({"CTL-5", "STR-1", "STR-2", "STR-3", "EVD-4", "EVD-2"})),
+    Statement("SAF-3", Slot.BOUND, Group.SAFETY, ANY_POSTURE,
+              when=lambda c: c.extensions_used >= c.extensions_max,
+              block_key="governor.saf_ceiling",
+              conflicts=frozenset({"CTL-5", "EVD-4"})),
+    Statement("CTL-4", Slot.BOUND, Group.CONTROL,
+              frozenset({Posture.NARROW, Posture.ALTERNATIVES, Posture.COMMUNICATE}),
+              when=lambda c: not spendable(c.state) and not may_overrun(c.state)[0],
+              block_key="governor.ctl_budget_spent",
+              conflicts=frozenset({"CTL-5", "EVD-4", "STR-1", "STR-2", "STR-3"})),
+    Statement("CTL-5", Slot.BOUND, Group.CONTROL,
+              frozenset({Posture.EXPLORE, Posture.VALIDATE}),
+              when=lambda c: may_overrun(c.state)[0] and c.gap is not None,
+              block_key="governor.ctl_overrun_authorised",
+              params=lambda c: {"gap": _q(c.gap)}),
 
     # ── E2 ORIENT ───────────────────────────────────────────────────────────
-    Statement(
-        "FRM-1", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
-        when=lambda c: c.round_index == 1,
-        text=lambda c: "Name every part this question asks for in gaps_open. "
-                       "That list is a REPORT of what was asked -- not a plan "
-                       "to do them one at a time.",
-    ),
-    Statement(
-        "FRM-2", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
-        when=lambda c: c.round_index == 1,
-        text=lambda c: "Ask the question as asked: one query naming every "
-                       "part. rag decomposes across named entities better "
-                       "than asking about them one at a time.",
-    ),
-    Statement(
-        "FRM-4", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
-        when=lambda c: c.round_index == 1 and c.tier == "thinking",
-        text=lambda c: "You have rounds to spend. Verify rather than accept "
-                       "the first plausible match.",
-    ),
+    Statement("FRM-1", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
+              when=lambda c: c.round_index == 1,
+              block_key="governor.frm_parts_are_a_report"),
+    Statement("FRM-2", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
+              when=lambda c: c.round_index == 1,
+              block_key="governor.frm_ask_as_asked"),
+    Statement("FRM-4", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
+              when=lambda c: c.round_index == 1 and c.tier == "thinking",
+              block_key="governor.frm_verify"),
 
     # ── E3 REVIEW ───────────────────────────────────────────────────────────
-    Statement(
-        "EVD-1", Slot.REVIEW, Group.EVIDENCE, frozenset({Posture.EXPLORE, Posture.FRAME}),
-        when=lambda c: c.round_index == 2 and c.gap is not None
-                       and c.gap.gap_id == ROOT_GAP_ID,
-        text=lambda c: "Review, do not re-ask. Compare what you now have "
-                       "against what was asked, and name EACH part still "
-                       "missing or thin as its own gap in gaps_open. A part "
-                       "you have already covered is not a gap.",
-    ),
-    Statement(
-        "EVD-3", Slot.REVIEW, Group.EVIDENCE, ANY_POSTURE,
-        when=lambda c: c.round_index > 1 and c.kept == 0,
-        text=lambda c: "Nothing was kept from the last call. Either the query "
-                       "missed, or this corpus does not hold it -- say which "
-                       "you think it is.",
-    ),
+    Statement("EVD-1", Slot.REVIEW, Group.EVIDENCE,
+              frozenset({Posture.EXPLORE, Posture.FRAME}),
+              when=lambda c: c.round_index == 2 and c.gap is not None
+                             and c.gap.gap_id == ROOT_GAP_ID,
+              block_key="governor.evd_review_not_reask"),
+    Statement("EVD-3", Slot.REVIEW, Group.EVIDENCE, ANY_POSTURE,
+              when=lambda c: c.round_index > 1 and c.kept == 0,
+              block_key="governor.evd_nothing_kept"),
 
     # ── E4 SETTLE? — the handshake, before spending ─────────────────────────
-    Statement(
-        "CTL-3", Slot.SETTLE, Group.CONTROL, ANY_POSTURE,
-        when=lambda c: True,     # CONSTANT: the effort question, always asked
-        text=lambda c: "Before is_complete=true: are you satisfied with the "
-                       "level of answer and evidence you have? Not 'is the "
-                       "answer grounded' -- 'did I do enough to get it'. A "
-                       "part left unanswered because you never looked is not "
-                       "complete.",
-    ),
-    Statement(
-        "CTL-1", Slot.SETTLE, Group.CONTROL, ANY_POSTURE,
-        when=lambda c: c.model_proposes_complete and _unattempted(c) is not None,
-        text=lambda c: (
-            f"You marked this complete. My ledger shows "
-            f"{_q(_unattempted(c))!r} was never searched this turn -- no query "
-            f"named it. Confirm complete, or spend one round on it. Your call."
-        ),
-    ),
+    Statement("CTL-3", Slot.SETTLE, Group.CONTROL, ANY_POSTURE,
+              when=lambda c: True,
+              block_key="governor.ctl_satisfied"),
+    Statement("CTL-1", Slot.SETTLE, Group.CONTROL, ANY_POSTURE,
+              when=lambda c: c.model_proposes_complete and _unattempted(c) is not None,
+              block_key="governor.ctl_dissent",
+              params=lambda c: {"gap": _q(_unattempted(c))}),
 
     # ── E5 TARGET ───────────────────────────────────────────────────────────
-    Statement(
-        "EVD-4", Slot.TARGET, Group.EVIDENCE, frozenset({Posture.EXPLORE, Posture.VALIDATE}),
-        when=lambda c: c.gap is not None and len(c.material) > 1
-                       and c.gap.gap_id != ROOT_GAP_ID,
-        text=lambda c: f"Work {_q(c.gap)!r} this round. The other open parts "
-                       f"stay open and are not for this round.",
-    ),
+    Statement("EVD-4", Slot.TARGET, Group.EVIDENCE,
+              frozenset({Posture.EXPLORE, Posture.VALIDATE}),
+              when=lambda c: c.gap is not None and len(c.material) > 1
+                             and c.gap.gap_id != ROOT_GAP_ID,
+              block_key="governor.evd_work_this_gap",
+              params=lambda c: {"gap": _q(c.gap)}),
 
     # ── E6 APPROACH ─────────────────────────────────────────────────────────
-    Statement(
-        "STR-1", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-        when=lambda c: c.gap is not None and len(targeted_attempts(c.gap)) == 1,
-        text=lambda c: f"{_q(c.gap)!r} was searched once and is still open. "
-                       f"Previous query: {_last_query(c.gap)}. Ask for the "
-                       f"part it did not return.",
-    ),
-    Statement(
-        "STR-2", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-        when=lambda c: c.gap is not None and stuck(c.gap, c.round_index),
-        text=lambda c: f"{_q(c.gap)!r}: several distinct levers, nothing "
-                       f"returned. Previous queries: {_last_query(c.gap)}. A "
-                       f"reworded query returns the same evidence -- change "
-                       f"the approach or say it cannot be closed.",
-    ),
-    Statement(
-        "STR-3", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-        when=lambda c: c.gap is not None
-                       and closure_trend(c.gap) is Trend.INCREASING,
-        text=lambda c: f"{_q(c.gap)!r} is closing. Stay on it and ask for the "
-                       f"part still missing.",
-    ),
-    Statement(
-        "STR-4", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-        when=lambda c: c.gap is not None
-                       and closure_trend(c.gap) is Trend.DECREASING,
-        text=lambda c: f"Closure on {_q(c.gap)!r} fell -- the last attempt "
-                       f"moved away from it. Return to what was working.",
-    ),
-    Statement(
-        "STR-5", Slot.APPROACH, Group.STRATEGY,
-        frozenset({Posture.ALTERNATIVES, Posture.EXPLORE}),
-        when=lambda c: c.gap is not None and c.tier == "thinking"
-                       and unreachable(c.gap, c.round_index),
-        text=lambda c: f"{_q(c.gap)!r} looks unreachable in this corpus. "
-                       f"Before declaring it, try one materially different "
-                       f"source class.",
-    ),
-    Statement(
-        "STR-6", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.NARROW, Posture.EXPLORE}),
-        when=lambda c: c.round_index >= 3
-                       and trend(c.state.gaps_open_history) is Trend.INCREASING,
-        text=lambda c: "The open parts are growing, not shrinking. Stop "
-                       "widening and close one.",
-    ),
-    Statement(
-        "STR-7", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
-        when=lambda c: c.gap_status == "stagnant",
-        text=lambda c: "The last two rag calls converged on the same internal "
-                       "strategy and outcome. Another rag call with a similar "
-                       "query will not surface new information.",
-    ),
+    Statement("STR-1", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
+              when=lambda c: c.gap is not None and len(targeted_attempts(c.gap)) == 1,
+              block_key="governor.str_searched_once",
+              params=lambda c: {"gap": _q(c.gap), "prior_queries": _last_query(c.gap)},
+              # Both say "stay on this gap and ask differently". Two near-
+              # identical lines teach the model to skim the block.
+              conflicts=frozenset({"STR-3"})),
+    Statement("STR-2", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
+              when=lambda c: c.gap is not None and stuck(c.gap, c.round_index),
+              block_key="governor.str_stuck",
+              params=lambda c: {"gap": _q(c.gap), "prior_queries": _last_query(c.gap)}),
+    Statement("STR-3", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
+              when=lambda c: c.gap is not None
+                             and closure_trend(c.gap) is Trend.INCREASING,
+              block_key="governor.str_closing",
+              params=lambda c: {"gap": _q(c.gap)}),
+    Statement("STR-4", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
+              when=lambda c: c.gap is not None
+                             and closure_trend(c.gap) is Trend.DECREASING,
+              block_key="governor.str_falling",
+              params=lambda c: {"gap": _q(c.gap)}),
+    Statement("STR-5", Slot.APPROACH, Group.STRATEGY,
+              frozenset({Posture.ALTERNATIVES, Posture.EXPLORE}),
+              when=lambda c: c.gap is not None and c.tier == "thinking"
+                             and unreachable(c.gap, c.round_index),
+              block_key="governor.str_unreachable",
+              params=lambda c: {"gap": _q(c.gap)}),
+    Statement("STR-6", Slot.APPROACH, Group.STRATEGY,
+              frozenset({Posture.NARROW, Posture.EXPLORE}),
+              when=lambda c: c.round_index >= 3
+                             and trend(c.state.gaps_open_history) is Trend.INCREASING,
+              block_key="governor.str_widening"),
+    Statement("STR-7", Slot.APPROACH, Group.STRATEGY, frozenset({Posture.EXPLORE}),
+              when=lambda c: c.gap_status == "stagnant",
+              block_key="governor.str_stagnant"),
 
     # ── E7 ACT ──────────────────────────────────────────────────────────────
-    Statement(
-        "EVD-2", Slot.ACT, Group.EVIDENCE, ANY_POSTURE,
-        when=lambda c: c.round_index > 1,
-        text=lambda c: "Do not repeat the query you just ran. It returned what "
-                       "it returned; this round is for what it did not.",
-        conflicts=frozenset({"SAF-1"}),
-    ),
+    Statement("EVD-2", Slot.ACT, Group.EVIDENCE, ANY_POSTURE,
+              when=lambda c: c.round_index > 1,
+              block_key="governor.evd_do_not_repeat",
+              conflicts=frozenset({"SAF-1"})),
 
     # ── E10 SYNTHESISE ──────────────────────────────────────────────────────
-    Statement(
-        "FRM-7", Slot.SYNTHESISE, Group.FORM, ANY_POSTURE,
-        # NOT on round 1: nothing has been tried yet, so "say why you could
-        # not answer this part" is a question about work that has not happened.
-        when=lambda c: c.round_index > 1 and (
-                       any(not targeted_attempts(g) for g in c.material)
-                       or any(targeted_attempts(g)
-                              and not any(a.returned_payload
-                                          for a in targeted_attempts(g))
-                              for g in c.material)),
-        text=lambda c: (
-            "For each part you could not answer, say WHICH of these it is: "
-            "(a) searched, the corpus is thin; (b) searched, nothing relevant "
-            "came back; (c) not searched -- the turn ran out of budget. Do "
-            "NOT render all three as \"not available in the provided "
-            "documents\": they are different facts and carry opposite advice."
-        ),
-    ),
+    Statement("FRM-7", Slot.SYNTHESISE, Group.FORM, ANY_POSTURE,
+              when=lambda c: c.round_index > 1 and (
+                             any(not targeted_attempts(g) for g in c.material)
+                             or any(targeted_attempts(g)
+                                    and not any(a.returned_payload
+                                                for a in targeted_attempts(g))
+                                    for g in c.material)),
+              block_key="governor.frm_say_why_missing"),
 )
+
+
+def text_of(s: Statement, c: Ctx) -> tuple[str, str]:
+    """(text, source). Resolution is IMPURE -- it reads the prompt DB -- so it
+    lives outside select() and this module stays pure for selection."""
+    from app.pipeline.v2.statement_text import resolve
+    try:
+        params = s.params(c) or {}
+    except Exception:
+        params = {}
+    return resolve(s.block_key, params)
 
 
 @dataclass(frozen=True)
@@ -331,7 +281,7 @@ class Selection:
         if not self.statements:
             return None
         lines = ["[Governor]"]
-        lines += [f"- {s.text(self._ctx)}" for s in self.statements]
+        raise NotImplementedError("use statements.render(); text needs a Ctx")
         return "\n".join(lines)
 
 
@@ -400,5 +350,5 @@ def render(c: Ctx, posture: Posture) -> tuple[str | None, Selection]:
     sel = select(c, posture)
     if not sel.statements:
         return None, sel
-    lines = ["[Governor]"] + [f"- {s.text(c)}" for s in sel.statements]
+    lines = ["[Governor]"] + [f"- {text_of(s, c)[0]}" for s in sel.statements]
     return "\n".join(lines), sel

@@ -157,7 +157,7 @@ def test_a_raising_selector_does_not_take_the_turn():
     prompt path only."""
     boom = S.Statement("BOOM", S.Slot.ACT, S.Group.EVIDENCE, S.ANY_POSTURE,
                        when=lambda c: (_ for _ in ()).throw(RuntimeError("x")),
-                       text=lambda c: "never")
+                       block_key="governor.never")
     original = S.REGISTRY
     try:
         S.REGISTRY = original + (boom,)
@@ -173,3 +173,51 @@ def test_every_posture_produces_a_selection_without_raising(posture):
     c = S.Ctx(state=_state([SUNSHINE, UHC, MOLINA], (1, 3, 3)), round_index=3,
               tier="thinking", kept=4, gap=SUNSHINE)
     S.select(c, posture)
+
+
+# ── wording lives in the prompt DB, not in this module ──────────────────────
+
+def test_every_statement_names_a_prompt_block():
+    """Selection is code; wording is content. A statement with no block key is
+    prose hardcoded in Python -- which is how react_loop reached 6,900 lines
+    nobody can edit without a deploy."""
+    for s in S.REGISTRY:
+        assert s.block_key and s.block_key.startswith("governor."), s.id
+
+
+def test_every_block_key_has_a_fallback():
+    """The fallback is the FLOOR, not the source of truth. Without it a missing
+    DB block deletes the statement from the prompt silently -- a producer with
+    no consumer arriving through the prompt store."""
+    from app.pipeline.v2.statement_text import FALLBACK
+    missing = [s.block_key for s in S.REGISTRY if s.block_key not in FALLBACK]
+    assert not missing, missing
+
+
+def test_fallback_templates_interpolate_the_params_they_are_given():
+    """A template naming {gap} whose statement supplies no gap renders the
+    brace literally into the prompt."""
+    from app.pipeline.v2.statement_text import FALLBACK
+    import re
+    root = seed_root_gap(Q)
+    c = S.Ctx(state=_state([SUNSHINE, UHC, MOLINA], (1, 3, 3)), round_index=4,
+              tier="thinking", kept=9, model_proposes_complete=True, gap=SUNSHINE)
+    for s in S.REGISTRY:
+        needed = set(re.findall(r"\{(\w+)", FALLBACK[s.block_key]))
+        try:
+            got = set((s.params(c) or {}).keys())
+        except Exception:
+            got = set()
+        assert needed <= got, (s.id, needed - got)
+
+
+def test_the_source_of_every_line_is_recorded():
+    """A turn worded from the DB and a turn worded from the fallback are
+    different experiments; a comparison that cannot tell them apart is
+    measuring two things at once."""
+    c = S.Ctx(state=_state([SUNSHINE, UHC, MOLINA], (1, 3, 3)), round_index=4,
+              tier="thinking", kept=9, model_proposes_complete=True, gap=SUNSHINE)
+    for s in S.select(c, Posture.EXPLORE).statements:
+        text, source = S.text_of(s, c)
+        assert text and source in {"db", "fallback", "missing"}
+        assert not text.startswith("[missing prompt block")
