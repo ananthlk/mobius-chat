@@ -137,21 +137,47 @@ def execute(pl: PreloadPlan, runner, question: str) -> list[dict]:
     """Run the planned tools in order. `runner(tool, inputs) -> dict` is
     injected so this stays testable without a network or a PipelineContext.
 
-    Returns [{tool, ok, summary}] for EVERY planned tool, including the ones
-    that returned nothing and the ones that raised. A tool missing from this
-    list would read to react as never-attempted.
+    Returns [{tool, ok, summary, payload, sources, asked}] for EVERY planned
+    tool, including the ones that returned nothing and the ones that raised. A
+    tool missing from this list would read to react as never-attempted.
+
+    🔴 THE PAYLOAD MUST SURVIVE THIS FUNCTION. It rebuilt its own dict from
+    three fields and dropped everything else the runner returned -- so a
+    141,074-character retrieval arrived here and left as a 170-character
+    summary. Round 1 then received document names and page numbers, wrote a
+    confident answer from its own priors, and attached citation markers
+    [1,2,3,4,5] to evidence that was never in the prompt.
+
+    A producer with no consumer, inside the module whose job is to carry
+    evidence to react, created in the same session that catalogued eleven
+    others. The shape is always the same: a dict rebuilt field-by-field
+    silently discards whatever the other side just started sending.
     """
     out: list[dict] = []
     for tool in pl.execute:
         try:
             res = runner(tool, {"query": question}) or {}
             ok = bool(res.get("ok", True)) and not res.get("error")
-            out.append({"tool": tool, "ok": ok,
-                        "summary": str(res.get("summary") or "")[:200]})
+            out.append({
+                "tool": tool, "ok": ok,
+                # 400, not 200: the summary is now four structured parts
+                # (docs, pages, and the terms nothing returned) and 200 cut it
+                # mid-document-name -- silently, in the middle of the line
+                # react reads to decide whether its ask was covered.
+                "summary": str(res.get("summary") or "")[:400],
+                # The evidence itself, uncapped. The caller seeds it as a
+                # virtual tool result; capping it here would be a second,
+                # invisible retrieval budget fighting the one rag already
+                # applied.
+                "payload": res.get("payload") or "",
+                "sources": res.get("sources") or [],
+                "asked": res.get("asked") or question,
+            })
         except Exception as e:
             # A preload tool that raises must not take the turn with it: the
             # round still has the other tools' evidence, and "it errored" is a
             # fact react can use.
             out.append({"tool": tool, "ok": False,
-                        "summary": "errored: %s" % str(e)[:80]})
+                        "summary": "errored: %s" % str(e)[:80],
+                        "payload": "", "sources": [], "asked": question})
     return out

@@ -1364,8 +1364,15 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     #
     # The text is returned here and seeded as a virtual tool result by the
     # caller, which is the channel build_reasoning_context already renders.
+    _payload = res.get("result") or res.get("answer") or ""
+    # PAYLOAD SIZE IS THE SIGNAL. A preload that returns a 460-char synthesis
+    # and one that returns 147k of passages are indistinguishable in every
+    # other field -- same tool, same ok, same passage COUNT -- and the
+    # difference decides whether round 1 can answer or must invent.
+    logger.info("[v2.preload.payload] tool=%s chunks=%s payload_chars=%d "
+                "sources=%d", tool, n, len(_payload), len(res.get("sources") or []))
     return {"ok": ok, "summary": summary, "asked": _asked,
-            "payload": res.get("result") or res.get("answer") or "",
+            "payload": _payload,
             "sources": res.get("sources") or []}
 
 
@@ -5581,6 +5588,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         _ledger_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
         _gap_status = _compute_gap_status(_ledger_history)
 
+        # Evidence actually reaching the model this round. Kept because the
+        # defect this found was invisible everywhere else: the passage COUNT,
+        # the ok flag and the summary were all correct while the evidence
+        # itself was being dropped in transit.
+        logger.info("[v2.evidence] round=%s results=%d chars=%d",
+                    rn, len(tool_results),
+                    sum(len(str(t.get("result") or "")) for t in tool_results))
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn,
             max_iterations=(None if _pp_suppress_guidance else max_it),
