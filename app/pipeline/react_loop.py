@@ -4918,9 +4918,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     #    steer the turn at the one moment the ledger holds
                     #    only the seeded root.
                     ctx._v2_governor_block = None
+                    # ROUND 1 IS EXCLUDED FROM STEERING, NOT FROM PRELOAD.
+                    #
+                    # "Never on round 1" is right for naming a gap -- there are
+                    # no gaps yet. It was WRONG for the preload sections, and
+                    # `rn > 1` silently applied to both: preload executed, its
+                    # evidence rendered into a block round 1 never receives,
+                    # and react searched again. Observed live -- the trace shows
+                    # the preload query, then "Round 1: I'll use the rag tool"
+                    # running the same search.
+                    #
+                    # My gate asserted frame.render is CALLED with preloaded=.
+                    # It is -- on rounds 2+. Producer with no consumer, one
+                    # round off, and the gate was one round off with it.
+                    _v2_has_preload = bool(getattr(ctx, "_v2_preloaded", None))
                     if (os.environ.get("MOBIUS_V2_STEER", "").strip() == "1"
                             and getattr(ctx, "orchestrator_version", "v1") == "v2"
-                            and rn > 1):
+                            and (rn > 1 or _v2_has_preload)):
                         from app.pipeline.v2 import frame as _v2fr
                         from app.pipeline.v2 import posture as _v2ip
                         from app.pipeline.v2 import statements as _v2st
@@ -4971,6 +4985,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 getattr(ctx, "_v2_proposed_complete", False)),
                             kept=int(_v2_kept) if isinstance(_v2_kept, int) else 0,
                             gap_status=(_gap_status or ""),
+                            preloaded=_v2_has_preload,
                             extensions_used=_pp_extension_rounds_used,
                             gap=_steer_gap,
                         )

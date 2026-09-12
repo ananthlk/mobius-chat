@@ -89,6 +89,10 @@ class Ctx:
     extensions_used: int = 0
     extensions_max: int = 6
     gap: Gap | None = None               # worth_spending(), the machine's pick
+    # Did evidence already arrive before this round? When it did, round 1's job
+    # is to JUDGE it, and any statement telling react how to phrase a search
+    # contradicts "you are not choosing a tool this round".
+    preloaded: bool = False
 
     @property
     def material(self) -> tuple[Gap, ...]:
@@ -188,7 +192,11 @@ REGISTRY: tuple[Statement, ...] = (
               when=lambda c: c.round_index == 1,
               block_key="governor.frm_parts_are_a_report"),
     Statement("FRM-2", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
-              when=lambda c: c.round_index == 1,
+              # NOT when evidence is already in hand: "ask the question as
+              # asked, one query naming every part" instructs react to write a
+              # search, directly contradicting the preload block's "you are not
+              # choosing a tool this round". Two authors, one round.
+              when=lambda c: c.round_index == 1 and not c.preloaded,
               block_key="governor.frm_ask_as_asked"),
     Statement("FRM-4", Slot.ORIENT, Group.FRAMING, ANY_POSTURE,
               when=lambda c: c.round_index == 1 and c.tier == "thinking",

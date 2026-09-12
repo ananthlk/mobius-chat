@@ -122,6 +122,8 @@ def preload_sections(executed: list[dict], suggest: tuple[str, ...]) -> list[str
 def render(c: ST.Ctx, posture: Posture,
            directive=None, *, preloaded: list[dict] | None = None,
            suggest: tuple[str, ...] = ()) -> tuple[str | None, ST.Selection]:
+    # NOTE: `preloaded` shadows nothing -- it is the executed-tool list, and
+    # its truthiness is what makes this a judgement round.
     """The governor's sections, in execution order, plus the ack request."""
     sel = ST.select(c, posture)
     gaps = c.state.open_gaps
@@ -149,9 +151,17 @@ def render(c: ST.Ctx, posture: Posture,
     # ALONE made §6 say "close a named open part" directly above "name each
     # part still missing". Two authors, one round.
     _no_named_part = not gaps          # gaps already has the root filtered out
-    role = (DISCOVER_ROLE
-            if (directive is _Dir.DISCOVER or _no_named_part)
-            else ROLE.get(posture))
+    # Evidence already in hand -> the round's job is to JUDGE it, and the role
+    # must say so. Otherwise §6 reads "find evidence" directly above §10's
+    # "here is the evidence", which is the same two-authors contradiction that
+    # made §6 fight the review instruction earlier.
+    if preloaded:
+        role = ("judge what has already been retrieved below: does it answer "
+                "the question, and if not, what is missing")
+    else:
+        role = (DISCOVER_ROLE
+                if (directive is _Dir.DISCOVER or _no_named_part)
+                else ROLE.get(posture))
     if role:
         parts.append(f"[§6 ROLE this round] {role}")
 

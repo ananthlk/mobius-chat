@@ -349,3 +349,70 @@ def test_the_toolreg_dsn_gets_a_password_injected():
     assert m, f"the injection regex cannot match the shipped DSN: {url[:60]}"
     out = f"{m.group(1)}{m.group(2)}:{quote('p@ss', safe='')}{m.group(3)}"
     assert "mobius_rag" in out and "cloudsql" in out, "injection mangled the DSN"
+
+
+# ── round 1 is excluded from STEERING, not from PRELOAD ─────────────────────
+
+def test_round_one_receives_the_preload_evidence():
+    """THE LIVE BUG. The steering block was gated on `rn > 1` -- right for
+    naming a gap (there are none yet), WRONG for the preload sections. So
+    preload executed, its evidence rendered into a block round 1 never
+    received, and react searched again. The trace shows the preload query,
+    then "Round 1: I'll use the rag tool" running the same search.
+
+    My previous gate asserted frame.render is CALLED with preloaded=. It is --
+    on rounds 2+. The gate was one round off with the bug.
+    """
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    code = "\n".join(l.split("#")[0] for l in src.splitlines())
+    i = code.index("MOBIUS_V2_STEER")
+    window = code[i:i + 400]
+    assert "rn > 1" in window, "the steering gate moved; re-check this test"
+    assert "_v2_has_preload" in window, (
+        "round 1 is gated out of the governor block entirely, so preload "
+        "evidence never reaches the round it exists for"
+    )
+
+
+def test_a_preloaded_round_one_does_not_tell_react_to_write_a_search():
+    """"Ask the question as asked, one query naming every part" instructs
+    react to write a search -- directly contradicting "you are not choosing a
+    tool this round". Two authors, one round."""
+    from app.pipeline.v2 import statements as S
+    from app.pipeline.v2.posture import (
+        Budget, Posture, RoundState, seed_root_gap,
+    )
+    root = seed_root_gap("q")
+    st = RoundState(round_index=1, open_gaps=(root,), gaps_open_history=(1,),
+                    budget=Budget(remaining_s=90.0, remaining_c=3.0, band_s=25.0),
+                    next_round_cost_s=10.4, acting_cost_s=10.0,
+                    validate_cost_s=9.6, question="q")
+    with_pre = S.Ctx(state=st, round_index=1, gap=root, preloaded=True)
+    without = S.Ctx(state=st, round_index=1, gap=root, preloaded=False)
+    assert "FRM-2" not in {s.id for s in S.select(with_pre, Posture.EXPLORE).statements}
+    assert "FRM-2" in {s.id for s in S.select(without, Posture.EXPLORE).statements}, (
+        "suppressing FRM-2 when preloaded must not disarm it when not preloaded"
+    )
+
+
+def test_the_role_says_judge_when_evidence_is_already_in_hand():
+    """§6 reading "find evidence" directly above §10's "here is the evidence"
+    is the same two-authors contradiction that made the role fight the review
+    instruction earlier tonight."""
+    from app.pipeline.v2 import frame as F
+    from app.pipeline.v2 import statements as S
+    from app.pipeline.v2.posture import (
+        Budget, Posture, RoundState, seed_root_gap,
+    )
+    root = seed_root_gap("q")
+    st = RoundState(round_index=1, open_gaps=(root,), gaps_open_history=(1,),
+                    budget=Budget(remaining_s=90.0, remaining_c=3.0, band_s=25.0),
+                    next_round_cost_s=10.4, acting_cost_s=10.0,
+                    validate_cost_s=9.6, question="q")
+    c = S.Ctx(state=st, round_index=1, gap=root, preloaded=True)
+    txt, _ = F.render(c, Posture.EXPLORE,
+                      preloaded=[{"tool": "rag", "ok": True, "summary": "23 passages"}],
+                      suggest=("web_scrape",))
+    assert "judge what has already been retrieved" in txt
+    assert "find evidence that closes" not in txt
