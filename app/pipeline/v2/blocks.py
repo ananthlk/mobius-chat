@@ -775,7 +775,13 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         # one more round purely to write the answer.
         finalising=bool(getattr(ctx, "_v2_finalising", False)),
         critic_findings=tuple(getattr(ctx, "_v2_critic_findings", ()) or ()),
-        preloaded=tuple((p.get("tool"), bool(p.get("ok")), str(p.get("summary") or ""))
+        # THE PROMPT READS prompt_summary, THE TRACE READS summary. react is
+        # shown what ran, across which documents, and what we did NOT search —
+        # and judges the evidence itself. Our observations about the evidence
+        # belong in the trace a person reads, not in the model's input. Falls
+        # back to `summary` so a runner that does not split them is unchanged.
+        preloaded=tuple((p.get("tool"), bool(p.get("ok")),
+                         str(p.get("prompt_summary") or p.get("summary") or ""))
                         for p in (preloaded or [])),
         suggest=tuple(suggest),
         exact_tool=_exact,

@@ -778,6 +778,13 @@ def execute(pl: PreloadPlan, runner, question: str,
                 # mid-document-name -- silently, in the middle of the line
                 # react reads to decide whether its ask was covered.
                 "summary": str(res.get("summary") or "")[:400],
+                # 🔴 CARRIED, NOT REBUILT. This function has already dropped a
+                # 141,074-character payload once by reconstructing its own dict
+                # field-by-field. prompt_summary is what react is SHOWN; losing
+                # it silently would send the emit's judgements back into the
+                # prompt, which is the defect it exists to fix.
+                "prompt_summary": str(res.get("prompt_summary")
+                                      or res.get("summary") or "")[:400],
                 # The evidence itself, uncapped. The caller seeds it as a
                 # virtual tool result; capping it here would be a second,
                 # invisible retrieval budget fighting the one rag already

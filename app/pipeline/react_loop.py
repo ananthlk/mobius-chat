@@ -1594,7 +1594,35 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
                           f"were not run — parts of the question were NOT "
                           f"searched, and their absence here is ours, not the "
                           f"corpus's")
+        # 🔴 THE PROMPT AND THE EMIT ARE DIFFERENT AUDIENCES.
+        #
+        # Ananth asked for "a real good summary from rag .. what it found and
+        # the new gap it is trying to close" — FOR THE EMIT, the trace a person
+        # reads. I wired the same string into react's PROMPT as well, and the
+        # judgement half then steered the model.
+        #
+        # Measured, cid bd509bed: the uncovered-terms line reported
+        #     "not mentioned in anything returned: reimburse, activities, need"
+        # and react rejected all 14 chunks — which covered ALL THREE payers —
+        # echoing it back: "didn't directly address reimbursement". It is a
+        # SUBSTRING check on the user's own words: manuals write payment as
+        # billing, claims, compensation, fee schedule, so "reimburse" can be
+        # absent as a WORD while the material is present. And `activities` and
+        # `need` are ordinary English carrying no retrieval meaning at all.
+        #
+        # My own docstring says it must be "reported as an observation, never a
+        # verdict". It was reported that way and CONSUMED as a verdict — a
+        # caveat in prose does not control how the reader takes it, which is
+        # the failure this seat has spent the day naming in other people's
+        # code.
+        #
+        # So: the emit keeps everything, and the prompt gets only what react
+        # cannot see for itself — what ran, across which documents, and what we
+        # DID NOT SEARCH. It judges the evidence; we do not pre-judge it.
+        _prompt_parts = [x for x in _parts
+                         if not x.startswith("not mentioned in anything")]
         summary = " | ".join(_parts)
+        prompt_summary = " | ".join(_prompt_parts)
         ok = ok and n > 0
     # 🔴 THE PAYLOAD, NOT ONLY THE SUMMARY.
     #
@@ -1655,7 +1683,11 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     # difference decides whether round 1 can answer or must invent.
     logger.info("[v2.preload.payload] tool=%s chunks=%s payload_chars=%d "
                 "sources=%d", tool, n, len(_payload), len(res.get("sources") or []))
-    return {"ok": ok, "summary": summary, "asked": _asked,
+    return {"ok": ok, "summary": summary,
+            # THE EMIT GETS `summary`; THE PROMPT GETS THIS. Same evidence,
+            # different audience: the trace may carry our observations, the
+            # model must judge the material rather than our notes about it.
+            "prompt_summary": prompt_summary, "asked": _asked,
             "payload": _payload,
             "sources": res.get("sources") or []}
 
