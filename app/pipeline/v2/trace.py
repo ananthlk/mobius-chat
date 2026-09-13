@@ -113,6 +113,21 @@ def emit_step(emitter, correlation_id: str, step: Step, *, round=None,
         detail = list(step.detail)
         if step.source:
             detail = [kv("from", step.source)] + detail
+        # 🔴 .to_dict() IS LOAD-BEARING, NOT COSMETIC.
+        #
+        # on_thinking (orchestrator.py) gates the structured path on
+        # ``isinstance(chunk, dict) and is_envelope(chunk)``. An EmitEnvelope
+        # DATACLASS is not a dict, so it fails that check, falls through to the
+        # bare-string elif, and reaches the user as ``str(envelope)`` -- the
+        # repr of the dataclass. Measured 2026-09-13: every v2 step rendered as
+        # "EmitEnvelope(signal='v2_trace', correlation_id=..." in the live
+        # thinking log, with no headline and nothing to expand.
+        #
+        # Nothing raised, so the except below never fired and its warning never
+        # logged. The trace was fully built, correctly shaped, and thrown away
+        # one isinstance() short of the renderer. Every peer emitter
+        # (make_react_trace, make_retrieval_trace) already calls .to_dict();
+        # this was the only site that did not.
         emitter(make_v2_trace(correlation_id, stage=step.stage,
                               headline=step.headline,
                               detail=detail,
@@ -121,7 +136,7 @@ def emit_step(emitter, correlation_id: str, step: Step, *, round=None,
                                     # = same row, replaced in place.
                                     "key": step.key or step.stage,
                                     "state": step.state},
-                              round=round, thread_id=thread_id))
+                              round=round, thread_id=thread_id).to_dict())
     except Exception as e:
         # 🔴 THE FALLBACK MUST NOT BE SILENT.
         #
@@ -296,6 +311,20 @@ def preload_done_step(results, elapsed_s=None) -> Step:
     if results:
         detail.append("  → Judging what came back before searching again.")
     det = []
+    # SHOW THE QUESTION WE ASKED, ABOVE WHAT CAME BACK.
+    #
+    # Ananth, 2026-09-13: "i dont think it is reformatting the question
+    # enough". Neither this step nor the log carried the query, so the one
+    # field that decides whether 15 passages are the RIGHT 15 was the one
+    # field nobody could see. `asked` already rides in the result and already
+    # reaches react (frame.py) -- it was visible to the model and invisible to
+    # the reader, which is backwards.
+    #
+    # It goes FIRST because it is the input; everything below it is outcome.
+    for r in ok + empty:
+        _q = str(r.get("asked") or "").strip()
+        if _q:
+            det.append(kv("asked", f"{_q[:160]!r}"))
     for r in ok:
         det.append(item(f"{r.get('tool')} → {r.get('summary')}", "✓"))
     for r in empty:

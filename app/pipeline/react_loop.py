@@ -1756,8 +1756,22 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     # and one that returns 147k of passages are indistinguishable in every
     # other field -- same tool, same ok, same passage COUNT -- and the
     # difference decides whether round 1 can answer or must invent.
+    # LOG THE QUESTION WE ASKED, NOT JUST WHAT CAME BACK.
+    #
+    # Ananth, 2026-09-13: "did we even invoke chat with reformat.. i think it
+    # has queried rag multiple times, but i dont think it is reformatting the
+    # question enough". I could not answer him from the logs -- this line
+    # recorded tool/chunks/chars/sources and never the query, so "did we
+    # reformulate?" was a could-not-check, not a checked-false.
+    #
+    # This module's own first rule is "emit the DECISION and its INPUTS, never
+    # just the outcome" (v2/trace.py). The query IS the input, and it is the
+    # single field that decides whether 15 passages are the right 15. `asked`
+    # was already captured and already reaches react via frame.py -- it was
+    # visible to the model and invisible to us, which is the wrong way round.
     logger.info("[v2.preload.payload] tool=%s chunks=%s payload_chars=%d "
-                "sources=%d", tool, n, len(_payload), len(res.get("sources") or []))
+                "sources=%d asked=%r", tool, n, len(_payload),
+                len(res.get("sources") or []), _asked[:200])
     return {"ok": ok, "summary": summary,
             # THE EMIT GETS `summary`; THE PROMPT GETS THIS. Same evidence,
             # different audience: the trace may carry our observations, the

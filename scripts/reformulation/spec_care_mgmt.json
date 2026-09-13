@@ -1,0 +1,11 @@
+{
+  "_why": "Ananth's live question. v1 answered it with T1017/H0049/H0050; v2 said 'not stated'. Targets are the facts v1 produced, so a formulation is scored on whether it reaches what we KNOW is in the corpus.",
+  "targets": ["T1017", "H0049", "H0050"],
+  "formulations": {
+    "raw (what v2 sends today)": "Does sunshine health, aetna and united healthcare reimburse providers for care management activities and if so what do they need to do?",
+    "ananth reframe (1 payor)": "Aetna care management reimbursement procedure codes",
+    "reframe + all 3 payors": "Sunshine Health Aetna UnitedHealthcare care management reimbursement procedure codes",
+    "reframe + TCM vocabulary": "Sunshine Health Aetna UnitedHealthcare targeted case management reimbursement procedure codes",
+    "literal code named": "T1017 targeted case management billing code prior authorization Sunshine Aetna UnitedHealthcare"
+  }
+}

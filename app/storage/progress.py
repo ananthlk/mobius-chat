@@ -195,17 +195,38 @@ def start_progress(correlation_id: str) -> None:
     _ensure_db_worker(correlation_id)
 
 
-def append_thinking(correlation_id: str, chunk: str) -> None:
+def append_thinking(correlation_id: str, chunk: str,
+                    *, envelope: dict[str, Any] | None = None) -> None:
     """Append one or more thinking chunks. Splits on newlines so SSE delivers line-by-line for live display.
-    Publishes to Redis outside the lock so a slow Redis does not block the worker."""
+    Publishes to Redis outside the lock so a slow Redis does not block the worker.
+
+    ``envelope`` (2026-09-13) rides ALONGSIDE the line, never instead of it.
+
+    Until today the SSE thinking event was ``{line, ts}`` and nothing else, so
+    a structured emit could only ever reach the user as its headline string.
+    on_thinking has passed ``{"type": "thinking", "content": ..., "envelope":
+    ...}`` since Sprint A.1 and send_to_user read only ``content`` -- the
+    envelope was constructed, handed over, and discarded one function call
+    later. Every structured signal (react_trace, retrieval_trace, v2_trace)
+    was therefore invisible LIVE and legible only post-turn, off
+    chat_turns.thinking_log.
+
+    The line stays authoritative: a client that ignores ``envelope`` renders
+    exactly what it rendered before. Attached to the FIRST line only -- one
+    envelope describes one step, and repeating it per line would make N rows
+    out of one.
+    """
     to_publish: list[dict[str, Any]] = []
     with _lock:
         if correlation_id not in _progress or not chunk.strip():
             return
         lines = [s.strip() for s in chunk.strip().split("\n") if s.strip()]
-        for line in lines:
+        for i, line in enumerate(lines):
             ts, ts_readable = _event_ts()
-            ev = {"event": "thinking", "data": {"line": line, "ts": ts, "ts_readable": ts_readable}}
+            data: dict[str, Any] = {"line": line, "ts": ts, "ts_readable": ts_readable}
+            if envelope is not None and i == 0:
+                data["envelope"] = envelope
+            ev = {"event": "thinking", "data": data}
             _progress[correlation_id]["thinking"].append(line)
             _progress[correlation_id]["events"].append(ev)
             to_publish.append(ev)

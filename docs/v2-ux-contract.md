@@ -22,6 +22,66 @@ part you can render without waiting for anything.**
 
 ---
 
+## 0. What changed on 2026-09-13 — read this first
+
+Two defects made §1 unrenderable, and they were **both on my side of the
+seam**. If you tried this contract on 2026-09-12 and saw nothing, that is why.
+Both are now fixed and deployed.
+
+**(a) `emit_step` published the dataclass, not the dict.**
+`make_v2_trace` returns an `EmitEnvelope`. `on_thinking` gates the structured
+path on `isinstance(chunk, dict) and is_envelope(chunk)`, so it failed that
+check, fell to the bare-string branch, and every v2 step reached the user as
+`str(envelope)` — the dataclass repr. Nothing raised, so the fallback warning
+never logged. Every peer emitter already called `.to_dict()`; this was the one
+site that did not. Fixed in `app/pipeline/v2/trace.py`; gated by
+`tests/test_v2_trace_envelope_shape.py`.
+
+**(b) The envelope never reached the live stream — for ANY signal.**
+`on_thinking` has passed `{"type": "thinking", "content": …, "envelope": …}`
+since Sprint A.1 (2026-04-19). `send_to_user` read only `content` and dropped
+the envelope on the floor; `append_thinking` then published `{line, ts}`.
+
+So **no structured signal has ever been renderable live** — not `v2_trace`,
+not `react_trace`, not `retrieval_trace`. They worked only *after* the turn,
+off `chat_turns.thinking_log`, which is why the Diagnostics-tab panels look
+fine and the live thinking log looks empty. That asymmetry was the bug, not a
+design choice.
+
+Fixed in `app/communication/gate.py` + `app/storage/progress.py`; gated by
+`tests/test_thinking_envelope_reaches_sse.py`.
+
+### What this means for you
+
+The SSE `thinking` event now carries an optional `envelope`:
+
+```json
+{"event": "thinking",
+ "data": {"line": "✓ Found 15 passage(s) across 3 document(s) in 8.2s",
+          "ts": 1757..., "ts_readable": "…",
+          "envelope": { …the full v2_trace envelope from §1… }}}
+```
+
+Three properties I have tested and will keep true:
+
+1. **`line` stays authoritative.** It is the headline, always present. A client
+   that ignores `envelope` renders exactly what it rendered before this change.
+   Nothing you ship has to change on my account.
+2. **`envelope` is attached to the FIRST line only.** One envelope describes
+   one step; on a multi-line chunk the later lines carry no envelope, so you
+   never get N rows for one step.
+3. **`envelope` is always a dict or absent** — never a string, never a repr.
+
+The FE currently reads `data.line` and stops (`frontend/src/app.ts`, the
+`ev === "thinking"` branch). Reading `data.envelope` when present is the whole
+change; `note`/`data.detail`/`data.key`/`data.state` then work as §1 describes.
+
+**This is a request, not a commit — the FE is yours.** I have not touched
+`frontend/`. If the shape is wrong for how you render, tell me and I will move
+the backend rather than ask you to work around it.
+
+---
+
 ## 1. `v2_trace` — the live stream
 
 One signal per step. `note` is the headline, `data.detail` is what expands.

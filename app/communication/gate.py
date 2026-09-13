@@ -40,7 +40,22 @@ def send_to_user(
 
     if ptype == "thinking":
         if content and str(content).strip():
-            append_thinking(correlation_id, str(content).strip())
+            # 🔴 THE ENVELOPE USED TO DIE ON THIS LINE.
+            #
+            # on_thinking has sent {"type": "thinking", "content": <headline>,
+            # "envelope": <dict>} since Sprint A.1 (2026-04-19). This branch
+            # read `content` and nothing else, so the envelope was built,
+            # passed in, and dropped here -- a producer whose only consumer
+            # ignored it. Consequence, measured 2026-09-13: NO structured
+            # signal has ever reached the LIVE stream (react_trace,
+            # retrieval_trace, v2_trace alike); they were legible only after
+            # the turn, off chat_turns.thinking_log.
+            #
+            # `content` remains authoritative. A client that ignores
+            # `envelope` renders exactly what it rendered before.
+            _env = payload.get("envelope")
+            append_thinking(correlation_id, str(content).strip(),
+                            envelope=_env if isinstance(_env, dict) else None)
         return
 
     if ptype == "clarification":
