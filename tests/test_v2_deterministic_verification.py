@@ -1,0 +1,119 @@
+"""Quality control is a deterministic check, not an LLM opinion.
+
+Ananth, 2026-09-13: "critic is a dynamic thing as part of react.. we dont need
+it here.. we will bake in a deterministic critique which we already have (the
+tool that manifest developed for check a fact).. and if the critique is really
+found anything then we go back to react, else we move on".
+
+🔴 WHAT IT REPLACES, measured on cid ab19a39a — a 10-second turn:
+    +5.70s  [react] v2 composition prompt module=critic_audit
+    +5.80s  [vertex] generate_content prompt_len=4738
+    +9.46s  returned (elapsed=3.7s)
+    +9.56s  [governor] complete ... critic=None
+3.7s — 37% of the turn — and the governor used NOTHING from it.
+"""
+import pytest
+
+from app.pipeline.v2 import verify as V
+
+
+class _F:
+    def __init__(self, **kw):
+        self.fact = kw.get("fact", "a claim")
+        self.document = kw.get("document", "m.pdf")
+        self.page = kw.get("page", 11)
+        self.document_id = kw.get("document_id", "d1")
+
+
+def _runner(results, **extra):
+    def run(tool, inputs):
+        assert tool == "verify_claims"
+        run.seen = inputs
+        return {"outcome": "evidence", "payload": {"results": results}, **extra}
+    run.seen = None
+    return run
+
+
+def test_a_supported_answer_moves_on():
+    r = V.verify([_F()], _runner([{"verdict": "supported", "score": 0.9}]))
+    assert r.reopen is False and r.supported == 1 and not r.findings
+
+
+def test_a_refuted_claim_goes_back_to_react():
+    r = V.verify([_F()], _runner([{"verdict": "not_supported", "score": 0.4}]))
+    assert r.reopen is True and len(r.findings) == 1
+
+
+def test_UNVERIFIABLE_IS_NOT_A_FINDING():
+    """🔴 THE LINE THIS WHOLE SESSION KEEPS CROSSING. A claim the verifier
+    could not check is not a claim it refuted — reopening on one spends a round
+    on the verifier's blind spot, and deleting on one is could-not-check
+    rendered as checked-false."""
+    r = V.verify([_F()], _runner([{"verdict": "unverifiable", "score": None}]))
+    assert r.reopen is False
+    assert r.unverifiable == 1
+    assert not r.findings
+
+
+def test_a_wrong_NUMBER_asks_for_a_repair_not_a_deletion():
+    """Deep Research measured their first version scoring "six years" at 0.943
+    against a source saying FIVE, and passing it. not_supported at 0.94 WITH
+    numbers_missing is a near-quote with the figure changed — "fix the number"
+    and "drop the claim" are different instructions to react."""
+    r = V.verify([_F()], _runner([{"verdict": "not_supported", "score": 0.94,
+                                   "numbers_missing": ["6 (six)"]}]))
+    repair = r.findings[0].repair()
+    assert "WRONG FIGURE" in repair and "6 (six)" in repair
+    assert "drop the claim" in repair          # offered, not commanded
+
+
+def test_a_wrong_PAGE_keeps_the_claim():
+    r = V.verify([_F()], _runner([{"verdict": "not_supported", "score": 0.88,
+                                   "citation_wrong": "p113"}]))
+    repair = r.findings[0].repair()
+    assert "WRONG PAGE" in repair and "the claim itself stands" in repair
+
+
+def test_unscoped_facts_are_not_sent_at_all():
+    """Their ceiling is 144,000ms UNSCOPED and ~1.1s scoped. A fact with no
+    document_id is therefore NOT CHECKED rather than checked slowly — and the
+    result says so instead of implying it passed."""
+    run = _runner([{"verdict": "supported"}])
+    r = V.verify([_F(document_id=""), _F()], run)
+    assert len(run.seen["facts"]) == 1
+    assert any("no document_id" in p for p in r.problems)
+
+
+def test_the_bar_is_passed_explicitly_never_inherited():
+    """Deep Research: pass `bar` explicitly so the choice is recorded rather
+    than assumed — the default is tuned for a caller that DELETES, which is
+    us; a publishing caller's safe direction is the opposite."""
+    run = _runner([{"verdict": "supported"}])
+    V.verify([_F()], run)
+    assert run.seen["bar"] == V.BAR
+    assert 0.0 < V.BAR < 1.0
+
+
+def test_document_ids_are_always_sent():
+    run = _runner([{"verdict": "supported"}])
+    V.verify([_F(document="m.pdf", document_id="d1")], run)
+    assert run.seen["document_ids"] == {"m.pdf": "d1"}
+
+
+@pytest.mark.parametrize("bad", [
+    {"could_not_run": True, "reason": "no route declared"},
+    {"outcome": "could_not_run", "reason": "refused"},
+    {"outcome": "evidence", "payload": {"results": "not a list"}},
+])
+def test_a_verifier_that_could_not_run_never_becomes_a_finding(bad):
+    """The failure mode that would be worst: the checker breaks, and its
+    silence is read as the answer being wrong."""
+    r = V.verify([_F()], lambda t, i: bad)
+    assert r.reopen is False and not r.findings and r.skipped
+
+
+def test_it_never_raises():
+    def boom(tool, inputs):
+        raise RuntimeError("network")
+    r = V.verify([_F()], boom)
+    assert r.reopen is False and "raised" in r.skipped

@@ -7189,6 +7189,72 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # So this stays a CHANNEL. When the tool exists, whatever calls it
             # writes findings here and the finalising round becomes
             # incorporate → communicate. Empty => communicate → validate.
+            # ── DETERMINISTIC QUALITY CONTROL, AT THE ONE MOMENT IT MATTERS ──
+            #
+            # Ananth: "if the critique is really found anything then we go back
+            # to react, else we move on.. this is a quality control, and we add
+            # good emits for it".
+            #
+            # react has proposed complete. Before the answer is written for the
+            # person, every fact is checked against the page it cites — by Tool
+            # Manifest's verify_claims, DIRECTED (someone decided to call it),
+            # never speculative.
+            try:
+                from app.pipeline.v2 import trace as _v2vtr
+                from app.pipeline.v2 import verify as _v2v
+
+                _vr = _v2v.verify(
+                    tuple(getattr(getattr(ctx, "_v2_last_contract", None),
+                                  "facts", ()) or ()),
+                    lambda _t, _i: _preload_runner_toolreg(_t, _i, ctx, emitter)
+                    if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
+                    not in ("0", "false", "no")
+                    else _preload_runner(_t, _i, ctx, emitter))
+                ctx._v2_verify = _vr
+                # THE EMIT SAYS WHICH OF THE THREE HAPPENED, because "we could
+                # not check" must never read as "we checked and it is fine".
+                if _vr.skipped:
+                    _head = f"⊘ verification NOT RUN — {_vr.skipped[:90]}"
+                elif _vr.findings:
+                    _head = (f"⚠ verification: {len(_vr.findings)} claim(s) the "
+                             f"cited page does not support — going back to react")
+                else:
+                    _head = (f"✓ verification: {_vr.supported}/{_vr.checked} "
+                             f"claim(s) confirmed at the cited page"
+                             + (f", {_vr.unverifiable} unverifiable"
+                                if _vr.unverifiable else ""))
+                _det = [_v2vtr.kv("from", "verify_claims (Tool Manifest) — "
+                                          "deterministic, not an LLM opinion"),
+                        _v2vtr.kv("bar", f"{_vr.bar} — ours, passed explicitly; "
+                                         "we DELETE on not_supported so a low "
+                                         "bar loses fewer true claims"),
+                        _v2vtr.kv("took", f"{_vr.duration_ms}ms")]
+                for _f in _vr.findings[:4]:
+                    _det.append(_v2vtr.item(str(_f)[:200], "✗"))
+                for _pb in _vr.problems:
+                    _det.append(_v2vtr.kv("not checked", _pb))
+                _v2vtr.emit_step(emitter, (ctx.correlation_id or ""),
+                                 _v2vtr.Step("verify", _head, tuple(_det),
+                                             {"findings": len(_vr.findings),
+                                              "checked": _vr.checked,
+                                              "supported": _vr.supported,
+                                              "unverifiable": _vr.unverifiable,
+                                              "skipped": _vr.skipped,
+                                              "bar": _vr.bar},
+                                             "verify_claims", "verify", "done"),
+                                 thread_id=getattr(ctx, "thread_id", None))
+                logger.info("[v2.verify] cid=%s checked=%d supported=%d "
+                            "unverifiable=%d findings=%d ms=%d skipped=%s",
+                            (ctx.correlation_id or "")[:8], _vr.checked,
+                            _vr.supported, _vr.unverifiable, len(_vr.findings),
+                            _vr.duration_ms, _vr.skipped[:60] or "-")
+                if _vr.reopen:
+                    ctx._v2_verified_findings = tuple(
+                        _f.repair() for _f in _vr.findings)
+            except Exception as _vfe:      # pragma: no cover - never fail a turn
+                logger.warning("[v2.verify] cid=%s failed: %s",
+                               (getattr(ctx, "correlation_id", "") or "")[:8], _vfe)
+
             ctx._v2_critic_findings = tuple(
                 getattr(ctx, "_v2_verified_findings", ()) or ())
             if ctx._v2_critic_findings:
@@ -7340,7 +7406,47 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # unchanged for every other case (Chat Architecture ruling,
                 # 2026-07-30: this flag is the only thing authorized to
                 # bypass those gates).
-                if _pp_enabled and _pp_contract is not None and _pp_contract.confidence_bar in ("medium", "high"):
+                # 🔴 v2 DOES NOT BUY AN LLM OPINION ON ITS OWN ANSWER.
+                #
+                # Ananth: "critic is a dynamic thing as part of react.. we dont
+                # need it here.. we will bake in a deterministic critique which
+                # we already have".
+                #
+                # Measured, cid ab19a39a — a 10-second turn:
+                #     +5.70s  [react] v2 composition prompt module=critic_audit
+                #     +5.80s  [vertex] generate_content prompt_len=4738
+                #     +9.46s  returned (elapsed=3.7s)
+                #     +9.56s  [governor] complete ... critic=None
+                # 3.7s — 37% of the turn — and the governor's own decision line
+                # records that it used NOTHING from it. A producer whose
+                # consumer is None, on the critical path.
+                #
+                # THIS IS A SECOND CRITIC. I removed the integrator's blocking
+                # pair this morning (f8cbf2a) and this one survived, because it
+                # is gated on the PROMISE contract's confidence bar and not on
+                # MOBIUS_REACT_CRITIC — which is 0 on this revision. I fixed the
+                # one I knew about and never checked whether the name appeared
+                # twice.
+                #
+                # WHY DETERMINISTIC INSTEAD. This session watched an LLM critic
+                # mark three correctly-grounded payers "unsupported" from an
+                # empty fact list — could-not-check rendered as checked-false,
+                # on an answer with real citations. verify_claims checks a claim
+                # against the text at the page it cites: it cannot be lenient,
+                # cannot hallucinate a verdict, and fails closed on numbers.
+                #
+                # v1 IS UNTOUCHED. The bar check is unchanged for the v1 arm, so
+                # the A/B still compares like with like.
+                _pp_critic_v2_skip = (
+                    getattr(ctx, "orchestrator_version", "v1") == "v2")
+                if _pp_critic_v2_skip and _pp_enabled and _pp_contract is not None:
+                    logger.info(
+                        "[v2.critic] cid=%s round=%s LLM critic SKIPPED — v2 "
+                        "verifies claims deterministically against the cited "
+                        "page (verify_claims); an LLM second opinion on our own "
+                        "answer cost 3.7s and fed nothing",
+                        (ctx.correlation_id or "")[:8], rn)
+                if (not _pp_critic_v2_skip) and _pp_enabled and _pp_contract is not None and _pp_contract.confidence_bar in ("medium", "high"):
                     from app.pipeline.personalization import splice_user_profile as _pp_splice_profile
                     from app.pipeline.react.critic import (
                         CRITIC_SYSTEM_PROMPT as _pp_critic_prompt,
