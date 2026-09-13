@@ -3,7 +3,7 @@
 Hybrid shape after skill-registry commit 3:
 
   - Five tools are now **registry-owned** (document_upload_skill,
-    list_thread_document_uploads, healthcare_query, web_scrape,
+    list_thread_document_uploads, web_scrape,
     google_search). Their descriptions live on ``SkillSpec.description``
     and we render them here via ``registry.manifest_text(...)``. Adding
     a new answer_tool-dispatched skill is one file — no edit here.
@@ -140,24 +140,15 @@ _RECALL_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="recall"
 
 _PRECISION_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="precision")
 
-_HEALTHCARE_NPI_LOOKUP_BLOCK = """\
-healthcare_npi_lookup(question)
-  Looks up a provider or organization in the NPPES national registry by
-    NPI number — returns the registered name, taxonomy/specialty, and
-    practice address on file for that number.
-  Use for: a question that supplies or asks for a specific 10-digit NPI
-    and wants the registry facts tied to that number ("who is NPI
-    1234567890", "what's the taxonomy for NPI X", "what address is on
-    file for NPI X").
-  Do NOT use for: a question about a diagnosis, procedure, or billing
-    code, or what a code means or covers — those aren't NPI lookups
-    even if a number appears in the question (an ICD-10/CPT/HCPCS code
-    is not an NPI, and the question isn't asking about a registered
-    provider).
-  Do NOT use for: finding an NPI by organization NAME — that's the
-    reverse direction (a name in, a number out), not this tool's shape
-    (a number in, identity facts out).
-  Returns: registered name, taxonomy, and address for the given NPI."""
+# DEACTIVATED 2026-09-12 (Ananth): healthcare_query timed out in production
+# (30s default; the manifest declared a 3s placeholder). healthcare_npi_lookup
+# dispatches to the SAME backend via react_loop.py:797, so removing one label
+# while the other stayed reachable would not have been a deactivation.
+# Emptied rather than deleted: the dispatcher still routes both names, so an
+# in-flight model that emits one still works. Re-offer only when the service
+# is reachable AND a tool_latency row carries a real ceiling + sample count.
+_HEALTHCARE_NPI_LOOKUP_BLOCK = ""  # retired — see above
+
 
 _SEARCH_UPLOADED_DOCUMENT_BLOCK = """\
 search_uploaded_document(upload_id optional, query)
@@ -210,7 +201,6 @@ refuse(reason)
 # Registry skills, in the order the legacy manifest listed them so the
 # planner prompt byte-diff stays minimal across the refactor.
 _REGISTRY_ORDER: tuple[str, ...] = (
-    "healthcare_query",
     "document_upload_skill",
     "list_thread_document_uploads",
     "google_search",
@@ -408,22 +398,11 @@ _SERVICE_LINE_ROUTING_BLOCK = """\
 ── Service line registry (FL Medicaid BH standard) ──────────────────────
 service_line_code_lookup / limits / coverage / search / detail / requirements / gaps
 
-TOOL PRECEDENCE FOR HCPCS/CPT CODE QUESTIONS:
-  healthcare_query also claims "HCPCS wording / code meaning" competence.
-  For FL Medicaid BH codes the registry STRICTLY WINS:
-    service_line_code_lookup → ALWAYS FIRST for any HCPCS/CPT code question.
-    healthcare_query         → ONLY if service_line_code_lookup status=unknown
-                               (the registry genuinely has nothing on that code).
-  Never let healthcare_query answer for a code the registry binds. Its answers
-  are generated, not looked up, and it returns wrong and inconsistent definitions
-  for FL Medicaid BH codes (two calls to healthcare_query on H0031 return two
-  different wrong answers; both flip the MH/SUD category).
-
-WHEN TO USE THESE (not rag, not healthcare_query):
+WHEN TO USE THESE (not rag):
   Any question about a HCPCS/CPT code meaning, rate, or modifier
-    → service_line_code_lookup FIRST. Do not answer from rag or
-      healthcare_query for FL Medicaid BH codes — the registry is
-      the authoritative source; the alternatives are unreliable.
+    → service_line_code_lookup FIRST. Do not answer from rag for
+      FL Medicaid BH codes — the registry is the authoritative
+      source; rag's answers are generated, not looked up.
   "what is H2017" / "what is HCPCS code H0031" / "what does H0031 mean"
                                                  → service_line_code_lookup
   "can I bill H0031 HN" / "can I bill X"        → service_line_code_lookup
@@ -514,7 +493,6 @@ _ROUTER_OWNED_BLOCKS: dict[str, str] = {
     "rag": "_RAG_BLOCK",
     "recall_evidence": "_RECALL_EVIDENCE_BLOCK",
     "search_corpus": "_SEARCH_CORPUS_BLOCK",  # back-compat alias, empty block
-    "healthcare_npi_lookup": "_HEALTHCARE_NPI_LOOKUP_BLOCK",
     "search_uploaded_document": "_SEARCH_UPLOADED_DOCUMENT_BLOCK",
     "refuse": "_REFUSE_BLOCK",
     # Curator tools aren't in the registry either
@@ -618,8 +596,6 @@ def _compose_manifest(allowed: frozenset[str] | None = None,
         _registry_block("payor_readiness"),
         # fetch_document — returns a download URL; distinct from rag retrieval.
         _registry_block("fetch_document"),
-        _registry_block("healthcare_query"),
-        _router_block("healthcare_npi_lookup", _HEALTHCARE_NPI_LOOKUP_BLOCK),
         _registry_block("document_upload_skill"),
         _registry_block("list_thread_document_uploads"),
         _router_block("search_uploaded_document", _SEARCH_UPLOADED_DOCUMENT_BLOCK),
@@ -727,7 +703,6 @@ def __getattr__(name: str) -> str:
 # entity tools so they don't appear here.
 
 _NON_REGISTRY_ENTITY_TOOLS = frozenset({
-    "healthcare_npi_lookup",
 })
 
 ENTITY_TOOLS = registry.entity_tools() | _NON_REGISTRY_ENTITY_TOOLS

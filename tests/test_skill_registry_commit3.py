@@ -233,7 +233,14 @@ class TestComputedToolManifest:
             "tool is offered and only tested that the string survived in prose. "
             "A fingerprint that outlived the thing it fingerprinted."
         )
-        assert "healthcare_npi_lookup(question)" in TOOL_MANIFEST
+        assert "healthcare_npi_lookup(question)" not in TOOL_MANIFEST, (
+            "DEACTIVATED 2026-09-12 (Ananth) with healthcare_query -- react_loop.py:797 "
+            "maps healthcare_npi_lookup to the SAME dispatch target and the same 30s "
+            "backend, so removing one label while the other stayed offered would not "
+            "have been a deactivation. Its block is emptied, not deleted, and the "
+            "dispatcher still routes the name. Inverted so re-offering it without a "
+            "real latency ceiling fails here."
+        )
         assert "search_uploaded_document(" in TOOL_MANIFEST
         assert "refuse(reason)" in TOOL_MANIFEST
 
@@ -241,13 +248,23 @@ class TestComputedToolManifest:
         from app.pipeline.tool_manifest import TOOL_MANIFEST
 
         for name in (
-            "healthcare_query",
             "document_upload_skill",
             "list_thread_document_uploads",
             "google_search",
             "web_scrape",
         ):
             assert f"{name}" in TOOL_MANIFEST, f"{name} missing from computed manifest"
+
+        # healthcare_query is DEACTIVATED (2026-09-12, Ananth) but still REGISTERED:
+        # the dispatcher routes it so an in-flight model that emits it still works,
+        # while the manifest no longer teaches it. Those are different states and the
+        # difference is the whole point -- back-compat belongs in the dispatcher,
+        # never in the prompt. Asserted here so re-teaching it fails loudly.
+        assert "healthcare_query" not in TOOL_MANIFEST, (
+            "healthcare_query is back in the manifest. It timed out in production "
+            "(30s real vs a 3s placeholder). Re-offer only when the service is "
+            "reachable AND a real latency ceiling with a sample count exists."
+        )
 
     def test_manifest_preserves_planner_prompt_headers(self):
         """The 'AVAILABLE TOOLS' header + workflow-selection notice +
@@ -273,9 +290,11 @@ class TestEntityAndFollowUpViews:
         start leaking jurisdiction into NPI lookups."""
         from app.pipeline.tool_manifest import ENTITY_TOOLS
 
-        assert "healthcare_npi_lookup" in ENTITY_TOOLS, (
-            "healthcare_npi_lookup dropped from ENTITY_TOOLS — the "
-            "hand-listed union in tool_manifest.py was broken. "
+        assert "healthcare_npi_lookup" not in ENTITY_TOOLS, (
+            "healthcare_npi_lookup was DEACTIVATED 2026-09-12 (Ananth) alongside "
+            "healthcare_query — same 30s backend via react_loop.py:797. This "
+            "assertion is inverted, not deleted, so re-adding it to the union "
+            "without re-declaring a real latency ceiling fails loudly. "
             "Jurisdiction may now bleed into NPI-number lookups."
         )
         # All 5 registry skills that don't require jurisdiction:

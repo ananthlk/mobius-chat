@@ -223,7 +223,14 @@ def test_manifest_still_renders_curated_builtins(adapter_cleanup):
         "tool is offered and only tested that the string survived in prose. "
         "A fingerprint that outlived the thing it fingerprinted."
     )
-    assert "healthcare_query" in manifest
+    assert "healthcare_query" not in manifest, (
+        "DEACTIVATED 2026-09-12 (Ananth): healthcare_query timed out in production "
+        "(30s real default vs a 3s placeholder in the manifest). healthcare_npi_lookup "
+        "dispatches to the SAME backend (react_loop.py:797), so it went with it. "
+        "Inverted, not deleted: the dispatcher still routes both names, so this now "
+        "guards against the TEACHING coming back while the tool stays "
+        "unreachable-but-offered."
+    )
     assert "refuse(reason)" in manifest
     assert "google_search" in manifest
 

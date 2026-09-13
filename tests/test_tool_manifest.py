@@ -92,8 +92,18 @@ def test_entity_tools_set():
     assert "document_upload_skill" in ENTITY_TOOLS
     assert "list_thread_document_uploads" in ENTITY_TOOLS
     assert "web_scrape" in ENTITY_TOOLS
+    # Still in ENTITY_TOOLS: the SKILL remains registered and dispatchable.
+    # Deactivation removed it from the MANIFEST, not from the dispatcher.
     assert "healthcare_query" in ENTITY_TOOLS
-    assert "healthcare_npi_lookup" in ENTITY_TOOLS
+    assert "healthcare_query" not in TOOL_MANIFEST, (
+        "DEACTIVATED 2026-09-12 (Ananth): healthcare_query timed out in production "
+        "(30s real default vs a 3s placeholder in the manifest). healthcare_npi_lookup "
+        "dispatches to the SAME backend (react_loop.py:797), so it went with it. "
+        "Inverted, not deleted: the dispatcher still routes both names, so this now "
+        "guards against the TEACHING coming back while the tool stays "
+        "unreachable-but-offered."
+    )
+    assert "healthcare_npi_lookup" not in ENTITY_TOOLS
     # search_corpus is a jurisdiction-aware tool (gets payer/state filters).
     assert "search_corpus" not in ENTITY_TOOLS
     # Disconnected tools must not be in the set.

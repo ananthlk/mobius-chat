@@ -14,24 +14,12 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
     # 2026-04-18 disconnect — ask_credentialing_npi removed along with
     # the other credentialing/roster tools. Capability declaration
     # rebuilds when credentialing ships as a proper skill integration.
-    "healthcare_query": {
-        "can_answer": [
-            "ICD-10-CM code meaning and description (e.g. what is F32.1)",
-            "Medicare/Medicaid coverage context (NCD/LCD) from healthcare APIs",
-            "10-digit NPI registry facts (name, taxonomy, address) when question is NPI-by-number",
-            "Diagnosis/procedure code questions, HCPCS/CPT wording when structured lookup applies",
-        ],
-        "cannot_answer": "PML status without credentialing report; NPI for an organization by name",
-    },
-    "healthcare_npi_lookup": {
-        "can_answer": [
-            "NPPES lookup by 10-digit NPI only (provider name, taxonomy, address from national registry)",
-        ],
-        "cannot_answer": (
-            "ICD-10, diagnosis codes, CPT, HCPCS, coverage/NCD/LCD questions (use healthcare_query); "
-            "PML status, Florida Medicaid enrollment, credentialing report data"
-        ),
-    },
+    # DEACTIVATED 2026-09-12 (Ananth): healthcare_query + healthcare_npi_lookup.
+    # Removed from the CAPABILITY TABLE as well as the manifest list — the table
+    # renders Can/Cannot headings straight into the planner prompt, so leaving it
+    # here would have kept TEACHING a tool the offered set no longer contains.
+    # That split (declaration migrated, teaching did not) is what produced live
+    # search_corpus emissions months after its retirement.
     # 2026-04-18 disconnect — removed:
     #   lookup_npi / find_org_locations /
     #   find_associated_providers_at_locations
@@ -49,7 +37,7 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "can_answer": [
             "Org / billing NPI disambiguation by name (NPPES + PML); MCP search_org_names with search_mode copilot vs agentic",
         ],
-        "cannot_answer": "10-digit NPI registry row only (use healthcare_query); PML enrollment / credentialing (use check_provider_credentialing)",
+        "cannot_answer": "10-digit NPI registry row only; PML enrollment / credentialing (use check_provider_credentialing)",
     },
     # 2026-04-18 disconnect — removed:
     #   run_credentialing_report / validate_credentialing_step /
@@ -181,8 +169,6 @@ PATH_CAPABILITIES = {
         "web scrape",
         "NPI lookup by org name (what is the NPI of X)",
         "check_provider_credentialing: provider credentialing profile (NPPES, FL Medicaid PML enrollment, compliance flags, readiness verdict)",
-        "healthcare_query: ICD-10, CMS coverage, code lookups; NPI-by-number via registry",
-        "healthcare_npi_lookup: NPPES by 10-digit NPI only (fallback label; prefer healthcare_query for codes/coverage)",
         "Provider Roster / Credentialing report",
         "Document upload skill (attach files to thread; API + UI)",
         "List thread document uploads (what files are already attached)",
@@ -238,8 +224,6 @@ def available_capabilities_json() -> dict[str, Any]:
         "tools": [
             "google_search",
             "web_scrape",
-            "healthcare_npi_lookup",
-            "healthcare_query",
             "document_upload_skill",
             "list_thread_document_uploads",
             "list_tasks",
@@ -256,8 +240,6 @@ def available_capabilities_json() -> dict[str, Any]:
             "Match question to tool capabilities. "
             "Policy / process / payer-manual questions → search_corpus. "
             "Questions referring to an attached document → search_uploaded_document. "
-            "ICD-10, HCPCS, CPT code meaning, Medicare/Medicaid coverage (NCD/LCD) → healthcare_query. "
-            "10-digit NPI registry lookup → healthcare_query or healthcare_npi_lookup. "
             "Web lookups / current information → google_search then web_scrape."
         ),
     }
