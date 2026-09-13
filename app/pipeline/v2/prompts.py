@@ -83,12 +83,30 @@ RESPONSE_SHAPE_SUFFIX = """
 Your JSON response must ALSO contain these two keys. Everything described
 above still applies; these are added, nothing is replaced.
 
-  "facts": [{"fact": "<one thing you now know, in one sentence>",
-             "document": "<the document it came from>",
+  "facts": [{"fact": "<one thing you now know, in the source's own words>",
+             "document": "<the document it came from, EXACTLY as written above>",
              "page": <page number>}]
-      Only what THIS round's evidence supports, one sentence each. A fact with
-      no document is DROPPED — it cannot be checked later, so it must not be
-      remembered as if it could.
+      Only what THIS round's evidence supports, one sentence each.
+
+      KEEP THE SOURCE'S OWN WORDING. Stay as close to the manual's exact
+      phrasing as you can — trim, do not rewrite. "The ICM program is based on
+      a Member advocacy philosophy, designed and administered to assure the
+      Member value-added coordination" is a good fact. "Molina takes a
+      member-first approach to care" says the same thing and is a bad one:
+      nobody can find it on the page.
+
+      These facts are checked against the cited page afterwards, by matching
+      them to the text. The closer your wording is to the source, the more
+      certainly a true claim is confirmed — and a paraphrase of something real
+      can fail that check and be dropped as unsupported. Paraphrasing costs you
+      nothing to write and costs the reader a fact.
+
+      Copy the document name EXACTLY as it appears in the evidence above. A
+      shortened or tidied filename cannot be found, and the claim is then
+      unverifiable however true it is.
+
+      A fact with no document is DROPPED — it cannot be checked later, so it
+      must not be remembered as if it could.
 
   "not_useful": ["<document, or document p<page>, that you read and are NOT using>"]
       What you looked at and rejected. Recorded so no later round retrieves or

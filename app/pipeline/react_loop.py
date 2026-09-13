@@ -1241,10 +1241,26 @@ def _preload_doc_spread(res: dict) -> list[str]:
             name = str(c.get("document_name") or c.get("title") or "").strip()
             if not name:
                 continue
+            # 🔴 NEVER TRUNCATE THE DOCUMENT NAME.
+            #
+            # It was name[:44], for a tidy summary line. react READS that
+            # summary and copies the name into its facts — so
+            # "FL-Care-Provider-Manual-Statewide-Medicaid-Managed-Care.pdf"
+            # became "FL-Care-Provider-Manual-Statewide-Medicaid-M.pdf", a
+            # document that does not exist. Found in the stored facts: 41
+            # carry the real name and 7 carry the truncation.
+            #
+            # A fact citing a document that is not in the corpus verifies as
+            # `unverifiable` forever, and the deterministic verifier would have
+            # reported it honestly and uselessly — the citation is wrong
+            # because I shortened it for display.
+            #
+            # Display truncation belongs in the DISPLAY, never in a value
+            # something downstream uses as an identifier.
             pg = c.get("page_number")
-            seen.setdefault(name[:44], [])
-            if pg is not None and pg not in seen[name[:44]]:
-                seen[name[:44]].append(pg)
+            seen.setdefault(name, [])
+            if pg is not None and pg not in seen[name]:
+                seen[name].append(pg)
         break
     out = []
     for name, pages in seen.items():
