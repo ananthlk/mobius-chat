@@ -1336,6 +1336,56 @@ def _terms_not_returned(asked: str, res: dict) -> list[str]:
 # call implies for the turn comes back in `ctx_effects` and is applied HERE, in
 # our order. That is what makes concurrency their choice rather than a hazard
 # we inherit.
+def _arms_dropped(res) -> int:
+    """How many rag fan-out arms the tier's cap cut. 0 if none or unknown.
+
+    🔴 A NARROWED RETRIEVAL THAT DOES NOT SAY SO IS A CLAIM ABOUT THE CORPUS.
+    Measured by Retriever on the three-payer question:
+
+        max_arms=1    9 chunks, ALL from molina_fl_provider_manual_2026.pdf
+                      fanout_arms_dropped = 2
+        (omitted)    17 chunks, Molina + Sunshine + UnitedHealthcare
+                      fanout_arms_dropped = 0
+
+    So on `fast` a question about three payers retrieves ONE. Without this,
+    react gets Molina-only evidence with no sign that two arms were cut for
+    budget, writes a confident answer about Molina, and the omission is
+    invisible — the filter making the answer look complete. That is the defect
+    we fixed earlier tonight (two payers cited, third missing), and my own
+    budget policy would have reintroduced it.
+
+    Dug out defensively: rag puts it in contract.traces and the skill wraps its
+    telemetry under extra, so the depth is not something this side should pin.
+    """
+    found: list = []
+
+    def _walk(o, depth=0):
+        if depth > 4 or len(found) > 8:
+            return
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "fanout_arms_dropped":
+                    found.append(v)
+                else:
+                    _walk(v, depth + 1)
+        elif isinstance(o, (list, tuple)):
+            for v in list(o)[:20]:
+                _walk(v, depth + 1)
+
+    try:
+        _walk(res if isinstance(res, (dict, list, tuple)) else {})
+    except Exception:
+        return 0
+    for v in found:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0
+
+
 def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     """Bridge preload.execute() to Tool Manifest's executor."""
     from toolreg.execute import runner as _tr_runner
@@ -1377,6 +1427,11 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
               if _docs else "%d passage(s)" % n]
     if _uncovered:
         _parts.append("not mentioned in anything returned: " + ", ".join(_uncovered[:4]))
+    _dropped = _arms_dropped(r)
+    if _dropped:
+        _parts.append(f"NARROWED BY BUDGET: {_dropped} retrieval arm(s) were not "
+                      f"run — parts of the question were NOT searched, and their "
+                      f"absence here is ours, not the corpus's")
     return {"tool": tool, "ok": True, "payload": payload or "",
             "sources": sources, "asked": _asked, "summary": " | ".join(_parts)}
 
@@ -1479,6 +1534,14 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
             # tell those apart. It is a lead, and it is labelled as one.
             _parts.append("not mentioned in anything returned: "
                           + ", ".join(_uncovered[:4]))
+        _dropped = _arms_dropped(res)
+        if _dropped:
+            # SAID AS OUR DOING, not the corpus's. react must be able to tell
+            # "this is not in the manuals" from "we did not go and look".
+            _parts.append(f"NARROWED BY BUDGET: {_dropped} retrieval arm(s) "
+                          f"were not run — parts of the question were NOT "
+                          f"searched, and their absence here is ours, not the "
+                          f"corpus's")
         summary = " | ".join(_parts)
         ok = ok and n > 0
     # 🔴 THE PAYLOAD, NOT ONLY THE SUMMARY.
