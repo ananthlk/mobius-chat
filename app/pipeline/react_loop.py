@@ -7034,9 +7034,47 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # exit after it. ONCE per turn (_v2_finalised), and only if a round and
         # the budget remain — otherwise this is an unbounded loop wearing a
         # role name, and the promise pays for it.
+        # 🔴 RE-ARM WHEN react REOPENS. Measured, cid 9c825ca5: round 1 said
+        # complete=true on FOUR memory-carried facts and zero fresh retrieval,
+        # so the turn spent its ONE communicate round on an answer that was not
+        # ready. react ignored the role and went back to searching -- correctly:
+        # "LEARNED: the previous rag call failed ... I will call rag again".
+        # Rounds 3, 4 and 5 then ALL returned complete=true with no communicate
+        # round left to claim, so the loop ran to the budget instead of ending.
+        # 97.1s against a 95s promise, five rounds for a two-round question.
+        #
+        # `_v2_finalised` was meant to stop an unbounded finalise loop, and it
+        # does. But "once per TURN" is the wrong unit: the right one is once
+        # per COMPLETION. When react comes back NOT complete after we
+        # finalised, the completion it was spent on did not hold, and the next
+        # genuine one must be able to end the turn.
+        if (not is_complete) and getattr(ctx, "_v2_finalised", False):
+            ctx._v2_finalised = False
+            logger.info("[v2.finalise] cid=%s round=%s REARMED — react "
+                        "reopened after a communicate round, so that "
+                        "completion did not hold",
+                        (ctx.correlation_id or "")[:8], rn)
+
+        # AND DO NOT FINALISE A ROUND THAT LEARNED NOTHING. A completion
+        # resting entirely on carried memory, with no evidence retrieved this
+        # turn, is the premature one above: it spends the communicate round
+        # before there is anything new to communicate, and invites the answer
+        # to be filled from priors. Memory alone can still finish a turn -- it
+        # just has to do it on a round that ASKED for nothing, which is what
+        # `no open gaps` means here.
+        _has_fresh = bool(getattr(ctx, "_v2_preloaded", None)) or bool(
+            getattr(ctx, "tool_results", None))
+        # ctx._v2_last_contract (:6573), NOT _v2_resp (:6546). That name is
+        # bound inside a conditional 500 lines up, so reading it here is the
+        # UnboundLocalError shape that has cost this file five separate bugs
+        # tonight — and it would raise on exactly the paths where the contract
+        # did not parse, which is when this decision matters most.
+        _resp_now = getattr(ctx, "_v2_last_contract", None)
+        _earned = _has_fresh or not (getattr(_resp_now, "gaps", None) or ())
         if (is_complete
                 and getattr(ctx, "orchestrator_version", "v1") == "v2"
                 and not getattr(ctx, "_v2_finalised", False)
+                and _earned
                 and rn < max_it
                 and (getattr(ctx, "react_hard_ceiling_s", 0) or 0) > _pp_elapsed_s):
             ctx._v2_finalised = True
