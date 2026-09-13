@@ -463,7 +463,14 @@ REGISTRY: tuple[Block, ...] = (
     Block("preloaded", Slot.EVIDENCE,
           when=lambda f: bool(f.preloaded),
           render=lambda f: "[ALREADY RETRIEVED — judge this]\n" + "\n".join(
-              f"  {t} -> {s}" if ok else f"  {t} -> ran, returned nothing"
+              # THREE STATES, NOT TWO. "ran, returned nothing" asserted that
+              # the source was consulted and had nothing -- which is a claim
+              # about the CORPUS. A tool that refused our call made no such
+              # claim, and collapsing them told react the fact store was empty
+              # when we had simply called it wrong (cid 9de5c318).
+              (f"  {t} -> {s}" if ok else
+               (f"  {t} -> {s}" if str(s).startswith("COULD NOT RUN")
+                else f"  {t} -> ran, returned nothing"))
               for t, ok, s in f.preloaded),
           owner="governor"),
 

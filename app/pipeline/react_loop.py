@@ -1333,10 +1333,39 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
         if isinstance(v, list):
             n = len(v)
             break
+    # 🔴 REFUSED IS NOT "RETURNED NOTHING", AND THE DIFFERENCE COST TWO ROUNDS.
+    #
+    # Measured, cid 9de5c318: payor_fact was called with {'payor','predicate'}
+    # (Tool Manifest's key) against a skill that reads inputs['field'], so it
+    # refused at the door -- extra={'error': 'need payor and field'} -- without
+    # ever performing a lookup. This function ignored that error and reported
+    # an empty body, so the frame rendered "payor_fact -> ran, returned
+    # nothing", and react read that as THE AUTHORITATIVE FACT STORE HAS NO
+    # TIMELY FILING DEADLINE FOR SUNSHINE HEALTH. Its round-1 thought is the
+    # receipt: "appeals_get_playbook ... did not return the timely filing
+    # deadline. I will now use the rag tool."
+    #
+    # react behaved correctly on a false premise. Could-not-check rendered as
+    # checked-false, in the summary this module writes, about the one source
+    # that would have answered in 360ms.
+    _refusal = ""
+    _extra = res.get("extra") if isinstance(res.get("extra"), dict) else {}
+    for _k in ("error", "unavailable", "reason"):
+        _v = (res.get(_k) or (_extra or {}).get(_k))
+        if _v:
+            _refusal = str(_v)[:120]
+            break
     if n is None:
         body = res.get("result") or res.get("summary") or ""
-        summary = (str(body)[:140] if body else "no result field recognised")
-        ok = ok and bool(body)
+        if _refusal and not body:
+            # NOT ok, and NOT silent about why: a tool that could not run is a
+            # gap in our call, not a gap in the corpus, and react must be able
+            # to tell those apart before it decides the fact does not exist.
+            summary = f"COULD NOT RUN — {_refusal} (no lookup was performed)"
+            ok = False
+        else:
+            summary = (str(body)[:140] if body else "no result field recognised")
+            ok = ok and bool(body)
     else:
         # 🔴 A COUNT IS NOT A SUMMARY. "17 passage(s)" tells react nothing it
         # can judge: not which documents, not whether its ask was covered, not
