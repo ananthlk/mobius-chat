@@ -6740,11 +6740,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             #
             # Populated => the finalising round becomes incorporate →
             # communicate. Empty => communicate → validate.
+            # ── WHERE VERIFIED FINDINGS ARRIVE ─────────────────────────
+            # Ananth, 2026-09-12: "no dont lift.. i have asked tools manifest
+            # to own .. so it can benefit and not duplicate".
+            #
+            # Deep Research built a deterministic verifier and recommended I
+            # lift it here; I did, and Ananth corrected both of us. A verifier
+            # in the MANIFEST is available to every consumer and has one owner;
+            # a copy in chat benefits chat and drifts from the original the
+            # first time either moves. The lift is reverted.
+            #
+            # So this stays a CHANNEL. When the tool exists, whatever calls it
+            # writes findings here and the finalising round becomes
+            # incorporate → communicate. Empty => communicate → validate.
             ctx._v2_critic_findings = tuple(
                 getattr(ctx, "_v2_verified_findings", ()) or ())
             if ctx._v2_critic_findings:
                 emit(f"  ⚠ verification found {len(ctx._v2_critic_findings)} "
-                     "claim(s) not supported by the cited source — the next "
+                     "claim(s) the cited source does not support — the next "
                      "round will fix them before writing")
                 for _c in ctx._v2_critic_findings[:3]:
                     emit(f"      ✗ {str(_c)[:150]}")

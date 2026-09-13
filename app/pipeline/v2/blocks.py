@@ -256,11 +256,15 @@ REGISTRY: tuple[Block, ...] = (
               "[YOUR ROLE — INCORPORATE] A check found claims in the draft "
               "that the evidence does not support:\n"
               + "\n".join(f"  ✗ {c}" for c in f.critic_findings[:6])
-              + "\n  Fix each one before you write the answer: drop it, or "
-                "restate it as what the evidence actually says, or say plainly "
-                "that it could not be verified. Do not keep a claim you cannot "
-                "tie to a source — and do not silently delete a fact the "
-                "reader needs; say it is unverified instead."),
+              + "\n  Fix each one BEFORE you write the answer:\n"
+                "    • not supported → drop it, or restate it as what the "
+                "source actually says.\n"
+                "    • CITATION WRONG → the document DOES say it, on a "
+                "different page. Keep the claim and correct the page. Do not "
+                "drop it.\n"
+                "  Do not keep a claim you cannot tie to a source — and do not "
+                "silently delete a fact the reader needs; say it is unverified "
+                "instead, so they know it was considered."),
           owner="governor"),
 
     Block("role_validate", Slot.ROLE, rank=6,
