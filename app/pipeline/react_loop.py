@@ -4368,7 +4368,30 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
             # Set once, at :6758, when the communicate round fired. NOT
             # _v2_finalising, which is cleared again at :5579 -- reading that
             # here would be false by the time the turn finalises.
-            finalised_via_communicate=getattr(ctx, "_v2_finalised", False))
+            # 🔴 WHAT THE ROUND DID, NOT HOW THE TURN ENDED.
+            #
+            # This read _v2_finalised — "the turn bought a finalise round" —
+            # which is a fact about the CONTROL FLOW, not about whether an
+            # answer was written for the person. Measured, cid 3ee0fcdd: the
+            # exact-tool posture communicated on round 1 and stopped, so no
+            # finalise round was ever bought, so the flag was False, so the
+            # critic and next_steps fired:
+            #     ran={'assemble':'ok', 'critique':'ok', 'next_steps':'ok'}
+            # — the 6.8s blocking tail I removed this morning (f8cbf2a), back
+            # on exactly the turns that got FASTER.
+            #
+            # Same error Ananth had just caught one layer up, where finalise
+            # asked "has this turn finalised" instead of "did this round
+            # communicate". I keyed on the ending rather than the work, twice,
+            # in two modules, within hours.
+            #
+            # _v2_round_communicates is derived from frame_sections() — the
+            # rendered roles — so a turn that communicates and stops gets the
+            # deterministic path, and one that never communicated still gets
+            # checked.
+            finalised_via_communicate=(
+                bool(getattr(ctx, "_v2_finalised", False))
+                or bool(getattr(ctx, "_v2_round_communicates", False))))
 
         out = _v2int.run(question=(ctx.message or ""), answer=final_answer or "",
                          facts=facts, open_gaps=gaps, all_parts=_all_gaps,

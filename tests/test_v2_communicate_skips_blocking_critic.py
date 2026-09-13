@@ -55,3 +55,36 @@ def test_criteria_records_the_signal():
     d = enrich.should_enrich(answer="a", facts=(), open_gaps=(),
                              is_complete=True, finalised_via_communicate=True)
     assert d.criteria["finalised_via_communicate"] is True
+
+
+def test_a_turn_that_communicates_and_STOPS_also_skips_the_blocking_pair():
+    """🔴 MEASURED, cid 3ee0fcdd — the regression that arrived WITH the win.
+
+    The exact-tool posture communicated on round 1 and stopped, so no finalise
+    round was ever bought, so `_v2_finalised` was False, so the critic fired:
+
+        ran={'assemble':'ok', 'critique':'ok', 'next_steps':'ok'}
+
+    — the 6.8s blocking tail removed in f8cbf2a, back on exactly the turns that
+    had just got faster. The flag read HOW THE TURN ENDED instead of WHAT THE
+    ROUND DID.
+
+    Asserted on the source because the two signals are ORed at the call site,
+    and the property is that communicating is sufficient on its own.
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.keyword) or node.arg != "finalised_via_communicate":
+            continue
+        dumped = ast.dump(node.value)
+        assert "_v2_round_communicates" in dumped, (
+            "the integrator's skip still keys on how the turn ENDED — a turn "
+            "that communicates on round 1 and stops pays the blocking critic")
+        assert "_v2_finalised" in dumped, (
+            "the finalise path must still count: a turn that bought a "
+            "communicate round also communicated")
+        return
+    raise AssertionError("finalised_via_communicate is never passed")
