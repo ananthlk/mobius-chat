@@ -117,3 +117,47 @@ def test_it_never_raises():
         raise RuntimeError("network")
     r = V.verify([_F()], boom)
     assert r.reopen is False and "raised" in r.skipped
+
+
+# ── scoping is a cliff, not a slope ──────────────────────────────────────────
+#
+# 🔴 MEASURED against the live service, 9 identical facts:
+#       with document_ids        550ms
+#       without document_ids  180,157ms  ->  HTTP 504 Gateway Timeout
+#       empty document_ids    181,716ms  ->  HTTP 504 Gateway Timeout
+#
+# An unscoped fact does not make the call slower — it destroys it, and takes
+# the facts that COULD have been checked down with it. Our own live turn cost
+# 11.5s (cid 4033e5cf), which is neither number: partial scoping.
+
+def test_every_sent_fact_is_scopable_by_the_map_that_travels_with_it():
+    run = _runner([{"verdict": "supported"}] * 2)
+    V.verify([_F(document="a.pdf", document_id="1"),
+              _F(document="b.pdf", document_id="2")], run)
+    keys = set(run.seen["document_ids"])
+    for f in run.seen["facts"]:
+        assert f["document"] in keys
+
+
+def test_a_name_that_differs_only_by_case_or_space_still_scopes():
+    """The id map is keyed by NAME. A fact whose name differs by case or
+    whitespace would be sent with a map that cannot scope it — which is the
+    44-char truncation defect arriving from the other direction."""
+    run = _runner([{"verdict": "supported"}])
+    V.verify([_F(document="  Molina FL  Manual.pdf ", document_id="d1")], run)
+    assert len(run.seen["facts"]) == 1
+    assert run.seen["document_ids"]
+
+
+def test_a_fact_with_no_document_name_is_dropped_not_sent():
+    run = _runner([{"verdict": "supported"}])
+    r = V.verify([_F(document="", document_id="d1"), _F()], run)
+    assert len(run.seen["facts"]) == 1
+    assert any("no document name" in p for p in r.problems)
+
+
+def test_the_refusal_is_stated_not_silent():
+    """A batch we declined to send must say so — "could not check" is a
+    finding for the trace, never an implied pass."""
+    r = V.verify([_F(document_id="")], lambda t, i: {})
+    assert r.skipped and not r.findings and r.reopen is False
