@@ -5550,6 +5550,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             targeted_gap=(_steer_gap.text if _steer_gap else ""),
                             preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
                             suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()))
+                        # FIRES ONCE. _v2_finalising marks THE round that
+                        # writes the answer; leaving it set made every
+                        # subsequent round a communicate round with PLAN
+                        # suppressed — so when react reconsidered and said NOT
+                        # complete, it could no longer choose a tool.
+                        # Measured: rounds 2 AND 3 both rendered
+                        # judge → summarise → communicate.
+                        #
+                        # Same shape as _v2_proposed_complete two blocks down,
+                        # which carries the same comment for the same reason.
+                        ctx._v2_finalising = False
+
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
                             _v2_ctx, _v2ps_decision.posture,
                             directive=_v2ps_decision.directive,

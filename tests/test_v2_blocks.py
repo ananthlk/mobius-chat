@@ -338,3 +338,21 @@ def test_a_finalising_round_communicates_and_does_not_plan():
     # contradiction this stack exists to prevent.
     assert "role_plan" not in final
     assert len(final) <= MAX_ROLES
+
+
+def test_the_finalising_flag_is_cleared_after_the_round_that_uses_it():
+    """🔴 MEASURED LIVE. _v2_finalising was set and never cleared, so EVERY
+    round after the communicate round also rendered communicate with PLAN
+    suppressed — and when react reconsidered and said NOT complete, it could no
+    longer choose a tool. Rounds 2 and 3 both came back
+    judge → summarise → communicate.
+
+    Same shape as _v2_proposed_complete in the same block, which carries the
+    same comment for the same reason."""
+    src = open("app/pipeline/react_loop.py").read()
+    i = src.index("ctx._v2_finalising = True")
+    j = src.index("ctx._v2_finalising = False")
+    assert j != i, "the flag is set but never cleared"
+    # Cleared where the facts are built, i.e. once per round, not at exit.
+    block = src[max(0, j - 700):j + 60]
+    assert "FIRES ONCE" in block
