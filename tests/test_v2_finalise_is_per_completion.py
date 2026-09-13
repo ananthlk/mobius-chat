@@ -96,11 +96,26 @@ def test_it_reads_a_reference_that_is_always_bound():
 def test_the_budget_guards_are_untouched():
     """The re-arm must not become an unbounded loop wearing a role name: the
     round and ceiling checks are what bound it."""
-    code = _code_only()
-    i = code.index("_earned")
-    window = code[i:i + 600]
-    assert "rn < max_it" in window
-    assert "react_hard_ceiling_s" in window
+    # ON THE PARSED CONDITION, not a character window. The first version
+    # sliced 600 chars from `_earned` and went red when a comment was added
+    # above the guards — a test measuring comment length, not behaviour. Third
+    # time this file has taught me that lesson today.
+    tree = ast.parse(SRC)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test_src = ast.dump(node.test)
+        # DISAMBIGUATED: the RE-ARM condition also mentions _v2_finalised and
+        # is_complete, and matching it first made this test fail on a correct
+        # fix. The finalise branch is the one that buys a round, so it is the
+        # one carrying a round bound.
+        if ("_v2_finalised" in test_src and "is_complete" in test_src
+                and "max_it" in test_src):
+            assert "react_hard_ceiling_s" in test_src, "the time bound is gone"
+            return
+    raise AssertionError(
+        "no finalise condition carries a round bound — the re-arm could now "
+        "loop: finalise, reopen, re-arm, finalise")
 
 
 def test_the_earned_guard_is_actually_IN_the_finalise_condition():
@@ -127,3 +142,46 @@ def test_the_earned_guard_is_actually_IN_the_finalise_condition():
                 "again")
             return
     raise AssertionError("could not find the finalise condition")
+
+
+def test_a_round_that_already_communicated_does_not_buy_another():
+    """🔴 MEASURED, cid 433c284e — the exact-tool posture paying twice:
+
+        +3.2s   round 1  roles=confirm,plan,COMMUNICATE   facts=6
+        +10.2s  finalise -> communicate round
+        +10.5s  round 2  roles=COMMUNICATE,validate        facts=4
+
+    The answer was written in round 1 and written again in round 2, which added
+    nothing and cost 16 of the turn's 26 seconds.
+
+    Ananth: "why 2 rounds if the first round had the extended answer then why
+    go through the second round".
+
+    The finalise round exists for ONE case — react said complete on a round
+    whose roles were judge/plan/summarise, communicate in the NOT-SENT list. In
+    the exact-tool posture that premise is false.
+    """
+    tree = ast.parse(SRC)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test_src = ast.dump(node.test)
+        if "_v2_finalised" in test_src and "is_complete" in test_src \
+                and "react_hard_ceiling_s" in test_src:
+            assert "_already_communicated" in test_src, (
+                "finalise can still buy a communicate round for a round that "
+                "already communicated — the answer gets written twice")
+            return
+    raise AssertionError("could not find the finalise condition")
+
+
+def test_the_signal_comes_from_what_actually_rendered():
+    """Not from the posture, not from the round number: from
+    frame_sections(), the same pure call the [v2.roles] trace line logs from,
+    so the decision cannot disagree with what the trace shows."""
+    code = _code_only()
+    i = code.index("_already_communicated =")
+    assert "_v2_round_communicates" in code[i:i + 200]
+    j = code.index("ctx._v2_round_communicates =")
+    assert "frame_sections" in code[j:j + 300], (
+        "the flag must be derived from the rendered roles, not inferred")

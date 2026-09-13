@@ -7097,10 +7097,36 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # did not parse, which is when this decision matters most.
         _resp_now = getattr(ctx, "_v2_last_contract", None)
         _earned = _has_fresh or not (getattr(_resp_now, "gaps", None) or ())
+
+        # 🔴 AND DO NOT BUY A COMMUNICATE ROUND TO REDO ONE WE JUST HAD.
+        #
+        # Ananth, reading the trace: "why 2 rounds if the first round had the
+        # extended answer then why go through the second round".
+        #
+        # Measured, cid 433c284e:
+        #     +3.2s   round 1  roles=confirm,plan,COMMUNICATE   facts=6
+        #     +10.2s  finalise -> communicate round
+        #     +10.5s  round 2  roles=COMMUNICATE,validate        facts=4
+        # The answer was written in round 1 and written again in round 2, which
+        # added nothing and cost 16 of 26 seconds.
+        #
+        # The finalise round exists for ONE case: react said complete on a
+        # round whose roles were judge/plan/summarise, with communicate in the
+        # NOT-SENT list — so the answer the user reads was written by a round
+        # asked to summarise evidence rather than to answer the person. In the
+        # exact-tool posture that premise is false: communicate already
+        # rendered, carrying the extended answer space with it.
+        #
+        # So the condition is not "has this turn finalised" but "was this round
+        # already the one that communicates". _v2_round_communicates is set
+        # from what frame_sections ACTUALLY rendered for this round, so it
+        # cannot disagree with the trace.
+        _already_communicated = bool(getattr(ctx, "_v2_round_communicates", False))
         if (is_complete
                 and getattr(ctx, "orchestrator_version", "v1") == "v2"
                 and not getattr(ctx, "_v2_finalised", False)
                 and _earned
+                and not _already_communicated
                 and rn < max_it
                 and (getattr(ctx, "react_hard_ceiling_s", 0) or 0) > _pp_elapsed_s):
             ctx._v2_finalised = True
