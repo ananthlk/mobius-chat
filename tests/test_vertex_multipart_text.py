@@ -93,3 +93,30 @@ def test_malformed_response_object_falls_through_to_none():
     from app.services.llm_provider import extract_vertex_text
     assert extract_vertex_text(object()) is None
     assert extract_vertex_text(None) is None
+
+
+def test_a_raising_dot_text_property_does_not_break_extraction():
+    # Tool Manifest, 2026-09-12: the streaming path (_vertex_stream_producer,
+    # llm_provider.py:409) used `getattr(chunk, "text", None)`, which only
+    # suppresses AttributeError -- .text is a property, and a chunk with
+    # multiple parts raises ValueError THROUGH getattr unchanged, landing in
+    # the bare `except Exception` two frames up and discarding `so_far`.
+    # Verified live: `getattr(FakeChunk(), "text", None)` propagates a
+    # ValueError raised inside a `.text` property instead of returning None.
+    #
+    # extract_vertex_text never touches chunk.text -- it reads
+    # candidates[0].content.parts directly -- so a chunk whose .text
+    # property is landmined the same way must still extract cleanly via
+    # this path. This is what closes the streaming site, not just the
+    # non-streaming one at :644.
+    from app.services.llm_provider import extract_vertex_text
+
+    class _RaisingTextChunk:
+        candidates = [_FakeCandidate([_FakePart("streamed chunk text")])]
+
+        @property
+        def text(self):
+            raise ValueError("Multiple content parts are not supported.")
+
+    chunk = _RaisingTextChunk()
+    assert extract_vertex_text(chunk) == "streamed chunk text"

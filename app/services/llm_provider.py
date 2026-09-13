@@ -406,7 +406,17 @@ def _vertex_stream_producer(
         response = model.generate_content(prompt, **kwargs)
         so_far = ""
         for chunk in response:
-            text = getattr(chunk, "text", None) if chunk else None
+            # Tool Manifest, 2026-09-12: getattr(chunk, "text", None) only
+            # suppresses AttributeError. .text is a property, so a chunk
+            # with multiple parts raises ValueError THROUGH getattr
+            # unchanged -- worse than the :644 case this mirrors, because
+            # it lands in the bare `except Exception` below, discards
+            # `so_far`, and reaches the caller as an untyped ("error", str)
+            # tuple instead of a typed VertexBlockedError. extract_vertex_text
+            # already reads parts directly and never raises, so reuse it here
+            # -- a chunk has the same candidates[0].content.parts shape as a
+            # full response.
+            text = extract_vertex_text(chunk) if chunk else None
             if not text:
                 continue
             # Vertex/Gemini streaming may return cumulative text; send only the new delta
