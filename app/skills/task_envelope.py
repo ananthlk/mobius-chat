@@ -1,7 +1,7 @@
 """Typed envelope for task-manager skill responses.
 
 The task CRUD builtins (``list_tasks``, ``create_task``, ``resolve_task``
-in ``app/skills/builtin/tasks.py``) all return one of these on success.
+in ``app/skills/task_manager/skills.py``) all return one of these on success.
 
 ``SkillEnvelope`` itself is a generic shape — text + sources + signal —
 that the planner LLM consumes. The frontend's ``task_list`` UI block

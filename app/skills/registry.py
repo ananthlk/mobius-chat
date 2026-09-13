@@ -472,11 +472,14 @@ def _load_builtins() -> None:
     from app.skills.builtin import payor  # noqa: F401
     from app.skills.builtin import product_feedback  # noqa: F401
     from app.skills.builtin import product_help_search  # noqa: F401
-    from app.skills.builtin import tasks  # noqa: F401
     from app.skills.builtin import transform_previous  # noqa: F401
     from app.skills.builtin import vibe  # noqa: F401
     from app.skills.builtin import web  # noqa: F401
     from app.skills.builtin import web_search  # noqa: F401
+    # Task-manager tools live in their own package rather than builtin/: they are
+    # the only skills backed by a separate FastAPI service, and the HTTP seam is
+    # split out in task_manager/client.py. Ananth 2026-09-12.
+    from app.skills import task_manager  # noqa: F401
 
 
 _load_builtins()

@@ -1,22 +1,15 @@
-"""Builtin skills: ``list_tasks`` / ``create_task`` / ``resolve_task``.
+"""Task-manager skills: the six registered tool handlers.
 
-CRUD bridge between chat and the standalone task-manager skill (the
-FastAPI service at ``mobius-skills/task-manager``). Before this module,
-chat dispatched these three tool names through a hand-rolled ``if tool
-in (...)`` branch in ``app/pipeline/react_loop.py`` that lived outside
-the SkillSpec registry — meaning the planner manifest, the per-user
-tool policy, and the analytics view all had to be hand-maintained in
-parallel. Migrating to the registry collapses those to one spec.
+Split from the HTTP transport (``client.py``) 2026-09-12. These own chat-side
+behaviour — argument parsing, the ``TaskEnvelope`` dual-channel response, the
+stub message. The transport owns reaching the service.
 
-The actual structured response (rows for the ``task_list`` UI block)
-flows via ``app/skills/task_envelope.py::TaskEnvelope``. See that
-module for the dual-channel rationale (``pipeline_ctx`` for the legacy
-UI block + ``SkillEnvelope.extra`` for non-pipeline consumers).
-
-Stub behavior — when ``CHAT_SKILLS_TASK_MANAGER_URL`` is unset, points
-at ``.invalid``, or contains ``not-yet-deployed`` — is preserved here
-so the user-facing message is identical to the legacy branch in dev
-environments where the task-manager isn't running.
+OWNERSHIP, settled 2026-09-12 with the Tool Manifest seat: these six tools are
+CHAT's, not task-manager's. The tool-selection catalogue had attributed them to
+``mobius-skills/task-manager`` because that repo has storage functions sharing
+the names (``tasks_pg.py``). Those are storage functions; the TOOLS are defined
+and registered here, through ``app.skills.registry``. backing_service is
+``mobius-skills/task-manager`` over HTTP; owner is chat.
 """
 from __future__ import annotations
 
@@ -28,96 +21,20 @@ import urllib.request
 from typing import Any
 
 from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, register
+from app.skills.task_manager.client import (
+    _attach_to_ctx,
+    _emit,
+    _http_get,
+    _http_request,
+    _is_stub_url,
+    _stub_envelope,
+    _task_base,
+)
 from app.skills.task_envelope import TaskEnvelope, TaskRow
 
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT_S = 10.0
-
-
-# ── HTTP helpers (stdlib-only, mirrors app/sub_skills/task_management.py) ──
-
-
-def _task_base() -> str:
-    """Resolve task-manager base URL, lowercased + trimmed of trailing slash."""
-    return (
-        os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
-    ).rstrip("/")
-
-
-def _is_stub_url(url: str) -> bool:
-    """True when the configured URL is a placeholder, not a real endpoint.
-
-    Matches the legacy ``react_loop`` checks so dev environments that
-    deliberately set the URL to a sentinel get the same friendly message.
-    """
-    if not url:
-        return True
-    return ".invalid" in url or "not-yet-deployed" in url
-
-
-def _http_request(method: str, url: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
-        raw = resp.read()
-        return json.loads(raw) if raw else {}
-
-
-def _http_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
-    """GET with stdlib urlencode — keeps the dependency surface tiny."""
-    from urllib.parse import urlencode
-    qs = urlencode({k: v for k, v in params.items() if v is not None and v != ""})
-    url = f"{_task_base()}{path}"
-    if qs:
-        url = f"{url}?{qs}"
-    return _http_request("GET", url)
-
-
-def _stub_envelope(operation: str) -> SkillEnvelope:
-    """Friendly fallback used when the task-manager URL points at a
-    placeholder. Same wording the legacy branch returned so dev users
-    don't see a regression."""
-    messages = {
-        "list": "The task manager is coming soon. Tasks will appear here once the service is live.",
-        "create": (
-            "Task noted! The task manager is coming soon — "
-            "your manager will be notified through the usual channel in the meantime."
-        ),
-        "resolve": "The task manager is coming soon. Task resolution will be available once the service is live.",
-    }
-    return SkillEnvelope(
-        text=messages.get(operation, "The task manager is coming soon."),
-        signal="corpus_only",
-    )
-
-
-def _emit(call: SkillCall, msg: str) -> None:
-    if call.emitter:
-        try:
-            call.emitter(msg)
-        except Exception:  # pragma: no cover — emitter is best-effort
-            pass
-
-
-def _attach_to_ctx(call: SkillCall, envelope: TaskEnvelope) -> None:
-    """Write the structured payload to ``pipeline_ctx.react_task_list_data``.
-
-    ``app/stages/integrate.py`` reads this attribute and injects a
-    ``task_list`` UI block — the same path the legacy inline branch
-    used. Setting the attribute is a no-op when the dispatcher didn't
-    pass a pipeline context (e.g. an MCP caller invoking the skill
-    standalone)."""
-    ctx = call.pipeline_ctx
-    if ctx is None:
-        return
-    try:
-        ctx.react_task_list_data = envelope.to_react_payload()
-    except Exception as e:  # pragma: no cover — context is loose-typed
-        logger.debug("attach react_task_list_data failed (non-fatal): %s", e)
-
-
 # ── Handlers ──────────────────────────────────────────────────────────
 
 

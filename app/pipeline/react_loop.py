@@ -2968,7 +2968,7 @@ def _execute_tool(
 
     # ── Task manager tools ────────────────────────────────────────────────────
     # Routed through answer_tool → SkillSpec registry
-    # (app/skills/builtin/tasks.py). The skill handler writes the
+    # (app/skills/task_manager/skills.py). The skill handler writes the
     # structured task_list payload to ctx.react_task_list_data; the
     # text answer + signal flow back via the legacy 4-tuple.
     if tool in ("list_tasks", "create_task", "resolve_task"):
@@ -4132,7 +4132,11 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
             promise_s=getattr(_pp, "latency_s", None) if _pp else None,
             rounds_left=max(0, (getattr(ctx, "react_max_rounds", 0) or 0)
                             - (getattr(ctx, "react_rounds_used", 0) or 0)),
-            round_cost_s=None)
+            round_cost_s=None,
+            # Set once, at :6758, when the communicate round fired. NOT
+            # _v2_finalising, which is cleared again at :5579 -- reading that
+            # here would be false by the time the turn finalises.
+            finalised_via_communicate=getattr(ctx, "_v2_finalised", False))
 
         out = _v2int.run(question=(ctx.message or ""), answer=final_answer or "",
                          facts=facts, open_gaps=gaps, all_parts=_all_gaps,
