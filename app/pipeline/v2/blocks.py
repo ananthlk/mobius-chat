@@ -87,6 +87,17 @@ class Facts:
     # Evidence already retrieved this round, before react speaks.
     preloaded: tuple[tuple[str, bool, str], ...] = ()   # (tool, ok, summary)
     suggest: tuple[str, ...] = ()             # tools react may request
+    # 🔴 TOOL MANIFEST SAID RETRIEVAL IS NOT NEEDED, AND A CALLABLE TOOL RAN.
+    #
+    # Offer.rag_needed=False means the ranked tools cover every code the
+    # question raised. Since Tool Manifest's 1149d63 only a tool that can
+    # actually be CALLED may set it -- so this is a claim backed by a round
+    # that ran, not by coverage nobody could invoke.
+    #
+    # Ananth, 2026-09-13: "when tool_manifest finds the perfect tool and skips
+    # rag, then we are likely with the answer". This is that signal, and it is
+    # read from their field rather than inferred from how the round went.
+    exact_tool: bool = False
     # react's own running judgement, carried forward.
     useful: tuple[str, ...] = ()              # what it kept and why it mattered
     discarded: tuple[str, ...] = ()           # what it saw and rejected
@@ -209,13 +220,54 @@ REGISTRY: tuple[Block, ...] = (
                            "failure.",
           owner="governor"),
 
+    Block("role_confirm", Slot.ROLE, rank=1,
+          # CONFIRM IS NOT JUDGE. Judge asks "does this evidence answer the
+          # question, and what is still missing" -- the right question when
+          # rag swept a corpus and the answer has to be assembled from
+          # passages. This is a different situation: a tool that DECLARED it
+          # covers exactly this question was called and returned. The work is
+          # not assembling an answer from fragments, it is checking that the
+          # authoritative answer is in fact the one asked for, and then saying
+          # it.
+          #
+          # Ananth, 2026-09-13: "we should suggest confirm >> communicate >>
+          # plan.. emphasising more on communicate so that we can just get
+          # done with one plan and with communicate means extended answer
+          # space exists".
+          #
+          # Measured, the cost of not having this: payor_fact answers the
+          # Sunshine timely-filing question in 360ms from the certified fact
+          # store, and the same turn took three rounds and 31.5s because
+          # nothing told react the answer was already in front of it.
+          #
+          # It REPLACES judge on this path (judge's gate excludes it), so the
+          # round is confirm + communicate + plan-if-anything-is-left, which
+          # is MAX_ROLES exactly.
+          when=lambda f: _drafting(f) and f.exact_tool and bool(f.preloaded)
+                         and not f.finalising,
+          render=lambda f: "[YOUR ROLE — CONFIRM] The evidence below came from "
+                           "a tool that declares it covers exactly this "
+                           "question, and it is authoritative for it. Your job "
+                           "is NOT to search further. Check one thing: does it "
+                           "answer what was actually asked? If it does, say so "
+                           "and write the answer this round — do not spend a "
+                           "round re-deciding. If it answers a NEARBY question "
+                           "rather than this one, say which part is still "
+                           "open; that is the only reason to continue.",
+          owner="governor"),
+
     Block("role_judge", Slot.ROLE, rank=1,
           # Judging is what the earlier rounds did. The finalising round has
           # already decided the evidence is enough — asking it to judge again
           # invites it to re-open a question it just closed, which is exactly
           # what happened live: a communicate round that also judged came back
           # complete=false with zero facts.
-          when=lambda f: _drafting(f) and bool(f.preloaded) and not f.finalising,
+          # NOT WHEN CONFIRM FIRES. Both would render (both key off
+          # preloaded) and react would be told to judge-and-search AND to
+          # confirm-and-deliver in the same round -- the two-jobs-one-round
+          # contradiction this stack exists to prevent.
+          when=lambda f: _drafting(f) and bool(f.preloaded) and not f.finalising
+                         and not f.exact_tool,
           render=lambda f: "[YOUR ROLE — JUDGE] Evidence has already been "
                            "retrieved for you below. Read it and decide: does "
                            "it answer the question? Name every part it does "
@@ -570,6 +622,13 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
     except Exception:
         pass
 
+    # exact_tool: Tool Manifest said retrieval is not needed AND something
+    # actually came back. BOTH halves matter -- a suppression whose covering
+    # tool then returned nothing is the worst case, not the best one, and
+    # telling react to confirm an answer it does not have would be the
+    # could-not-check-as-checked error in the role stack.
+    _exact = bool(getattr(ctx, "_v2_rag_suppressed", False)) and any(
+        (r or {}).get("ok") and (r or {}).get("payload") for r in (preloaded or ()))
     return Facts(
         question=(getattr(ctx, "message", None) or "").strip(),
         user_name=str(prof.get("display_name") or "") if isinstance(prof, dict) else "",
@@ -584,6 +643,7 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         preloaded=tuple((p.get("tool"), bool(p.get("ok")), str(p.get("summary") or ""))
                         for p in (preloaded or [])),
         suggest=tuple(suggest),
+        exact_tool=_exact,
         # Stored facts first, then this turn's own -- the stored ones are
         # already judged and cost a fraction of the passages they replace.
         useful=tuple((stored_useful + useful)[-5:]),

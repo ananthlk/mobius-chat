@@ -384,7 +384,11 @@ def test_the_finalising_flag_is_cleared_after_the_round_that_uses_it():
     # AND the capture for the prompt is taken while the flag is still true.
     # system_suffix() runs ~390 lines below the clear, so a prompt gate
     # reading _v2_finalising directly fires never.
-    capture_at = src.index("ctx._v2_round_communicates = bool(")
+    # Anchored on the ASSIGNMENT TARGET, not on the expression that used
+    # to be on the right of it: this test went red when the capture
+    # changed from bool(_v2_finalising) to any(role_communicate in ...)
+    # while the ordering property it exists for was untouched.
+    capture_at = src.index("ctx._v2_round_communicates =")
     suffix_at = src.index("_v2pr.system_suffix(ctx)")
     assert capture_at < clear_at < suffix_at, (
         "the communicate capture must be taken before the flag is cleared "

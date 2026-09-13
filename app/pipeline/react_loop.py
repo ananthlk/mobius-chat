@@ -4896,6 +4896,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     thread_id=getattr(ctx, "thread_id", None), arm="v2",
                 )
                 _offer_keys = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
+                # THE SIGNAL FOR THE EXACT-TOOL POSTURE, read from Tool
+                # Manifest's own field rather than inferred from how the round
+                # went. rag_needed=False means the ranked tools cover every
+                # code the question raised -- and since their 1149d63, only a
+                # tool that can actually be CALLED may set it.
+                ctx._v2_rag_suppressed = not bool(getattr(_off, "rag_needed", True))
+                ctx._v2_rag_reason = str(getattr(_off, "rag_reason", "") or "")[:200]
             except Exception as _tr_e:
                 # toolreg is not in the image yet. rag alone is the floor and
                 # is where the value is -- NOT a silent skip, because a preload
@@ -5612,8 +5619,25 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         # answerable by reading nearby code. Set EVERY round
                         # from the current value, so it is True on the
                         # communicate round and False on all the others.
-                        ctx._v2_round_communicates = bool(
-                            getattr(ctx, "_v2_finalising", False))
+                        # READ FROM WHAT ACTUALLY RENDERS, NOT FROM WHY.
+                        #
+                        # This used to be `bool(ctx._v2_finalising)` -- the
+                        # finalising round is ONE way communicate renders, and
+                        # taking it as the definition made the extended answer
+                        # space conditional on the REASON rather than on the
+                        # role. Ananth, 2026-09-13: "with communicate means
+                        # extended answer space exists". So: communicate
+                        # rendering IS the condition, however the round got
+                        # there -- including the exact_tool posture, where
+                        # communicate fires on round 1 and there is no
+                        # finalising round at all.
+                        #
+                        # frame_sections() is a pure function of the facts and
+                        # is the same call :5760 logs from, so this cannot
+                        # disagree with the trace.
+                        ctx._v2_round_communicates = any(
+                            _s == "role_communicate"
+                            for _s in _v2bl.frame_sections(_v2_facts)[1])
                         ctx._v2_finalising = False
 
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(
