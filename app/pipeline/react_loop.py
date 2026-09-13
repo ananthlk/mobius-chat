@@ -7121,6 +7121,95 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if thought:
             emit(f"  → Round {rn}: {thought}")
 
+        # 🔴 VERIFICATION HANGS OFF react's COMPLETION, NOT OFF finalise.
+        #
+        # It was inside the finalise branch, so it ran only on turns that BuY a
+        # communicate round. Measured: neither question verified anything.
+        # cid 3ee0fcdd communicated on round 1 and stopped — no finalise, no
+        # verification. cid 4033e5cf showed a verify_claims call in the trace
+        # and it was REACT calling it as a tool, not this code; my own
+        # [v2.verify] line never appeared, on either turn, because the block
+        # never executed.
+        #
+        # FOURTH TIME TODAY, and I predicted this one out loud after the third:
+        # a decision keyed on HOW THE TURN ENDS rather than on WHAT HAPPENED.
+        # finalise, the integrator's skip, the executor's overrule — and now
+        # the quality check itself, which is the one that most obviously
+        # belongs to "react says the answer is done".
+        #
+        # ONCE PER TURN (_v2_verified_once), because react can propose complete
+        # on several rounds and the facts it is checking are cumulative; paying
+        # 550ms per proposal would be a tax on reconsidering.
+        if (is_complete
+                and getattr(ctx, "orchestrator_version", "v1") == "v2"
+                and not getattr(ctx, "_v2_verified_once", False)):
+            ctx._v2_verified_once = True
+            # ── DETERMINISTIC QUALITY CONTROL, AT THE ONE MOMENT IT MATTERS ──
+            #
+            # Ananth: "if the critique is really found anything then we go back
+            # to react, else we move on.. this is a quality control, and we add
+            # good emits for it".
+            #
+            # react has proposed complete. Before the answer is written for the
+            # person, every fact is checked against the page it cites — by Tool
+            # Manifest's verify_claims, DIRECTED (someone decided to call it),
+            # never speculative.
+            try:
+                from app.pipeline.v2 import trace as _v2vtr
+                from app.pipeline.v2 import verify as _v2v
+
+                _vr = _v2v.verify(
+                    tuple(getattr(getattr(ctx, "_v2_last_contract", None),
+                                  "facts", ()) or ()),
+                    lambda _t, _i: _preload_runner_toolreg(_t, _i, ctx, emitter)
+                    if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
+                    not in ("0", "false", "no")
+                    else _preload_runner(_t, _i, ctx, emitter))
+                ctx._v2_verify = _vr
+                # THE EMIT SAYS WHICH OF THE THREE HAPPENED, because "we could
+                # not check" must never read as "we checked and it is fine".
+                if _vr.skipped:
+                    _head = f"⊘ verification NOT RUN — {_vr.skipped[:90]}"
+                elif _vr.findings:
+                    _head = (f"⚠ verification: {len(_vr.findings)} claim(s) the "
+                             f"cited page does not support — going back to react")
+                else:
+                    _head = (f"✓ verification: {_vr.supported}/{_vr.checked} "
+                             f"claim(s) confirmed at the cited page"
+                             + (f", {_vr.unverifiable} unverifiable"
+                                if _vr.unverifiable else ""))
+                _det = [_v2vtr.kv("from", "verify_claims (Tool Manifest) — "
+                                          "deterministic, not an LLM opinion"),
+                        _v2vtr.kv("bar", f"{_vr.bar} — ours, passed explicitly; "
+                                         "we DELETE on not_supported so a low "
+                                         "bar loses fewer true claims"),
+                        _v2vtr.kv("took", f"{_vr.duration_ms}ms")]
+                for _f in _vr.findings[:4]:
+                    _det.append(_v2vtr.item(str(_f)[:200], "✗"))
+                for _pb in _vr.problems:
+                    _det.append(_v2vtr.kv("not checked", _pb))
+                _v2vtr.emit_step(emitter, (ctx.correlation_id or ""),
+                                 _v2vtr.Step("verify", _head, tuple(_det),
+                                             {"findings": len(_vr.findings),
+                                              "checked": _vr.checked,
+                                              "supported": _vr.supported,
+                                              "unverifiable": _vr.unverifiable,
+                                              "skipped": _vr.skipped,
+                                              "bar": _vr.bar},
+                                             "verify_claims", "verify", "done"),
+                                 thread_id=getattr(ctx, "thread_id", None))
+                logger.info("[v2.verify] cid=%s checked=%d supported=%d "
+                            "unverifiable=%d findings=%d ms=%d skipped=%s",
+                            (ctx.correlation_id or "")[:8], _vr.checked,
+                            _vr.supported, _vr.unverifiable, len(_vr.findings),
+                            _vr.duration_ms, _vr.skipped[:60] or "-")
+                if _vr.reopen:
+                    ctx._v2_verified_findings = tuple(
+                        _f.repair() for _f in _vr.findings)
+            except Exception as _vfe:      # pragma: no cover - never fail a turn
+                logger.warning("[v2.verify] cid=%s failed: %s",
+                               (getattr(ctx, "correlation_id", "") or "")[:8], _vfe)
+
         # ── ONE COMMUNICATE ROUND BEFORE WE EXIT ────────────────────────
         # Ananth: "if the answer is complete then the next round should have
         # communicate with the extended answer.. i think this is missing".
@@ -7241,72 +7330,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # So this stays a CHANNEL. When the tool exists, whatever calls it
             # writes findings here and the finalising round becomes
             # incorporate → communicate. Empty => communicate → validate.
-            # ── DETERMINISTIC QUALITY CONTROL, AT THE ONE MOMENT IT MATTERS ──
-            #
-            # Ananth: "if the critique is really found anything then we go back
-            # to react, else we move on.. this is a quality control, and we add
-            # good emits for it".
-            #
-            # react has proposed complete. Before the answer is written for the
-            # person, every fact is checked against the page it cites — by Tool
-            # Manifest's verify_claims, DIRECTED (someone decided to call it),
-            # never speculative.
-            try:
-                from app.pipeline.v2 import trace as _v2vtr
-                from app.pipeline.v2 import verify as _v2v
-
-                _vr = _v2v.verify(
-                    tuple(getattr(getattr(ctx, "_v2_last_contract", None),
-                                  "facts", ()) or ()),
-                    lambda _t, _i: _preload_runner_toolreg(_t, _i, ctx, emitter)
-                    if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
-                    not in ("0", "false", "no")
-                    else _preload_runner(_t, _i, ctx, emitter))
-                ctx._v2_verify = _vr
-                # THE EMIT SAYS WHICH OF THE THREE HAPPENED, because "we could
-                # not check" must never read as "we checked and it is fine".
-                if _vr.skipped:
-                    _head = f"⊘ verification NOT RUN — {_vr.skipped[:90]}"
-                elif _vr.findings:
-                    _head = (f"⚠ verification: {len(_vr.findings)} claim(s) the "
-                             f"cited page does not support — going back to react")
-                else:
-                    _head = (f"✓ verification: {_vr.supported}/{_vr.checked} "
-                             f"claim(s) confirmed at the cited page"
-                             + (f", {_vr.unverifiable} unverifiable"
-                                if _vr.unverifiable else ""))
-                _det = [_v2vtr.kv("from", "verify_claims (Tool Manifest) — "
-                                          "deterministic, not an LLM opinion"),
-                        _v2vtr.kv("bar", f"{_vr.bar} — ours, passed explicitly; "
-                                         "we DELETE on not_supported so a low "
-                                         "bar loses fewer true claims"),
-                        _v2vtr.kv("took", f"{_vr.duration_ms}ms")]
-                for _f in _vr.findings[:4]:
-                    _det.append(_v2vtr.item(str(_f)[:200], "✗"))
-                for _pb in _vr.problems:
-                    _det.append(_v2vtr.kv("not checked", _pb))
-                _v2vtr.emit_step(emitter, (ctx.correlation_id or ""),
-                                 _v2vtr.Step("verify", _head, tuple(_det),
-                                             {"findings": len(_vr.findings),
-                                              "checked": _vr.checked,
-                                              "supported": _vr.supported,
-                                              "unverifiable": _vr.unverifiable,
-                                              "skipped": _vr.skipped,
-                                              "bar": _vr.bar},
-                                             "verify_claims", "verify", "done"),
-                                 thread_id=getattr(ctx, "thread_id", None))
-                logger.info("[v2.verify] cid=%s checked=%d supported=%d "
-                            "unverifiable=%d findings=%d ms=%d skipped=%s",
-                            (ctx.correlation_id or "")[:8], _vr.checked,
-                            _vr.supported, _vr.unverifiable, len(_vr.findings),
-                            _vr.duration_ms, _vr.skipped[:60] or "-")
-                if _vr.reopen:
-                    ctx._v2_verified_findings = tuple(
-                        _f.repair() for _f in _vr.findings)
-            except Exception as _vfe:      # pragma: no cover - never fail a turn
-                logger.warning("[v2.verify] cid=%s failed: %s",
-                               (getattr(ctx, "correlation_id", "") or "")[:8], _vfe)
-
             ctx._v2_critic_findings = tuple(
                 getattr(ctx, "_v2_verified_findings", ()) or ())
             if ctx._v2_critic_findings:

@@ -161,3 +161,53 @@ def test_the_refusal_is_stated_not_silent():
     finding for the trace, never an implied pass."""
     r = V.verify([_F(document_id="")], lambda t, i: {})
     assert r.skipped and not r.findings and r.reopen is False
+
+
+def test_verification_hangs_off_COMPLETION_not_off_finalise():
+    """🔴 FOURTH INSTANCE TODAY of keying on how the turn ENDS.
+
+    The verify block lived inside the finalise branch, so it ran only on turns
+    that BUY a communicate round. Measured: neither live question verified
+    anything. cid 3ee0fcdd communicated on round 1 and stopped — no finalise,
+    no verification. cid 4033e5cf showed a verify_claims call that was REACT
+    calling it as a tool, not this code; the [v2.verify] line never appeared on
+    either turn because the block never executed.
+
+    Asserted on the parsed source: the guard that admits verification must test
+    react's completion, and must NOT be nested inside the finalise branch.
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    tree = ast.parse(src)
+
+    found = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if "_v2_verified_once" not in ast.dump(node.test):
+            continue
+        found = node
+        break
+    assert found is not None, "verification is not gated on a once-per-turn flag"
+
+    test_src = ast.dump(found.test)
+    assert "is_complete" in test_src, (
+        "verification does not key on react proposing complete")
+    assert "orchestrator_version" in test_src, "not scoped to the v2 arm"
+    assert "_v2_finalised" not in test_src and "finalising" not in test_src, (
+        "verification is keyed on the finalise path again — a turn that "
+        "communicates and stops would never be checked")
+
+    # ...and the call itself must be INSIDE that guard, not merely near it.
+    body = "\n".join(ast.dump(st) for st in found.body)
+    assert "verify" in body, "the guard admits nothing"
+
+
+def test_it_runs_once_per_turn_not_once_per_proposal():
+    """react can propose complete on several rounds and the facts are
+    cumulative; paying the round trip per proposal taxes reconsidering."""
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    i = src.index("_v2_verified_once = True")
+    assert "not getattr(ctx, \"_v2_verified_once\", False)" in src[:i]
