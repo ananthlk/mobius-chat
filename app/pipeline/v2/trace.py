@@ -25,6 +25,8 @@ The marks match what react and rag already use, so one stream stays readable:
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 
 
@@ -45,6 +47,9 @@ from dataclasses import dataclass, field
 # the thing was from tools manifest". A trace that shows a decision without its
 # author cannot be argued with — you cannot tell our judgement from a peer's.
 _LABEL_W = 12
+
+
+logger = logging.getLogger(__name__)
 
 
 def kv(label: str, value) -> str:
@@ -116,11 +121,30 @@ def emit_step(emitter, correlation_id: str, step: Step, *, round=None,
                                     "key": step.key or step.stage,
                                     "state": step.state},
                               round=round, thread_id=thread_id))
-    except Exception:
+    except Exception as e:
+        # 🔴 THE FALLBACK MUST NOT BE SILENT.
+        #
+        # Measured on dev, cid 2a2556c3: every v2 step reached the user as a
+        # bare string on the legacy path ([thinking:legacy]) and NOT one
+        # v2_trace signal was published. The stages all ran. The structured
+        # emit raised, this except caught it, the headline still went out --
+        # so the trace looked present, the FE had nothing to expand, and the
+        # exception that explained it was discarded here.
+        #
+        # A degraded emit is a real outcome and is worth keeping; a degraded
+        # emit nobody can see the cause of is how a broken trace survives a
+        # green deploy. Log WHICH stage and WHY, once per step.
+        logger.warning(
+            "[v2.trace] structured emit FAILED stage=%s key=%s cid=%s -- fell "
+            "back to a bare-string headline, so this step carries no "
+            "expandable detail: %r",
+            step.stage, step.key or step.stage,
+            (correlation_id or "")[:8], e)
         try:
             emitter(step.headline)
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.warning("[v2.trace] even the text fallback failed "
+                           "stage=%s: %r", step.stage, e2)
 
 
 def memory_step(rc) -> Step:
