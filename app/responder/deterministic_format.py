@@ -44,6 +44,7 @@ content can no longer render differently depending on which path served the
 turn."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, replace
 from typing import Any
@@ -61,6 +62,8 @@ from app.responder.envelope_classifier import (
     classify_envelope,
     log_verdict,
 )
+
+logger = logging.getLogger(__name__)
 
 _MONEY_RE = re.compile(r"\$[\d,]+(?:\.\d{1,2})?")
 _PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?%")
@@ -528,7 +531,26 @@ def deterministic_format(
     ships today and what the existing tests pin; the multi-section path is
     the fix for long answers that carry more than one shape.
     """
-    text = (react_draft or "").strip()
+    # GUARDED ON TYPE, NOT TRUTHINESS. `(x or "").strip()` reads as a null
+    # check and is not one: it passes None and "" correctly, passes an EMPTY
+    # dict silently, and raises on a populated one -- so the bug hides on
+    # exactly the payloads that are empty and stays live on the ones that
+    # matter. Governor hit this exact shape tonight at react_loop:6637, where
+    # `tool_results[-1].get("result") or ""` handed a parsed rag contract to
+    # a regex and failed every v2 turn on dev.
+    #
+    # react_draft is prose by contract, but a raw structured blob has landed
+    # in it before -- _looks_like_raw_structured_blob in react_loop exists
+    # because of one. A formatter is not the place to discover that.
+    if not isinstance(react_draft, str):
+        if react_draft is not None:
+            logger.warning(
+                "[deterministic_format] react_draft was %s, not str — "
+                "rendering nothing rather than guessing",
+                type(react_draft).__name__)
+        return {"mode": "FACTUAL", "direct_answer": "", "sections": []}
+
+    text = react_draft.strip()
     if not text:
         return {"mode": "FACTUAL", "direct_answer": "", "sections": []}
 

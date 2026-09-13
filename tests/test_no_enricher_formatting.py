@@ -181,3 +181,35 @@ class TestEveryDecisionIsExplainable:
             "- " + " ".join(["word"] * 40) for _ in range(3))
         card = deterministic_format(long_unlabelled)
         assert card["presentation"]["rule_id"] == "abstain.prose_list"
+
+
+class TestTypeGuardsAtTheEntryPoints:
+    """Guarded on TYPE, not truthiness.
+
+    `(x or "").strip()` reads as a null check and is not one: it handles None
+    and "" correctly, passes an EMPTY dict silently, and raises on a populated
+    one. So the bug hides on exactly the payloads that are empty and stays
+    live on the ones that matter.
+
+    Governor hit this exact shape on 2026-09-13 (react_loop:6637 —
+    `tool_results[-1].get("result") or ""` handed a parsed rag contract to a
+    regex, and every v2 turn on dev failed). The formatter had the same hole.
+    """
+
+    def test_a_non_string_draft_renders_nothing_rather_than_raising(self):
+        for bad in ({"matches": [1, 2]}, {}, ["a", "b"], [], 7, 0.0, object()):
+            card = deterministic_format(bad)
+            assert card["sections"] == []
+            assert card["direct_answer"] == ""
+
+    def test_the_populated_and_empty_cases_behave_the_SAME(self):
+        """The asymmetry is the defect. An empty dict passing while a full one
+        raises is what hides this class of bug until it reaches production."""
+        assert deterministic_format({}) == deterministic_format({"matches": [1, 2]})
+
+    def test_none_and_empty_string_are_unchanged(self):
+        assert deterministic_format(None)["sections"] == []
+        assert deterministic_format("")["direct_answer"] == ""
+
+    def test_a_real_draft_is_untouched_by_the_guard(self):
+        assert deterministic_format(MOLINA_FOLLOWUP)["sections"][0]["format"] == "table"
