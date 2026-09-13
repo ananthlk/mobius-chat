@@ -164,7 +164,8 @@ def render(c: ST.Ctx, posture: Posture,
            directive=None, *, preloaded: list[dict] | None = None,
            suggest: tuple[str, ...] = (),
            facts=None,
-           next_round_feasible: bool = False) -> tuple[str | None, ST.Selection]:
+           next_round_feasible: bool = False,
+           numbered_passages: int = 0) -> tuple[str | None, ST.Selection]:
     # NOTE: `preloaded` shadows nothing -- it is the executed-tool list, and
     # its truthiness is what makes this a judgement round.
     """The governor's sections, in execution order, plus the ack request."""
@@ -287,7 +288,8 @@ def render(c: ST.Ctx, posture: Posture,
     # authors of one response.
     parts.append("[YOUR RESPONSE — this object REPLACES the JSON shape "
                  "described earlier in this prompt]")
-    parts.append("  It is that same object with TWO ADDITIONAL KEYS. Keep "
+    _n_keys = "THREE ADDITIONAL KEYS" if numbered_passages else "TWO ADDITIONAL KEYS"
+    parts.append(f"  It is that same object with {_n_keys}. Keep "
                  "every field you were already returning; add these.")
     parts.append('  "facts": [{"fact": "<one thing you now know, in one '
                  'sentence>", "document": "<the document it came from>", '
@@ -300,6 +302,28 @@ def render(c: ST.Ctx, posture: Posture,
     parts.append("     What you looked at and rejected. Recorded so no later "
                  "round retrieves or re-reads it — this is the only way that "
                  "knowledge survives the turn.")
+    # 🔴 ASKED FOR ONLY WHEN THERE IS A LIST TO ADDRESS.
+    #
+    # The passages react reads are numbered [1]..[N] (preload._render_chunk).
+    # Asking for indices when nothing was numbered -- a round whose payload was
+    # prose, or a blind round -- tells the model to address a list it cannot
+    # see, and a model asked for indices WILL produce some. They would parse as
+    # valid ints and resolve against the wrong thing.
+    #
+    # This is the defect I caught in the original proposal for this feature,
+    # which assumed a numbered list already existed. It did not. So the ask is
+    # gated on the count, and the count comes from the render, not from intent.
+    if numbered_passages:
+        parts.append('  "kept": [<numbers of the passages you actually USED>]')
+        parts.append(f"     The passages above are numbered [1] to "
+                     f"[{numbered_passages}]. List ONLY the numbers you drew a "
+                     "fact from. Not every passage you read — the ones that "
+                     "earned a place in the answer.")
+        parts.append("     Just the numbers, e.g. [2, 5]. Do not write the "
+                     "document name here; it is already on the passage.")
+        parts.append("     This is how the next retrieval learns what was "
+                     "worth finding. An empty list is a real answer and means "
+                     "none of them helped.")
     parts.append("  Returning the earlier shape WITHOUT facts[] means this "
                  "turn learns nothing: the evidence dies with the round and "
                  "the next round starts blind.")

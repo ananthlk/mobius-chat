@@ -1463,6 +1463,25 @@ def _arms_dropped(res) -> int:
     return 0
 
 
+
+def _v2_kept_order(ctx) -> list:
+    """The passages react was shown this round, in the order they were numbered.
+
+    ONE function, because the number react echoes and the list we resolve it
+    against must come from the same place. preload's runner returns `rendered`
+    per tool (react_loop:1793); this flattens them in the order the frame
+    renders them, which is the order fair_share numbered them.
+
+    Empty when nothing was numbered -- a prose payload, or a blind round. The
+    caller must then not ask for indices at all: a model asked to address a
+    list it cannot see will still produce numbers.
+    """
+    out: list = []
+    for r in (getattr(ctx, "_v2_preloaded", None) or []):
+        if isinstance(r, dict):
+            out.extend(r.get("rendered") or [])
+    return out
+
 def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     """Bridge preload.execute() to Tool Manifest's executor."""
     from toolreg.execute import runner as _tr_runner
@@ -1778,6 +1797,19 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
             # model must judge the material rather than our notes about it.
             "prompt_summary": prompt_summary, "asked": _asked,
             "payload": _payload,
+            # 🔴 THE RENDER ORDER, WHICH IS THE ADDRESS SPACE.
+            #
+            # `sources` is everything the tool returned. `rendered` is the
+            # subset that survived fair_share AND the order they were numbered
+            # in, so react's "kept": [2, 5] means rendered[1] and rendered[4].
+            # Without this the ordinals resolve against a different list and
+            # every index silently names the wrong passage.
+            #
+            # Empty when nothing was numbered this round -- and the caller MUST
+            # treat that as "do not ask react for indices", not as "ask anyway
+            # and get nothing back". A model asked to address a list it cannot
+            # see will invent one.
+            "rendered": _fair_kept if _fair_text else [],
             "sources": res.get("sources") or []}
 
 
@@ -6049,6 +6081,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # bill attached.
                             preloaded=list(getattr(ctx, "_v2_preloaded", None) or []),
                             suggest=tuple(getattr(ctx, "_v2_suggest", None) or ()),
+                            # HOW MANY PASSAGES ARE ACTUALLY NUMBERED THIS
+                            # ROUND. Counted from the SAME `rendered` lists that
+                            # produced the ordinals, and stashed on ctx so the
+                            # resolver below addresses the identical order.
+                            # Deriving it twice from different places is how an
+                            # index comes to mean a different passage on the way
+                            # out than it did on the way in.
+                            numbered_passages=len(_v2_kept_order(ctx)),
                             # ONLY ASK WHEN WE COULD ACTUALLY GO AGAIN.
                             # Feasible is ours (rounds left, budget); worth it
                             # is theirs. Asking when we cannot afford it
@@ -6747,6 +6787,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         _id_by_name[_n2] = _i2
                 if _id_by_name:
                     _v2_resp = _v2c.with_document_ids(_v2_resp, _id_by_name)
+                # RESOLVE REACT'S ORDINALS, against the SAME list that was
+                # numbered for it. _v2_kept_order is the one source of that
+                # order -- see its docstring for why it must not be re-derived.
+                _v2_resp, ctx._v2_kept_chunks = _v2c.with_kept_chunks(
+                    _v2_resp, _v2_kept_order(ctx))
+                if _v2_resp.kept_indices or _v2_resp.kept_unresolved:
+                    # LOG BOTH SIDES. An index react named that does not exist
+                    # means it is addressing a list it cannot see, which is a
+                    # prompt defect and not noise -- and it is invisible if we
+                    # only log what resolved.
+                    logger.info(
+                        "[v2.kept] cid=%s round=%s kept=%s of %s numbered "
+                        "-> %d chunk(s)%s",
+                        (ctx.correlation_id or "")[:8], rn,
+                        list(_v2_resp.kept_indices),
+                        len(_v2_kept_order(ctx)),
+                        len(ctx._v2_kept_chunks or []),
+                        (f" -- UNRESOLVED {list(_v2_resp.kept_unresolved)}: "
+                         "react named passages that were not in its list"
+                         if _v2_resp.kept_unresolved else ""))
                 ctx._v2_last_contract = _v2_resp
                 _v2store.save_round(_v2c.to_row(
                     _v2_resp,

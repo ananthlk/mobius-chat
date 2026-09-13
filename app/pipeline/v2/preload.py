@@ -150,16 +150,46 @@ def _arm_of(src: dict) -> str:
     return "doc:" + str(src.get("document_name") or "?")
 
 
-def _render_chunk(s: dict) -> str:
-    """One chunk as react will read it: provenance, then text.
+def _render_chunk(s: dict, n: int | None = None) -> str:
+    """One chunk as react will read it: an ordinal, provenance, then text.
 
     React cites what it reads, so the document and page travel WITH the
     passage. Text with no provenance is how a citation marker ends up pointing
     at nothing -- which this session has already produced once.
+
+    🔴 THE ORDINAL IS AN ADDRESS, AND IT EXISTS SO NOTHING OPAQUE CROSSES THE
+    MODEL BOUNDARY.
+    -----------------------------------------------------------------------
+    Retriever needs to know WHICH passages react kept, to diff kept-against-
+    served and re-scope the next retrieval. Two shapes were considered and
+    rejected before this one (2026-09-13):
+
+      chunk_id            an opaque uuid react would have to copy exactly. It
+                          will sometimes copy it wrong, and a WRONG id points
+                          the diff at real-but-unrelated evidence -- which
+                          fails silently, because a wrong uuid parses fine.
+      (document, page)    safe to elicit, but collapses the signal: one
+                          provider manual holds a single on-point section and
+                          ten irrelevant ones, and this corpus is exactly that.
+                          Retriever made this argument and it is the right one.
+
+    A small integer read off a list in front of it is the one thing a model
+    reliably reproduces. We hold the index -> chunk mapping (fair_share already
+    returns `kept` in render order), so the real identifier is resolved HERE,
+    the same way Fact.document_id is resolved from ctx.sources rather than
+    echoed. The model never handles an identifier it could invent.
+
+    `[1]...[N]` matches corpus_search._format_context's existing convention for
+    the integrator path -- ONE addressing scheme across both, so a reader never
+    has to work out which list a number refers to.
+
+    n=None renders un-numbered, for callers that have no list to address into.
     """
     name = str(s.get("document_name") or "?")
     pg = s.get("page_number")
     head = f"[{name}" + (f" p{pg}]" if pg is not None else "]")
+    if n is not None:
+        head = f"[{n}] {head}"
     return f"{head}\n{s.get('text')}"
 
 
@@ -227,7 +257,9 @@ def fair_share(sources: list[dict], *,
             continue
         break
 
-    parts = [_render_chunk(s) for s in kept]
+    # 1-BASED, and the same order as `kept`, which is returned to the caller.
+    # That pairing IS the mapping: kept[i-1] is what react's index i means.
+    parts = [_render_chunk(s, i) for i, s in enumerate(kept, 1)]
     report = {a: {"had": len(arms[a]),
                   "kept": sum(1 for k in kept if _arm_of(k) == a)}
               for a in order}

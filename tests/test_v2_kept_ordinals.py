@@ -1,0 +1,145 @@
+"""react addresses passages by ordinal; we resolve ordinals to real chunks.
+
+2026-09-13, Retriever's design. Two shapes were rejected first: chunk_id (an
+opaque uuid react must copy exactly -- a wrong one parses fine and points the
+diff at real-but-unrelated evidence) and (document, page) (safe to elicit but
+collapses one on-point section in a large manual against ten irrelevant ones).
+A small integer read off a list in front of the model is the one identifier it
+reproduces reliably, and the real id is resolved server-side.
+
+THE INVARIANT UNDER ALL OF IT: the number react echoes and the list we resolve
+it against must be the same list in the same order. These tests assert that
+end to end -- render, then resolve -- not each half alone. Testing the halves
+separately is exactly how a caller's rewiring survives a green suite.
+"""
+import app.pipeline.v2.contract as C
+import app.pipeline.v2.frame as F
+from app.pipeline.v2 import statements as ST
+from app.pipeline.v2.posture import Posture
+from app.pipeline.v2.preload import _render_chunk, fair_share
+
+
+def _src(name, page, text, arm="a", cid=None):
+    return {"document_name": name, "page_number": page, "text": text,
+            "arm": arm, "chunk_id": cid or f"{name}-{page}"}
+
+
+# ── render ──────────────────────────────────────────────────────────────────
+
+def test_rendered_passages_are_numbered_from_one():
+    assert _render_chunk(_src("Manual", 4, "body"), 1).startswith("[1] [Manual p4]")
+    assert _render_chunk(_src("Manual", 4, "body"), 12).startswith("[12] [Manual p4]")
+
+
+def test_unnumbered_render_keeps_the_old_shape():
+    """n=None must not grow a prefix -- callers with no list to address into."""
+    out = _render_chunk(_src("Manual", 4, "body"))
+    assert out.startswith("[Manual p4]"), out
+
+
+def test_provenance_survives_numbering():
+    """The ordinal is an ADDRESS; the document/page is what makes a citation
+    checkable. Adding the first must not cost the second."""
+    out = _render_chunk(_src("Sunshine Provider Manual", 111, "x"), 3)
+    assert "Sunshine Provider Manual" in out and "p111" in out
+
+
+def test_fair_share_numbers_match_the_kept_order():
+    """THE PAIRING. kept[i-1] must be the passage rendered as [i]."""
+    srcs = [_src(f"D{i}", i, f"text-{i}") for i in range(1, 6)]
+    text, kept, _ = fair_share(srcs, per_arm_tokens=10_000, total_tokens=99_000)
+    assert kept, "fixture produced no kept passages"
+    for i, s in enumerate(kept, 1):
+        assert f"[{i}] [{s['document_name']} p{s['page_number']}]" in text
+
+
+# ── parse ───────────────────────────────────────────────────────────────────
+
+def test_ints_accepts_what_a_model_actually_emits():
+    assert C._ints([2, "5", " 7 "]) == (2, 5, 7)
+    assert C._ints(3) == (3,)
+    assert C._ints([2, 2, 5]) == (2, 5), "duplicates collapse"
+
+
+def test_ints_refuses_non_indices():
+    # 1-based: 0 is not an off-by-one to forgive, it means counting elsewhere.
+    assert C._ints([0, -1, "x", None, {}]) == ()
+    # bool is an int subclass and must not become index 1.
+    assert C._ints([True, False]) == ()
+
+
+def test_parse_reads_kept_from_the_contract_name():
+    assert C.parse({"kept": [2, 5]}).kept_indices == (2, 5)
+    assert C.parse({"kept_indices": [3]}).kept_indices == (3,)
+    assert C.parse({}).kept_indices == ()
+
+
+# ── resolve ─────────────────────────────────────────────────────────────────
+
+def test_indices_resolve_against_the_rendered_order():
+    srcs = [_src(f"D{i}", i, "t", cid=f"c{i}") for i in range(1, 6)]
+    resp, chunks = C.with_kept_chunks(C.parse({"kept": [2, 5]}), srcs)
+    assert [c["chunk_id"] for c in chunks] == ["c2", "c5"]
+    assert resp.kept_indices == (2, 5)
+    assert resp.kept_unresolved == ()
+
+
+def test_an_index_react_invented_is_recorded_not_dropped():
+    """A model addressing a list it cannot see is a PROMPT defect. Silently
+    discarding the evidence of it is how that defect survives."""
+    srcs = [_src("D1", 1, "t")]
+    resp, chunks = C.with_kept_chunks(C.parse({"kept": [1, 99]}), srcs)
+    assert resp.kept_indices == (1,)
+    assert resp.kept_unresolved == (99,), "out-of-range index vanished"
+    assert len(chunks) == 1
+
+
+def test_no_indices_resolves_to_nothing_and_does_not_raise():
+    resp, chunks = C.with_kept_chunks(C.parse({}), [])
+    assert chunks == [] and resp.kept_indices == ()
+
+
+# ── the ask is gated on a list existing ─────────────────────────────────────
+#
+# ASSERTED ON THE RENDERED PROMPT, not on the module source. A test that greps
+# `inspect.getsource(F.render)` for "if numbered_passages:" passes on a gate
+# that never executes, and passes on a comment -- which is the defect this
+# repo has hit repeatedly. Build a real Ctx and read the text react gets.
+
+def _frame(numbered):
+    rs = ST.RoundState(round_index=1, open_gaps=(), gaps_open_history=(),
+                       budget=95.0, next_round_cost_s=5.0, acting_cost_s=5.0,
+                       validate_cost_s=5.0)
+    c = ST.Ctx(state=rs, round_index=1, max_rounds=3, tier="thinking")
+    txt, _ = F.render(c, Posture.NARROW, numbered_passages=numbered)
+    return txt or ""
+
+
+def test_kept_is_requested_when_passages_were_numbered():
+    txt = _frame(4)
+    assert '"kept"' in txt, "react is never asked which passages it used"
+    # The range must name the ACTUAL count -- a hardcoded bound would point the
+    # model at passages that do not exist on a shorter round.
+    assert "[1] to [4]" in txt
+
+
+def test_the_stated_range_tracks_the_real_count():
+    assert "[1] to [9]" in _frame(9)
+    assert "[1] to [4]" not in _frame(9)
+
+
+def test_kept_is_NOT_requested_when_nothing_was_numbered():
+    """Asking for indices with no list tells the model to address something it
+    cannot see -- and a model asked for indices WILL produce some. They parse
+    as valid ints and resolve against the wrong thing. This was the defect in
+    the original proposal for this feature."""
+    txt = _frame(0)
+    assert '"kept"' not in txt, "kept asked for with zero numbered passages"
+
+
+def test_the_key_count_in_the_preamble_matches_what_is_asked():
+    """The preamble states how many keys are being added. If it says TWO while
+    three are listed, the model drops one -- measured previously on this exact
+    block, where an addendum framing lost facts[] entirely."""
+    assert "THREE ADDITIONAL KEYS" in _frame(4)
+    assert "TWO ADDITIONAL KEYS" in _frame(0)

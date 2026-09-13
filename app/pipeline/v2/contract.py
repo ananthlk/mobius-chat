@@ -97,6 +97,21 @@ class ReactV2Response:
     facts: tuple[Fact, ...] = ()
     not_useful: tuple[str, ...] = ()      # sources read and rejected
 
+    # WHICH PASSAGES REACT ACTUALLY USED, as ordinals into the numbered list it
+    # was shown this round (preload._render_chunk). Small ints, because that is
+    # the only kind of identifier a model reproduces reliably -- see that
+    # function's header for why chunk_id and (document, page) were both
+    # rejected. Resolved to real chunks by with_kept_chunks(), server-side.
+    #
+    # Kept-only, deliberately: rejected is derivable as served-minus-kept by
+    # anyone holding the served set, so only ONE side has to be reliable.
+    # Retriever asked for exactly this and it is the smaller surface.
+    kept_indices: tuple[int, ...] = ()
+    # Indices react named that do not exist in this round's list. Never
+    # silently dropped: an out-of-range index means react is addressing a list
+    # it cannot see, and that is a prompt defect worth finding, not noise.
+    kept_unresolved: tuple[int, ...] = ()
+
     gaps: tuple[GapState, ...] = ()
     running_answer: str = ""
     answer: str = ""
@@ -127,6 +142,32 @@ def _strs(v) -> tuple[str, ...]:
 
 def _bool_or_none(v):
     return v if isinstance(v, bool) else None
+
+
+def _ints(v) -> tuple[int, ...]:
+    """Ordinals from whatever the model emitted, order preserved, deduped.
+
+    Accepts 3, "3", and " 3 " -- a model asked for JSON ints will sometimes
+    send strings, and refusing those would discard a correct answer over its
+    type. Rejects anything else, and rejects <= 0: the list is 1-based, so 0 is
+    not an off-by-one to be forgiven, it is a sign the model is counting from
+    somewhere else.
+    """
+    if isinstance(v, (int, str)):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        return ()
+    out: list[int] = []
+    for x in v:
+        if isinstance(x, bool):          # bool is an int subclass; not an index
+            continue
+        try:
+            n = int(str(x).strip())
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and n not in out:
+            out.append(n)
+    return tuple(out)
 
 
 def _facts_from_v2(raw) -> tuple[tuple[Fact, ...], list[str]]:
@@ -173,6 +214,36 @@ def with_document_ids(resp: "ReactV2Response",
         did = id_by_name.get(f.document) or lower.get(str(f.document).lower(), "")
         out.append(Fact(f.fact, f.document, f.page, did or ""))
     return replace(resp, facts=tuple(out))
+
+
+def with_kept_chunks(resp: "ReactV2Response",
+                     kept_sources: list | tuple) -> tuple["ReactV2Response", list]:
+    """Resolve react's ordinals against the list it was actually shown.
+
+    Returns (response, chunks) -- the response with unresolvable indices
+    recorded, and the real chunk dicts react said it used.
+
+    `kept_sources` MUST be the same list, in the same order, that
+    preload.fair_share returned for this round: index i means kept_sources[i-1].
+    Passing a differently-ordered list resolves every index to the wrong
+    passage, silently, so the caller owns that pairing.
+
+    Mirrors with_document_ids: the identifier is attached HERE from data we
+    already hold, never taken from the model. An index react invents cannot
+    become a real chunk id -- it lands in kept_unresolved instead.
+    """
+    if not resp.kept_indices:
+        return resp, []
+    n = len(kept_sources or ())
+    good, bad, chunks = [], [], []
+    for i in resp.kept_indices:
+        if 1 <= i <= n:
+            good.append(i)
+            chunks.append(kept_sources[i - 1])
+        else:
+            bad.append(i)
+    return replace(resp, kept_indices=tuple(good),
+                   kept_unresolved=tuple(bad)), chunks
 
 
 def parse(raw: dict | None) -> ReactV2Response:
@@ -231,6 +302,10 @@ def parse(raw: dict | None) -> ReactV2Response:
     if "not_useful" in raw:
         saw_v2 = True
 
+    # `kept` is the contract name; `kept_indices` accepted because a model that
+    # has seen the field name in a schema sometimes echoes the internal one.
+    kept_indices = _ints(raw.get("kept", raw.get("kept_indices")))
+
     shape = ("mixed" if (saw_v2 and saw_v1)
              else "v2" if saw_v2 else "v1" if saw_v1 else "none")
     if shape in ("v1", "none"):
@@ -242,6 +317,7 @@ def parse(raw: dict | None) -> ReactV2Response:
         roles_assumed=_strs(raw.get("roles_assumed")),
         facts=facts,
         not_useful=not_useful,
+        kept_indices=kept_indices,
         gaps=tuple(gaps),
         running_answer=running,
         answer=str(raw.get("answer") or ""),
