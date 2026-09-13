@@ -210,11 +210,22 @@ class TestRagApiEndpoint:
 
 class TestVertexOuterBoundTimeout:
     """Vertex SDK 1.142.0 silently ignored ``retry=Retry(deadline=45)``
-    on throttled paths. We now wrap the SDK call in
-    ``concurrent.futures.ThreadPoolExecutor`` and use
-    ``Future.result(timeout=...)`` to guarantee an outer wall-clock
-    bound. The inner zombie thread keeps running but the worker
-    thread is freed at the deadline."""
+    on throttled paths. We wrap the SDK call in a genuinely daemon
+    ``threading.Thread`` and use ``Thread.join(timeout=...)`` to
+    guarantee an outer wall-clock bound. The inner zombie thread keeps
+    running but the caller is freed at the deadline.
+
+    Tool Manifest, 2026-09-12: this used to be a
+    ``concurrent.futures.ThreadPoolExecutor``. Its workers have NOT been
+    daemon threads since Python 3.9, and the module registers an
+    ``atexit`` hook that JOINS every worker at interpreter shutdown --
+    ``shutdown(wait=False)`` only stops new submissions, it doesn't
+    exempt a worker from that hook. The request-level bound
+    (``Future.result(timeout=...)``) worked fine; the PROCESS still
+    blocked on a wedged call at exit, landing inside Cloud Run's SIGTERM
+    grace window -- the same "worker held hostage" failure this wrapper
+    exists to prevent, arriving at shutdown instead of during the
+    request. See test_wedged_call_does_not_block_process_exit below."""
 
     def test_raises_timeout_when_sdk_call_exceeds_deadline(self, monkeypatch):
         """Smoking-gun reproduction: SDK call takes longer than
@@ -306,4 +317,77 @@ class TestVertexOuterBoundTimeout:
         assert elapsed < 1.5, (
             f"Wrapper waited {elapsed:.1f}s — should have abandoned at ~0.3s. "
             "If this is flaky, the deadline isn't being honored."
+        )
+
+    def test_wedged_call_does_not_block_process_exit(self):
+        """Tool Manifest, 2026-09-12: the request-level deadline (asserted
+        by the tests above) passing does NOT prove the process can exit —
+        a ThreadPoolExecutor's non-daemon workers are joined by an atexit
+        hook regardless of whether ``result(timeout=...)`` already
+        returned. That bug is invisible to an in-process thread-count or
+        timing assertion, because the interpreter hasn't torn down yet —
+        it only shows up as how long the whole PROCESS takes to exit.
+        Runs the wedge in a real subprocess and measures wall time to
+        exit relative to a same-machine baseline (importing the identical
+        heavy SDK stack, no wedge) — a non-daemon worker adds the full
+        wedge duration on top of that baseline; a genuine daemon thread
+        adds only the deadline. Comparing against a measured baseline
+        instead of a fixed constant keeps this from being flaky on a
+        slow machine where interpreter + vertexai import alone can take
+        seconds."""
+        import subprocess
+        import sys as _sys
+        import time as _t
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        wedge_s = 12
+        deadline_s = 0.3
+
+        def _run(sleep_seconds: float) -> float:
+            script = (
+                "import os, time\n"
+                f"os.environ['VERTEX_TOTAL_DEADLINE_SECONDS'] = '{deadline_s}'\n"
+                "from unittest.mock import patch, MagicMock\n"
+                "class FakeModel:\n"
+                "    def generate_content(self, *args, **kwargs):\n"
+                f"        time.sleep({sleep_seconds})\n"
+                "        return MagicMock()\n"
+                "with patch('vertexai.generative_models.GenerativeModel', return_value=FakeModel()):\n"
+                "    from app.services.llm_provider import _vertex_generate_sync\n"
+                "    try:\n"
+                "        _vertex_generate_sync(model_name='x', prompt='x', gen_config={})\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "print('RETURNED', flush=True)\n"
+            )
+            t0 = _t.perf_counter()
+            result = subprocess.run(
+                [_sys.executable, "-c", script],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            elapsed = _t.perf_counter() - t0
+            assert "RETURNED" in result.stdout, (
+                f"subprocess did not reach its print — stdout={result.stdout!r} "
+                f"stderr={result.stderr!r}"
+            )
+            return elapsed
+
+        baseline = _run(sleep_seconds=0)  # same imports, no wedge at all
+        wedged = _run(sleep_seconds=wedge_s)
+
+        # A non-daemon worker adds ~wedge_s on top of baseline (atexit
+        # joins it); a genuine daemon thread adds only ~deadline_s. The
+        # midpoint between those two outcomes is a robust cutoff
+        # regardless of how slow this machine's baseline is.
+        cutoff = baseline + (wedge_s / 2)
+        assert wedged < cutoff, (
+            f"Wedged-call process took {wedged:.1f}s vs a {baseline:.1f}s "
+            f"baseline (cutoff {cutoff:.1f}s) — should have exited "
+            f"shortly after the {deadline_s}s deadline, not waited for "
+            f"the {wedge_s}s wedge. This is the ThreadPoolExecutor "
+            "atexit-join regression."
         )

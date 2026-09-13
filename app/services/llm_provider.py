@@ -540,6 +540,62 @@ def _vertex_request_options():
     return kwargs
 
 
+_VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS: bool | None = None
+_vertex_request_options_unsupported_logged = False
+
+
+def vertex_generate_content_accepts_request_options() -> bool:
+    """Whether the installed SDK's ``generate_content`` will accept the
+    ``timeout``/``retry`` kwargs from ``_vertex_request_options()`` at all.
+
+    Deep Research / Tool Manifest, 2026-09-12: google-cloud-aiplatform
+    1.142.0's ``GenerativeModel.generate_content`` declares no ``timeout``,
+    no ``retry``, and no ``**kwargs`` to absorb either -- confirmed here via
+    ``inspect.signature`` rather than assumed, since ``requirements.txt``
+    pins an unbounded floor (``>=1.38.0``) and a future or past install
+    could differ. Every call was therefore raising TypeError, being caught
+    by a bare ``except TypeError``, and silently retried without the
+    kwargs -- which also meant a genuine TypeError from a malformed
+    ``generation_config`` or content part took the identical silent path,
+    masking itself as "it worked the second time."
+
+    Checking the signature ONCE (cached) instead of unconditionally
+    attempting the call and catching TypeError does two things: skips a
+    doomed call on the common path, and narrows the surviving
+    ``except TypeError`` at the call site to genuinely unexpected failures
+    worth logging, instead of the expected-every-time case.
+
+    NOTE on what this kwarg pair actually protects, since the answer
+    changes what "accepts" vs "doesn't accept" means for callers: even
+    when this returns False, ``_vertex_generate_sync``'s own
+    ThreadPoolExecutor + ``Future.result(timeout=deadline)`` wrapper
+    (2026-04-27, bd07342) already bounds every call's total wall time
+    independent of whatever the SDK's internal retry does -- that wrapper
+    is what actually fixed the 596s-retry-storm incident this module's
+    docstrings describe. These kwargs, when unsupported, are asking the
+    SDK to do something it can't; they are not the only thing standing
+    between a call and an unbounded hang.
+    """
+    global _VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS
+    if _VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS is None:
+        try:
+            import inspect
+            from vertexai.generative_models import GenerativeModel
+            params = inspect.signature(GenerativeModel.generate_content).parameters
+            has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+            _VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS = (
+                has_var_kw or ("timeout" in params and "retry" in params)
+            )
+        except Exception:
+            # Can't introspect (import failure, mocked class in a test) —
+            # assume unsupported, matching this function's prior behavior
+            # of always hitting the except-TypeError fallback.
+            _VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS = False
+    return _VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS
+
+
 def _vertex_content_parts(prompt: str, attachments: list[dict] | None):
     """Task #106 (2026-08-16, Ananth, directly): "these models are much
     better... if a doc is small enough to send let's add those as
@@ -619,73 +675,132 @@ def _vertex_generate_sync(
     # nearly 10 minutes — single-threaded queue → 10-minute hostage
     # for every other queued turn.
     #
-    # Fix: run the call in a daemon ThreadPoolExecutor and wait at
-    # most ``deadline`` seconds via ``Future.result(timeout=...)``.
+    # Fix: run the call on a genuinely daemon ``threading.Thread`` and
+    # wait at most ``deadline`` seconds via ``Thread.join(timeout=...)``.
     # Python can't actually kill the inner thread, but we don't have
-    # to — once we raise FutureTimeoutError, the caller treats it as
-    # a normal LLM error (bandit swaps models, fallback chain runs).
-    # The zombie thread bleeds CPU until it finishes on its own,
-    # but the worker thread is freed instantly.
+    # to — once we raise TimeoutError, the caller treats it as a normal
+    # LLM error (bandit swaps models, fallback chain runs). The zombie
+    # thread bleeds CPU until it finishes on its own.
+    #
+    # Tool Manifest, 2026-09-12: this used to be a
+    # ``concurrent.futures.ThreadPoolExecutor``, whose comment claimed
+    # "daemon threads so process exit isn't blocked by zombies" -- false,
+    # and reported with firsthand evidence (they hit the identical bug
+    # the same day, in their own repo, and cost two hours on it).
+    # ThreadPoolExecutor workers have not been daemon threads since
+    # Python 3.9, and the module registers an ``atexit`` hook that JOINS
+    # every worker at interpreter shutdown -- ``shutdown(wait=False)``
+    # only stops new submissions, it does not opt a worker out of that
+    # hook. Measured directly on this repo's 3.13.5: a wedged call inside
+    # the pool returned from ``Future.result(timeout=0.5)`` in 0.5s as
+    # designed, but the PROCESS did not exit until the full 5s wedge
+    # finished — confirming the request-path bound was fine and the
+    # exit-path guarantee was not. On Cloud Run that lands inside the
+    # SIGTERM grace window: the same "worker held hostage" failure this
+    # wrapper exists to prevent, arriving at shutdown instead of during
+    # the request, and orphaning in-flight SSE streams either way.
+    # ``threading.Thread(daemon=True)`` is the only shape that is
+    # actually exempt from being joined at exit.
     #
     # Why this matters even with our async ``asyncio.wait_for`` outer
     # cap: that cap cancels the awaiting coroutine but doesn't reach
     # into the synchronous SDK call. This wrapper does.
 
-    import concurrent.futures as _futs
+    import threading as _threading
     _base_deadline = float(_os.environ.get("VERTEX_TOTAL_DEADLINE_SECONDS", "45") or 45)
     # If the outer asyncio.wait_for timeout is larger than the base SDK deadline,
     # honour it so long-output stages (appeals, credentialing) aren't killed early.
     deadline = max(_base_deadline, outer_timeout_s) if outer_timeout_s else _base_deadline
-    # A pool max-1 is fine — each Vertex call gets its own pool
-    # instance; we never queue calls inside one pool. Daemon threads
-    # so process exit isn't blocked by zombies.
-    _pool = _futs.ThreadPoolExecutor(max_workers=1, thread_name_prefix="vertex-call")
 
     def _call_sdk():
+        global _vertex_request_options_unsupported_logged
         _safety = safety_settings or []
         _content = _vertex_content_parts(prompt, attachments)
+        # Deep Research / Tool Manifest, 2026-09-12: on the pinned SDK
+        # (aiplatform 1.142.0), generate_content declares no timeout/retry
+        # params and no **kwargs -- req_opts was TypeError'ing on every
+        # single call, caught by a bare `except TypeError` that ALSO
+        # swallowed genuine bugs (a malformed generation_config, a bad
+        # content part) as "worked on retry." Checking the signature once
+        # instead of trying-and-catching every call skips the doomed
+        # attempt and narrows the except below to failures actually worth
+        # logging.
+        _use_req_opts = req_opts and vertex_generate_content_accepts_request_options()
+        if req_opts and not _use_req_opts and not _vertex_request_options_unsupported_logged:
+            _vertex_request_options_unsupported_logged = True
+            logger.warning(
+                "[vertex] installed SDK's generate_content does not accept "
+                "timeout/retry kwargs -- per-call request_options are inert. "
+                "Total wall time is still bounded by this function's own "
+                "ThreadPoolExecutor + Future.result(timeout=deadline) wrapper."
+            )
+        _kwargs = req_opts if _use_req_opts else {}
         if tools:
             try:
                 return model.generate_content(
                     _content, generation_config=gen_config, tools=tools,
-                    safety_settings=_safety, **req_opts
+                    safety_settings=_safety, **_kwargs
                 )
-            except TypeError:
-                return model.generate_content(
-                    _content, generation_config=gen_config, tools=tools,
-                    safety_settings=_safety,
-                )
+            except TypeError as e:
+                if _use_req_opts:
+                    logger.warning(
+                        "[vertex] generate_content rejected request_options "
+                        "despite passing the signature check (%s) -- "
+                        "retrying without them", e,
+                    )
+                    return model.generate_content(
+                        _content, generation_config=gen_config, tools=tools,
+                        safety_settings=_safety,
+                    )
+                raise
         else:
             try:
                 return model.generate_content(
                     _content, generation_config=gen_config,
-                    safety_settings=_safety, **req_opts
+                    safety_settings=_safety, **_kwargs
                 )
-            except TypeError:
-                return model.generate_content(
-                    _content, generation_config=gen_config,
-                    safety_settings=_safety,
-                )
+            except TypeError as e:
+                if _use_req_opts:
+                    logger.warning(
+                        "[vertex] generate_content rejected request_options "
+                        "despite passing the signature check (%s) -- "
+                        "retrying without them", e,
+                    )
+                    return model.generate_content(
+                        _content, generation_config=gen_config,
+                        safety_settings=_safety,
+                    )
+                raise
 
-    _future = _pool.submit(_call_sdk)
-    try:
-        # ``shutdown(wait=False)`` first so the pool stops accepting
-        # new submissions but doesn't block on the in-flight call.
-        # Then bound the wait. If the deadline fires, the worker
-        # thread keeps running but we've already returned.
-        _pool.shutdown(wait=False)
+    _thread_result: dict = {}
+
+    def _run_call_sdk():
         try:
-            response = _future.result(timeout=deadline)
-        except _futs.TimeoutError as _te:
+            _thread_result["value"] = _call_sdk()
+        except BaseException as _e:  # noqa: BLE001 -- forward every failure to the caller, matching Future's own broad capture
+            _thread_result["error"] = _e
+
+    _thread = _threading.Thread(
+        target=_run_call_sdk, name="vertex-call", daemon=True,
+    )
+    _thread.start()
+    try:
+        # Bound the wait. If the deadline fires, the worker thread keeps
+        # running (daemon=True — it cannot block process exit either).
+        _thread.join(timeout=deadline)
+        if _thread.is_alive():
             elapsed = _time.perf_counter() - t0
             logger.error(
                 "[vertex] generate_content abandoned after deadline=%.1fs "
                 "(elapsed=%.1fs, model=%s) — SDK retry ignored our cap",
                 deadline, elapsed, model_name,
             )
-            # Re-raise as a TimeoutError that downstream code already
-            # handles as a transient (bandit swaps model, fallback).
-            raise TimeoutError(f"vertex.generate_content abandoned after {deadline:.0f}s") from _te
+            # Downstream code already handles this as a transient
+            # (bandit swaps model, fallback chain runs).
+            raise TimeoutError(f"vertex.generate_content abandoned after {deadline:.0f}s")
+        if "error" in _thread_result:
+            raise _thread_result["error"]
+        response = _thread_result["value"]
     except Exception as e:
         logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
         # Record the exception on the span so Cloud Trace's error

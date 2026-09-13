@@ -79,6 +79,24 @@ def test_vertex_request_options_retry_deadline_default(monkeypatch):
     assert deadline == 45.0
 
 
+def _fake_vertex_response(text: str):
+    # extract_vertex_text() (2026-09-11 multi-part fix) reads
+    # candidates[0].content.parts directly rather than a bare `.text`
+    # attribute -- a MagicMock(text=...) with no `.candidates` shape
+    # yields no usable parts and looks like a genuine block. Build the
+    # real response shape so these kwarg-passthrough tests exercise
+    # generate_content's call args, not text extraction.
+    part = MagicMock()
+    part.text = text
+    content = MagicMock()
+    content.parts = [part]
+    candidate = MagicMock()
+    candidate.content = content
+    resp = MagicMock(usage_metadata=None)
+    resp.candidates = [candidate]
+    return resp
+
+
 def test_vertex_generate_sync_passes_timeout_kwarg(monkeypatch):
     """generate_content should be called with timeout from request_options."""
     from app.services import llm_provider as lp
@@ -86,7 +104,19 @@ def test_vertex_generate_sync_passes_timeout_kwarg(monkeypatch):
     monkeypatch.setenv("VERTEX_HTTP_TIMEOUT_SECONDS", "20")
 
     fake_model = MagicMock()
-    fake_model.generate_content.return_value = MagicMock(text="ok", usage_metadata=None)
+    fake_model.generate_content.return_value = _fake_vertex_response("ok")
+
+    # vertex_generate_content_accepts_request_options() (2026-09-12 fix)
+    # caches its signature-check result for the WHOLE process, not per
+    # call -- correct in production (the SDK doesn't change at runtime),
+    # but it means whichever test runs first against the real,
+    # unpatched GenerativeModel (any test that makes a real Vertex call,
+    # deliberately or not) permanently settles the cache to what the
+    # real 1.142.0 SDK actually supports (False), and this test's mock
+    # can no longer flip that. Force the cache directly so this test
+    # exercises what it says it does -- "the SDK accepts these kwargs"
+    # -- independent of full-suite execution order.
+    monkeypatch.setattr(lp, "_VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS", True)
 
     with patch("vertexai.generative_models.GenerativeModel", return_value=fake_model):
         lp._vertex_generate_sync("gemini-2.5-flash", "hi", {"temperature": 0.1})
@@ -101,8 +131,12 @@ def test_vertex_generate_sync_falls_back_when_timeout_kwarg_rejected(monkeypatch
     retry without it rather than crash."""
     from app.services import llm_provider as lp
 
+    # See the comment in test_vertex_generate_sync_passes_timeout_kwarg —
+    # same cache-order dependency, same fix.
+    monkeypatch.setattr(lp, "_VERTEX_GENERATE_CONTENT_ACCEPTS_REQUEST_OPTIONS", True)
+
     fake_model = MagicMock()
-    fake_response = MagicMock(text="ok", usage_metadata=None)
+    fake_response = _fake_vertex_response("ok")
     fake_model.generate_content.side_effect = [TypeError("unexpected kwarg"), fake_response]
 
     with patch("vertexai.generative_models.GenerativeModel", return_value=fake_model):
