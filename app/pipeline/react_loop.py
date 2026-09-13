@@ -5421,10 +5421,32 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # My gate asserted frame.render is CALLED with preloaded=.
                     # It is -- on rounds 2+. Producer with no consumer, one
                     # round off, and the gate was one round off with it.
+                    # THIRD CORRECTION, AND THE CONDITION IS NOW GONE RATHER
+                    # THAN PATCHED AGAIN.
+                    #
+                    # `rn > 1` was right for naming a gap. `or _v2_has_preload`
+                    # fixed round 1 WITH evidence. Neither covers round 1 with
+                    # NO evidence -- the blind round -- and that is the one that
+                    # most needs steering: it is where react should be saying
+                    # precisely what it needs so the next retrieval is good.
+                    #
+                    # Measured, cid 7216257c on rev 01077-kdp, AFTER adding
+                    # role_scope: round 1 still logged no [v2.roles] line at
+                    # all -- not "roles=-", ABSENT -- because this gate skips
+                    # the block that evaluates the roles. A gate cannot be
+                    # satisfied by a branch that never runs. Round 2 got
+                    # scope,plan and round 1 got nothing, which is exactly the
+                    # shape of "my fix reached the rounds that were already
+                    # reachable".
+                    #
+                    # Each patch here fixed the case in front of it and left
+                    # the predicate one case short. So the predicate goes: the
+                    # blocks already render only when their facts exist, which
+                    # is the mechanism that was supposed to decide this all
+                    # along.
                     _v2_has_preload = bool(getattr(ctx, "_v2_preloaded", None))
                     if (os.environ.get("MOBIUS_V2_STEER", "").strip() == "1"
-                            and getattr(ctx, "orchestrator_version", "v1") == "v2"
-                            and (rn > 1 or _v2_has_preload)):
+                            and getattr(ctx, "orchestrator_version", "v1") == "v2"):
                         from app.pipeline.v2 import frame as _v2fr
                         from app.pipeline.v2 import posture as _v2ip
                         from app.pipeline.v2 import statements as _v2st

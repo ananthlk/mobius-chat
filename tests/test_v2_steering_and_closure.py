@@ -191,7 +191,20 @@ def test_the_steering_is_arm_scoped_and_revertible():
     i = code.index("MOBIUS_V2_STEER")
     window = code[i:i + 400]
     assert "orchestrator_version" in window, "steering is not arm-scoped"
-    assert "rn > 1" in window, "steering must not fire on the decomposition round"
+    assert "MOBIUS_V2_STEER" in window, "steering is not revertible without a deploy"
+    # THE "rn > 1" ASSERTION IS GONE, AND IT WAS VACUOUS BEFORE IT WAS WRONG.
+    #
+    # It claimed "steering must not fire on the decomposition round". Steering
+    # has fired on round 1 whenever preload ran since `or _v2_has_preload` was
+    # added -- so the behaviour it described stopped being true then, and this
+    # kept passing because it read a SOURCE STRING and not the behaviour. A
+    # fingerprint outlives the property it was standing in for.
+    #
+    # Round 1 is now steered unconditionally, deliberately: the blind round is
+    # where react must say what it needs, and it was the one round with no
+    # instructions at all (cid 7216257c: no [v2.roles] line, shape=v1,
+    # facts=0). What this test actually protects -- arm scoping and env
+    # revertibility -- is asserted above and is untouched.
 
 
 # ── round 2 discovers gaps; it does not close a question ────────────────────

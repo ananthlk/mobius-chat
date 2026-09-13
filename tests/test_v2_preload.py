@@ -389,11 +389,24 @@ def test_round_one_receives_the_preload_evidence():
     code = "\n".join(l.split("#")[0] for l in src.splitlines())
     i = code.index("MOBIUS_V2_STEER")
     window = code[i:i + 400]
-    assert "rn > 1" in window, "the steering gate moved; re-check this test"
-    assert "_v2_has_preload" in window, (
-        "round 1 is gated out of the governor block entirely, so preload "
-        "evidence never reaches the round it exists for"
-    )
+    # THE PROPERTY, NOT THE PATCH. This used to assert `rn > 1` was present --
+    # i.e. that the exclusion it was complaining about still existed, with
+    # `_v2_has_preload` next to it as the exemption. That pins the SHAPE OF THE
+    # FIX rather than the outcome, and it went red the moment the exclusion was
+    # removed outright, which is the strongest possible version of the fix.
+    #
+    # Round 1 is now steered unconditionally: `or _v2_has_preload` covered
+    # round 1 WITH evidence and left round 1 WITHOUT evidence -- the blind
+    # round -- still excluded. Measured on cid 7216257c: no [v2.roles] line at
+    # all on round 1, shape=v1, facts=0, while round 2 got scope,plan.
+    #
+    # What must stay true is that NO round-number predicate gates this block
+    # again. Assert that, so the next well-meant `rn` special case fails here.
+    assert "rn >" not in window and "rn <" not in window, (
+        "a round-number predicate is gating the governor block again — round 1 "
+        "loses its role stack whenever preload returns nothing, and a blind "
+        "round is exactly when react most needs to be told what to do")
+    assert "orchestrator_version" in window, "steering must stay arm-scoped"
 
 
 def test_a_preloaded_round_one_does_not_tell_react_to_write_a_search():
