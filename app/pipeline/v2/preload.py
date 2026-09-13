@@ -288,18 +288,63 @@ class PreloadPlan:
 #
 # The bound is generous on purpose: this exists to exclude the 30-second
 # failure mode, not to tune latency.
+# 🔴 BOUND THE SPEND, DO NOT PREDICT IT.
+#
+# The ceiling rule refused unknown worst cases because an unbounded tool on
+# the critical path is how healthcare_query spent 30s timing out before react
+# spoke. That risk is real, but a DECLARATION is a promise about cost and this
+# is a WALL CLOCK, which is the thing we actually need: once the sequence has
+# spent this long, no further tool is started, whatever anyone declared.
+#
+# It bounds the sequence, not a single call -- a tool already running is not
+# abandoned, because _execute_tool assigns ~15 attributes on ctx and killing
+# it mid-flight would leave the turn's state half-written. So the guarantee is
+# "preload starts no new work after this", which is honest and enforceable;
+# "preload never exceeds this" would not be.
+PRELOAD_WALL_MS = int(os.environ.get("MOBIUS_V2_PRELOAD_WALL_MS", "20000")
+                      or 20000)
+
 PRELOAD_MAX_CEILING_MS = int(
     os.environ.get("MOBIUS_V2_PRELOAD_MAX_CEILING_MS", "20000") or 0)
 
 
-def affordable_to_preload(ceiling_ms) -> tuple[bool, str]:
+def affordable_to_preload(ceiling_ms, *, claim_backed: bool = False,
+                          args_exact: bool = False) -> tuple[bool, str]:
     """(ok, why_not) from the tool's DECLARED WORST CASE.
 
     UNKNOWN IS NOT CHEAP. A missing ceiling means nobody has measured the
     failure mode, and `ceiling or p50` quietly substitutes the typical cost —
-    which is how a 30-second tool passed a budget check priced at 800ms.
+    which is how a 30-second tool passed a budget check priced at 800ms. That
+    remains true and p50 is still NOT used as a proxy here.
+
+    🔴 BUT REFUSING EVERY UNKNOWN REFUSED 46 OF 49 TOOLS.
+
+    Measured, cid 7973c25d: once Tool Manifest made payor_fact fillable, THIS
+    rule became the thing blocking it — "worst case unknown (no declared
+    ceiling)" — on a 360ms lookup against the certified fact store, on a turn
+    that then took three rounds and 31.5s. A guard that refuses 94% of the
+    catalogue is not protecting the budget, it is replacing the feature: a
+    conservative default outliving the reason it was chosen.
+
+    The narrow exception is where the two things that made healthcare_query
+    dangerous are both ABSENT:
+
+      claim_backed  the tool SCORED against this question (slot='ranked'), so
+                    running it is acting on the owner's judgement rather than
+                    speculating on a default.
+      args_exact    Tool Manifest supplied the exact arguments, so we are not
+                    inventing {"query": <question>} for a tool that takes
+                    something else — the other half of the healthcare_query
+                    failure, which took `question` and was sent `query`.
+
+    Unknown cost is then bounded rather than predicted: execute() enforces a
+    wall clock across the whole sequence (see PRELOAD_WALL_MS), which is the
+    requirement this rule was only ever a proxy for. A ceiling is still
+    better, and a declared one still wins.
     """
     if ceiling_ms in (None, ""):
+        if claim_backed and args_exact:
+            return True, ""
         return False, ("worst case unknown (no declared ceiling) — "
                        "not spent speculatively before react")
     try:
@@ -438,7 +483,13 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
                              or "no inputs offered for this tool"))
             continue
         if ceilings is not None:
-            ok, why = affordable_to_preload(ceilings.get(key))
+            # args_exact is knowable HERE: the inputs check immediately above
+            # already `continue`d every tool whose arguments the offer could
+            # not supply, so anything reaching this line has them.
+            ok, why = affordable_to_preload(
+                ceilings.get(key),
+                claim_backed=((slots or {}).get(key) in CLAIM_SLOTS),
+                args_exact=(inputs is not None and inputs.get(key) is not None))
             if not ok:
                 # Unpriced for SPECULATIVE spend. react calling it later is a
                 # decision, not a guess, so it stays offerable.
@@ -531,7 +582,22 @@ def execute(pl: PreloadPlan, runner, question: str,
     silently discards whatever the other side just started sending.
     """
     out: list[dict] = []
+    import time as _pl_time
+    _t_start = _pl_time.monotonic()
     for tool in pl.execute:
+        _spent_ms = (_pl_time.monotonic() - _t_start) * 1000.0
+        if PRELOAD_WALL_MS and _spent_ms > PRELOAD_WALL_MS and out:
+            # NOT SILENT, AND NOT MISSING. A tool absent from this list reads
+            # to react as never-attempted; this says it was not started and
+            # why, so the trace can show a budget decision rather than a gap.
+            out.append({
+                "tool": tool, "ok": False, "summary": "",
+                "payload": "", "sources": [], "asked": "",
+                "not_started": (f"preload wall clock: {_spent_ms:.0f}ms of "
+                                f"{PRELOAD_WALL_MS}ms already spent — "
+                                f"offered to react instead"),
+            })
+            continue
         try:
             # EXACTLY what Tool Manifest said to call it with. Falls back to
             # {"query": question} only when no inputs were supplied at all,
