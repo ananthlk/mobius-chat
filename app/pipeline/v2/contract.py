@@ -39,7 +39,7 @@ version makes every historical row silently incomparable.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 CONTRACT_VERSION = 2
 
@@ -56,6 +56,22 @@ class Fact:
     fact: str = ""
     document: str = ""
     page: int | None = None
+    # 🔴 THE CORPUS IDENTIFIER, resolved from the turn's own sources.
+    #
+    # react can only cite what it can see, which is a DISPLAY NAME. The
+    # deterministic verifier needs the id: Deep Research measured unscoped
+    # verification at 144s and I measured 80.4s with two of three timing out,
+    # against ~0.5s scoped. Tool Manifest: "the input should take the id", and
+    # they explicitly refused to keep a name→id map in the catalogue because
+    # that is RAG's data and a second copy is the duplication Ananth ruled
+    # against.
+    #
+    # So it is resolved HERE, where both halves are already in hand: the fact's
+    # document name, and ctx.sources carrying document_name + document_id from
+    # the retrieval that produced it. Empty when the source had no id
+    # (fetch_document sets it None on some paths) — which lands as
+    # `unverifiable`, correctly.
+    document_id: str = ""
 
     @property
     def grounded(self) -> bool:
@@ -139,6 +155,24 @@ def _facts_from_v2(raw) -> tuple[tuple[Fact, ...], list[str]]:
             if not f.document:
                 problems.append("fact with no document")
     return tuple(out), problems
+
+
+def with_document_ids(resp: "ReactV2Response",
+                      id_by_name: dict) -> "ReactV2Response":
+    """Attach corpus ids to facts, matched on the document name react cited.
+
+    Exact match first, then a case-insensitive match, then nothing. NO FUZZY
+    MATCHING: a fact attached to the wrong document verifies against the wrong
+    text, and a confident wrong verdict is worse than an honest unverifiable.
+    """
+    if not id_by_name or not resp.facts:
+        return resp
+    lower = {str(k).lower(): v for k, v in id_by_name.items() if k and v}
+    out = []
+    for f in resp.facts:
+        did = id_by_name.get(f.document) or lower.get(str(f.document).lower(), "")
+        out.append(Fact(f.fact, f.document, f.page, did or ""))
+    return replace(resp, facts=tuple(out))
 
 
 def parse(raw: dict | None) -> ReactV2Response:

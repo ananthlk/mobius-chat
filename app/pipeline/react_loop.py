@@ -6263,6 +6263,29 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # Kept for _finalize_response: the integrator needs the FACTS,
                 # and re-parsing the decision there would be a second parse of
                 # one response -- two readings that can disagree.
+                # Attach corpus ids from THIS turn's sources, so the facts are
+                # verifiable: the verifier scopes by id, and unscoped is 144s
+                # against 0.5s scoped.
+                # 🔴 ctx.sources IS EMPTY DURING THE LOOP. _finalize_response
+                # populates it AFTER every round has run, so reading it here
+                # resolved nothing — measured: 17 facts stored, zero ids.
+                # The sources that exist at this moment are the ones preload
+                # captured and the ones react's own tool calls returned.
+                _src_pool = list(getattr(ctx, "sources", None) or [])
+                for _pr in (getattr(ctx, "_v2_preloaded", None) or []):
+                    _src_pool.extend(_pr.get("sources") or [])
+                for _tr2 in (tool_results or []):
+                    _src_pool.extend(_tr2.get("sources") or [])
+                _id_by_name = {}
+                for _s2 in _src_pool:
+                    _n2 = (_s2.get("document_name") if isinstance(_s2, dict)
+                           else getattr(_s2, "document_name", None))
+                    _i2 = (_s2.get("document_id") if isinstance(_s2, dict)
+                           else getattr(_s2, "document_id", None))
+                    if _n2 and _i2 and _n2 not in _id_by_name:
+                        _id_by_name[_n2] = _i2
+                if _id_by_name:
+                    _v2_resp = _v2c.with_document_ids(_v2_resp, _id_by_name)
                 ctx._v2_last_contract = _v2_resp
                 _v2store.save_round(_v2c.to_row(
                     _v2_resp,
