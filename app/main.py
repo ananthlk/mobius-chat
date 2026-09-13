@@ -355,7 +355,11 @@ def _prewarm_worker_caches() -> None:
         _tr_warm()
         parts.append(f"toolreg_warm={int((time.perf_counter()-t)*1000)}ms")
     except Exception as e:
-        parts.append(f"toolreg_warm=FAIL({type(e).__name__})")
+        # THE TYPE NAME WAS NOT ENOUGH. "FAIL(OperationalError)" told me the
+        # catalogue did not warm and nothing about why, on the one boot where
+        # it mattered. A degraded path that cannot say what degraded it stops
+        # the search before it starts.
+        parts.append(f"toolreg_warm=FAIL({type(e).__name__}: {str(e)[:160]})")
     logger.info(
         "worker-prewarm: complete in %.2fs (%s) — first user turn skips this work",
         time.perf_counter() - t0, " ".join(parts),

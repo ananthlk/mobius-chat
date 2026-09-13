@@ -1408,6 +1408,13 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
                 pass
 
     if outcome == "could_not_run":
+        # VISIBLE, BECAUSE I COULD NOT SEE IT. The refusal reason reached the
+        # prompt summary but nothing logged it, so a preload that refused
+        # everything looked identical to one that found nothing — which is the
+        # distinction this module spent the night building everywhere else.
+        logger.info("[v2.toolreg] cid=%s tool=%s COULD_NOT_RUN route=%s: %s",
+                    (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                    r.get("route"), str(r.get("reason") or "")[:200])
         return {"tool": tool, "ok": False, "payload": "", "sources": [],
                 "asked": _asked,
                 "summary": f"COULD NOT RUN — {str(r.get('reason') or '')[:120]} "
@@ -5073,7 +5080,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _off = _tr_estimate(
                     _pre_q, caller_mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
                     correlation_id=getattr(ctx, "correlation_id", None),
-                    thread_id=getattr(ctx, "thread_id", None), arm="v2",
+                    # 🔴 arm IS A SMALLINT, NOT A LABEL. Their signature says
+                    # `arm: Optional[int]` and the column is smallint; I have
+                    # been passing the string "v2" since this line was written,
+                    # so EVERY offer persist has failed all night with
+                    # InvalidTextRepresentation and been swallowed as "offer
+                    # still valid". The offer worked, so nothing looked wrong —
+                    # and their telemetry has had no chat rows the entire time.
+                    thread_id=getattr(ctx, "thread_id", None), arm=2,
                 )
                 _offer_keys = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
                 # THE SIGNAL FOR THE EXACT-TOOL POSTURE, read from Tool
