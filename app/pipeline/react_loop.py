@@ -1407,6 +1407,25 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
             except Exception:
                 pass
 
+    # 🔴 EVERY OUTCOME, NOT ONLY THE REFUSALS.
+    #
+    # I logged could_not_run and let `empty` and `evidence` pass silently, so a
+    # preload that found nothing and one that was never called looked identical
+    # from outside — and Tool Manifest spent two rounds guessing at mechanisms
+    # (a classifier, then a catalogue read) because the only thing I could hand
+    # them was an absence. Their words: my instrumentation "is worth more than
+    # another hypothesis from me". They are right, and this is the same rule I
+    # applied to the trace fallback and the preload summary, arriving last at
+    # my own adapter.
+    #
+    # duration and source count are on the line because THAT is what settles
+    # it: `empty` in 0ms is a call that did not happen, `empty` in 45,000ms is
+    # a tool that hit its own wall. Neither is a corpus finding, and the number
+    # is the only thing that tells them apart.
+    logger.info("[v2.toolreg] cid=%s tool=%s outcome=%s route=%s ms=%s sources=%d",
+                (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                outcome or "?", r.get("route"), r.get("duration_ms"),
+                len(sources))
     if outcome == "could_not_run":
         # VISIBLE, BECAUSE I COULD NOT SEE IT. The refusal reason reached the
         # prompt summary but nothing logged it, so a preload that refused
