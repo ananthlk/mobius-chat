@@ -762,6 +762,13 @@ def execute(pl: PreloadPlan, runner, question: str,
             # no-op guarantee only holds if we actually omit it.
             if tool == "rag" and max_arms is not None:
                 _inputs["max_arms"] = int(max_arms)
+            # PRELOAD IS SPECULATIVE BY DEFINITION -- it runs before react has
+            # decided anything. The same honesty as the executor's flag: this
+            # is what lets rag_query_decisions tell a retrieval nobody consumed
+            # from one that produced an answer, instead of training on both as
+            # if they were the same.
+            if tool == "rag":
+                _inputs["speculative"] = True
             res = runner(tool, _inputs) or {}
             ok = bool(res.get("ok", True)) and not res.get("error")
             out.append({

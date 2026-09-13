@@ -171,6 +171,7 @@ def _post_skill(
     caller_id: str | None,
     call_number: int | None = None,
     max_arms: int | None = None,
+    speculative: bool | None = None,
 ) -> dict[str, Any]:
     """POST to rag's production /api/retriever/answer endpoint (Phase 1
     cutover, 2026-08-06 — see module docstring).
@@ -221,6 +222,21 @@ def _post_skill(
     # the A/B stays clean.
     if max_arms is not None:
         body["max_arms"] = int(max_arms)
+    # 🔴 THE ROW MUST BE ABLE TO SAY NOBODY CONSUMED THIS.
+    #
+    # rag's ONE write is persist_decision() into rag_query_decisions, which is
+    # bandit/calibration TRAINING data, not a dashboard. v2 preloads rag on
+    # every turn before react speaks, so without this flag the training set
+    # fills with retrievals nobody used — indistinguishable from consumed ones,
+    # and healthy-looking the whole time (more rows, no errors).
+    #
+    # Retriever shipped the column and verified it live (bcf155b):
+    #     speculative:true -> rag_query_decisions.speculative = True
+    #     omitted          -> False
+    # Omitted rather than false for v1, so every existing row and every
+    # existing caller keeps its exact meaning.
+    if speculative:
+        body["speculative"] = True
     if citable_required:
         body["citable_required"] = True
     # call_number (2026-08-08, Chat Master directive, Retriever-confirmed
@@ -634,6 +650,8 @@ def _run(call: SkillCall) -> SkillEnvelope:
             # None and its body is unchanged.
             max_arms=(inputs.get("max_arms")
                       if isinstance(inputs, dict) else None),
+            speculative=(bool(inputs.get("speculative"))
+                         if isinstance(inputs, dict) else None),
             token_budget_for_retrieval=token_budget_for_retrieval,
             citable_required=citable_required,
             caller_id=caller_id,

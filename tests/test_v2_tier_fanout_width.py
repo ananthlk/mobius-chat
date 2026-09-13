@@ -123,3 +123,29 @@ def test_the_signal_has_a_PRODUCER():
     assert writes, "_v2_entity_count is never written"
     assert any("entity_count" in ast.dump(n.value) for n in writes), (
         "entity_count must come from the offer, not from a constant")
+
+
+def test_preload_marks_rag_calls_speculative():
+    """🔴 THE TRAINING SET MUST BE ABLE TO TELL.
+
+    rag's one write is persist_decision() into rag_query_decisions —
+    bandit/calibration TRAINING data. v2 preloads rag every turn before react
+    speaks, so without this flag the set fills with retrievals nobody consumed,
+    indistinguishable from consumed ones, looking healthy the whole time.
+
+    Retriever shipped and verified the column (bcf155b):
+        speculative:true -> True, omitted -> False
+    """
+    sent = {}
+
+    def runner(tool, inputs):
+        sent[tool] = dict(inputs)
+        return {"ok": True, "summary": "s", "payload": "p", "sources": []}
+
+    plan = preload.PreloadPlan(execute=["rag", "payor_fact"], suggest=(), excluded=())
+    preload.execute(plan, runner, "q")
+    assert sent["rag"].get("speculative") is True, (
+        "a preloaded rag call is being recorded as though someone chose it")
+    # It means nothing to a fact lookup, and the executor carries its own flag
+    # for those — sending it here would be a second author of the same fact.
+    assert "speculative" not in sent["payor_fact"]
