@@ -1,27 +1,45 @@
-"""Export v2's facts as calibration ground truth.
+"""Export v2's UNLABELLED facts — a score distribution, not ground truth.
 
-Tool Manifest and Deep Research both asked for this, and it does double duty:
+🔴 THIS FILE WAS TITLED "calibration ground truth" AND ITS OWN DOCSTRING SAID
+THE FACTS ARE NOT LABELLED. Tool Manifest caught it: "the title says the
+opposite, and it is the one a reader sees first, in ls, in an import, in a
+commit message" — a name written from intent over a value wired from
+availability, which is my own diagnosis applied to my own module. The title is
+what someone reaches for in three weeks when they want "the ground truth file",
+and they would find unlabelled facts.
 
-  * Deep Research's verifier bar is SUPPORTED_AT = 0.62, set from three probes.
-    Their own file calls it "a judgement wearing a number". A few hundred real
-    facts with provenance turn it into a measurement — and tell us whether one
-    bar works across payers or has to move per document type.
-  * Tool Manifest has never had per-tool OUTCOME evidence for their ranking.
-    Same stream, keyed the same way.
+WHAT THIS STREAM CANNOT DO. It cannot calibrate a bar. Calibration needs
+someone saying THIS CLAIM IS SUPPORTED BY THAT PAGE, independently of the
+score. Nothing here does. Feeding scores back to choose a cut between them is
+circular, and would turn Deep Research's declared 0.62 into a number with a
+bigger sample and the same epistemic status.
 
-SHAPE, as Tool Manifest specified: per fact, keyed on correlation_id, carrying
-fact / document_id / page / arm. correlation_id is the same key as
-selection_event, so verdicts join decisions without a second identifier.
+WHAT IT CAN DO, and why it is still worth running:
+
+  1. THE SCORE DISTRIBUTION. Bimodal => the trough is a candidate cut with an
+     argument behind it rather than three probes. Unimodal => also a finding,
+     and a worse one: the tool does not separate these populations and no bar
+     saves it.
+  2. THE UNVERIFIABLE RATE. The share with no document_id measures MY
+     resolution, not the verifier.
+  3. PER-TOOL OUTCOME EVIDENCE for Tool Manifest's ranking, which has never had
+     any.
+
+WHAT WOULD ACTUALLY CALIBRATE: a hand-checked subset — thirty or so facts where
+a person reads the cited page and says yes or no. Tool Manifest: "that is the
+only thing that turns a distribution into a calibration, it does not scale, and
+it does not need to." No volume substitutes for it.
+
+SHAPE, as Tool Manifest specified: per fact, keyed on correlation_id — the same
+key as selection_event, so verdicts join decisions without a second identifier
+— carrying fact / document_id / page / arm.
 
 document_id, NOT the display name: the verifier scopes by id (144s unscoped
-against 0.5s scoped), and a display name like "Sunshine Provider Manual" is not
-a corpus filename — it verifies as unverifiable however true the claim is.
+against ~0.5s scoped), and "Sunshine Provider Manual" is a display name, not a
+corpus filename — it verifies as unverifiable however true the claim is.
 
-HONEST ABOUT THE SAMPLE. These facts are NOT labelled. They are what react
-produced from real retrieved passages, so most should verify as supported — but
-"should" is the hypothesis being tested, not an input to it. Rows where
-document_id is empty are included and flagged: they are the population that
-cannot be scoped, and their share is itself a finding.
+Rows without an id are INCLUDED and flagged. They are the population that
+cannot be scoped, and their share is finding (2).
 
 Run: .venv/bin/python scripts/export_v2_facts.py [out.jsonl]
 """
