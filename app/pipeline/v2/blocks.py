@@ -39,9 +39,14 @@ PURE. Facts in, text out.
 
 from __future__ import annotations
 
+import logging
+import os
+
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 class Slot(IntEnum):
@@ -197,20 +202,48 @@ def _communicating(f: Facts) -> bool:
     )
 
 
+#: Kill switch. This block is a SUGGESTION -- a turn is strictly better off
+#: without it than failed by it -- so it can be turned off on a running
+#: revision without a revert or a redeploy of anything else.
+ANSWER_SHAPE_ENABLED = (
+    os.environ.get("MOBIUS_ANSWER_SHAPE_ENABLED", "1").strip()
+    not in ("0", "false", "no", "")
+)
+
+
 def _answer_shape(f: Facts) -> str | None:
     """The suggested answer shape, or None when no signal supports one.
 
     Imported lazily: the wording lives in the UX formatter's module and this
     file owns only placement and gating. Deterministic -- regex and string
     assembly, no model, hash-stable across processes.
-    """
-    from app.responder.answer_template import EvidenceShape, suggest_from_question
 
-    return suggest_from_question(
-        f.question,
-        entities=f.entities,
-        evidence=EvidenceShape(pages_per_entity=dict(f.pages_per_entity)),
-    )
+    FAIL-SOFT, ADDED 2026-09-13 AFTER A DEV OUTAGE. This runs inside
+    assemble(), which runs inside the react stage, which has ONE try/except
+    around the whole loop -- so anything raising here fails the turn and the
+    user gets an error card. That trade is wrong in every direction: this
+    block only ever SUGGESTS a shape, so a turn without it is a turn formatted
+    the way it was formatted last week, while a turn killed by it is nothing
+    at all.
+
+    The outage was not traced to this function (the error was a regex handed a
+    dict, which nothing on this path does -- fuzzing Facts with dicts in every
+    field raises nothing). It is guarded anyway: "we could not reproduce it"
+    is not a reason to leave a suggestion able to fail a turn.
+    """
+    if not ANSWER_SHAPE_ENABLED:
+        return None
+    try:
+        from app.responder.answer_template import EvidenceShape, suggest_from_question
+
+        return suggest_from_question(
+            f.question,
+            entities=f.entities,
+            evidence=EvidenceShape(pages_per_entity=dict(f.pages_per_entity)),
+        )
+    except Exception:
+        logger.exception("[answer_shape] suggestion failed — rendering none")
+        return None
 
 
 def _bullets(items) -> str:
@@ -759,13 +792,23 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
 def _entities_from_plan(ctx) -> tuple[str, ...]:
     """The planner already split "compare X, Y and Z" into one sub-question
     per entity. Recover the entity names from that split rather than from the
-    question's surface -- see answer_template.entities_from_subquestions."""
-    from app.responder.answer_template import entities_from_subquestions
+    question's surface -- see answer_template.entities_from_subquestions.
 
-    plan = getattr(ctx, "plan", None)
-    subs = (getattr(plan, "subquestions", None) or ()) if plan else ()
-    texts = tuple(str(getattr(sq, "text", "") or "") for sq in subs)
-    return entities_from_subquestions(texts)
+    Fail-soft for the same reason as _answer_shape: this feeds a suggestion,
+    and facts_from runs inside the react stage's single try/except. No
+    entities means no block, which is the default state of every turn that
+    shipped before this existed.
+    """
+    try:
+        from app.responder.answer_template import entities_from_subquestions
+
+        plan = getattr(ctx, "plan", None)
+        subs = (getattr(plan, "subquestions", None) or ()) if plan else ()
+        texts = tuple(str(getattr(sq, "text", "") or "") for sq in subs)
+        return entities_from_subquestions(texts)
+    except Exception:
+        logger.exception("[answer_shape] entity recovery failed — no entities")
+        return ()
 
 
 # ── WHAT THE LIVE FRAME TAKES FROM THIS REGISTRY ────────────────────────────
