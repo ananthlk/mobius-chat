@@ -359,6 +359,21 @@ SET_SECRETS=(
     # Beta: postgres superuser password for direct Cloud SQL connect.
     # Injected into CHAT_RAG_DATABASE_URL at connect time by db_client.
     "CHAT_DB_PASSWORD=db-password:latest"
+    # toolreg (Tool Manifest, vendored) opens its OWN Postgres connection for
+    # the tool catalogue, so chat's connect-time injection never reaches it.
+    # Measured on rev 01085-9fc:
+    #   toolreg_warm=FAIL(OperationalError: ... fe_sendauth: no password supplied)
+    # TOOLREG_DATABASE_URL is set and points at the right database; it simply
+    # carries no password, and toolreg calls psycopg2.connect(dsn) verbatim.
+    # Their 8148500 reads TOOLREG_DB_PASSWORD as a connect KWARG, deliberately
+    # never spliced into the DSN — the DSN is logged and appears in their
+    # wrong-database error text.
+    #
+    # IN THIS SCRIPT AND NOT AS AN OUT-OF-BAND UPDATE, for the reason the
+    # MOBIUS_SKILL_LLM_INTERNAL_KEY comment below records: --set-secrets
+    # REPLACES the whole set, so a `gcloud run services update` patch is lost
+    # on the next deploy. Same secret, second consumer.
+    "TOOLREG_DB_PASSWORD=db-password:latest"
     "CHROMA_AUTH_TOKEN=chroma-auth-token:latest"
     # Shared secret that gates /internal/skill-llm. Sibling services
     # (mobius-rag, mobius-qa/lexicon-maintenance) POST with
