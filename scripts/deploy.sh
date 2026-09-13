@@ -110,8 +110,28 @@ GIT_DIRTY="$(git -C "${CHAT_DIR}" diff --quiet 2>/dev/null && git -C "${CHAT_DIR
 echo "▸ Deploying from HEAD: ${GIT_SHA}  (branch: ${GIT_BRANCH}, working tree: ${GIT_DIRTY})"
 echo "▸ Repo path: ${CHAT_DIR}"
 if [[ "${GIT_DIRTY}" == "DIRTY" ]]; then
-    echo "  warn: working tree has uncommitted changes — image will reflect committed HEAD only" >&2
+    # 🔴 THIS WARNING USED TO SAY THE OPPOSITE OF WHAT HAPPENS.
+    #
+    # It read "image will reflect committed HEAD only". It does not: line 147
+    # submits ${PARENT_DIR} -- the working tree of the monorepo -- as the build
+    # context, with no git ref and no checkout. Uncommitted edits ARE in the
+    # image. An operator with debug code in the tree would have read that line
+    # and believed it was excluded.
+    #
+    # A warning that states the safe case when the unsafe one is true is worse
+    # than no warning: it stops the check.
+    echo "  warn: working tree is DIRTY and the build context is the WORKING TREE" >&2
+    echo "        (${PARENT_DIR}, no git checkout) — uncommitted changes WILL ship" >&2
+    echo "        in this image. ${GIT_SHA} names the commit, NOT the image." >&2
 fi
+# NAME THE BRANCH IN THE SUMMARY, NOT ONLY THE SHA.
+#
+# Tool Manifest, 2026-09-13: every ship this session was reported as
+# "deployed, carrying <sha>" and nothing verified WHICH branch. 19 commits
+# turned out to be on claude/deterministic-envelope-formatter, 17 ahead of
+# main, and every deploy had shipped that branch. The information was on the
+# first line of a long log and was read past three times. See BUG_LOG #14.
+DEPLOY_PROVENANCE="${GIT_SHA} on ${GIT_BRANCH} (${GIT_DIRTY})"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -444,6 +464,14 @@ fi
 
 echo
 echo "✓ Deploy complete: ${IMAGE_TAG}"
+# The provenance line REPEATS at the end, where the operator is actually
+# looking. It is printed at the top too, 400 lines and several minutes of
+# build output earlier -- which is exactly why three ships this session were
+# reported without anyone noticing the branch.
+echo "✓ Shipped: ${DEPLOY_PROVENANCE}"
+if [[ "${GIT_DIRTY}" == "DIRTY" ]]; then
+    echo "  note: DIRTY — the image is the working tree, not ${GIT_SHA}." >&2
+fi
 SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
     --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
     --format='value(status.url)' 2>/dev/null || echo '')"

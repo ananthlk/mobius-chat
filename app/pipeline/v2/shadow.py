@@ -526,7 +526,31 @@ def promise_seconds(ctx, contract) -> float:
     lat = getattr(p, "latency_s", None) if p is not None else None
     if isinstance(lat, (int, float)) and lat > 0:
         return float(lat)
-    logger.info("[v2] no promise on ctx; budget falls back to %.1fs",
+    # 🔴 NAME THE TURN, OR THE LINE CANNOT BE READ.
+    #
+    # This logged without a correlation_id. In an A/B turn TWO arms run at the
+    # same instant and both reach here -- the served arm and the v1 shadow,
+    # whose promise chat.py:563 pops on purpose. I read a cid-less line beside
+    # v2's logs, concluded "the promise never reaches the v2 arm", and reported
+    # it to Ananth twice as a confirmed defect of mine.
+    #
+    # It was the V1 arm, behaving exactly as designed. The served v2 arm had
+    # tier=thinking, opened and attested:
+    #     [promise] opened      cid=452f4cc1 tier=thinking
+    #     [promise] attestation cid=452f4cc1 outcome=completed tier=thinking
+    #     [promise] attestation cid=7048e91b outcome=completed tier=None
+    #
+    # A diagnostic that cannot say WHICH turn it describes is not a weaker
+    # diagnostic, it is an actively misleading one: it reads as being about
+    # whatever else is nearby in the stream. The arm is on the line for the
+    # same reason -- "no promise" is CORRECT for a shadow and a DEFECT for a
+    # served turn, and nothing else here distinguishes them.
+    logger.info("[v2] no promise on ctx cid=%s arm=%s shadow=%s; budget falls "
+                "back to %.1fs -- expected for a v1 shadow arm (its promise is "
+                "popped at POST), a real defect for a served turn",
+                (getattr(ctx, "correlation_id", "") or "")[:8] or "?",
+                getattr(ctx, "ab_arm", None) or "?",
+                bool(getattr(ctx, "ab_shadow", False)),
                 _NO_PROMISE_FALLBACK_S)
     return _NO_PROMISE_FALLBACK_S
 
