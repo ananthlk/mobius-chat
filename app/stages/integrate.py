@@ -940,8 +940,19 @@ def run_integrate(
         and _is_sufficient_for_deterministic_pass(ctx)
     ):
         from app.responder.deterministic_format import deterministic_format
+        from app.responder.v2_adapter import budget_from_v2
         _dyn_enrich_used = True
-        _det_card = deterministic_format(getattr(ctx, "react_draft", None))
+        # v2's integrator has already decided, against the facts, whether this
+        # turn is grounded (coverage[] / citations, see docs/v2-ux-contract.md).
+        # The formatter reads that verdict instead of re-deciding it with a
+        # heuristic of its own -- two authors of one judgement, free to
+        # disagree, was the defect. A turn where v2 did not run returns no
+        # verdict and the formatter falls back to its own gates.
+        _det_card = deterministic_format(
+            getattr(ctx, "react_draft", None),
+            cid=getattr(ctx, "correlation_id", None),
+            budget=budget_from_v2(getattr(ctx, "v2_integration", None)),
+        )
         # Same guarantee as the LLM paths -- tool-derived typed sections
         # (deterministic, not LLM-composed) must survive regardless of which
         # integrator path produced the card (traced cid=2803928f).

@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from mobius_contracts.taxonomies.envelope_thresholds import (
+    BULLETS_MAX_AVG_WORDS,
     BULLETS_MIN_ITEMS,
     MAX_RICH_BLOCKS_PER_TURN,
     PAIRS_MAX_ITEMS,
@@ -697,3 +698,196 @@ class TestIntentCoercion:
             verdict = classify_envelope(payload)
             assert verdict.rule_id == expected_rule
             assert build_section(payload, verdict) is not None
+
+
+class TestBulletLengthGuard:
+    """A bullet long enough to be a paragraph is a paragraph with a dot.
+
+    Found on a live three-payer comparison (2026-09-12): items of 61, 64 and
+    69 words rendered as bullets because shape.bullets counted them and never
+    measured them. shape.stats has refused over-long values since day one on
+    exactly this reasoning; lists had no equivalent guard.
+    """
+
+    def _items(self, count: int, words: int) -> tuple[Item, ...]:
+        return tuple(Item(label=" ".join(["word"] * words)) for _ in range(count))
+
+    def test_short_items_are_a_list(self):
+        payload = ContentPayload(items=self._items(3, 5), explicit_list=True)
+        assert classify_envelope(payload).rule_id == "shape.bullets"
+
+    def test_items_at_the_cap_are_still_a_list(self):
+        payload = ContentPayload(
+            items=self._items(3, BULLETS_MAX_AVG_WORDS), explicit_list=True
+        )
+        assert classify_envelope(payload).rule_id == "shape.bullets"
+
+    def test_paragraph_length_items_abstain(self):
+        payload = ContentPayload(
+            items=self._items(3, BULLETS_MAX_AVG_WORDS + 1), explicit_list=True
+        )
+        verdict = classify_envelope(payload)
+        assert verdict.format is None
+        assert verdict.rule_id == "abstain.prose_list"
+
+    def test_the_reason_names_the_measurement(self):
+        """The trace has to say WHICH abstain: 'no structure here' and 'the
+        structure was too heavy to bullet' are different findings, and only
+        the second says the ANSWER should change rather than the formatter."""
+        payload = ContentPayload(items=self._items(3, 60), explicit_list=True)
+        assert "60 words" in classify_envelope(payload).reason
+
+    def test_the_average_decides_not_the_longest(self):
+        """One long item among short ones is still a list. Clipping it is the
+        renderer's problem, not a reason to throw away the structure."""
+        items = self._items(4, 3) + (Item(label=" ".join(["word"] * 40)),)
+        payload = ContentPayload(items=items, explicit_list=True)
+        assert classify_envelope(payload).rule_id == "shape.bullets"
+
+    def test_the_guard_does_not_apply_to_steps(self):
+        """A step is an instruction and instructions are legitimately long."""
+        payload = ContentPayload(items=self._items(3, 60), ordered=True)
+        assert classify_envelope(payload).rule_id == "shape.steps"
+
+    def test_an_explicit_request_still_wins(self):
+        """Rule 1 outranks the guard: a user who asked for bullets gets them."""
+        payload = ContentPayload(items=self._items(3, 60), explicit_list=True)
+        verdict = classify_envelope(payload, IntentSignals(explicit_format="bullets"))
+        assert verdict.rule_id == "intent.explicit"
+        assert build_section(payload, verdict) is not None
+
+
+class TestAbstainingBlocksKeepTheirContent:
+    """The content-loss bug the length guard exposed.
+
+    prose was computed from what segmentation CONSUMED rather than from what
+    actually RENDERED, so a block that classified and then declined a card had
+    its lines removed from the answer AND no section to appear in. Measured:
+    a table plus a long-bullet block rendered the table and dropped three
+    paragraphs of real content entirely.
+    """
+
+    MIXED = (
+        "Here are the deadlines.\n\n"
+        "| Payer | Deadline |\n| --- | --- |\n| Molina | 180 days |\n\n"
+        + "- " + " ".join(["alpha"] * 40) + "\n"
+        + "- " + " ".join(["bravo"] * 40) + "\n"
+        + "- " + " ".join(["charlie"] * 40) + "\n"
+    )
+
+    def test_the_rendering_block_still_leaves_the_prose(self):
+        card = deterministic_format(self.MIXED)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+        assert "| Molina |" not in card["direct_answer"]
+
+    def test_the_abstaining_block_keeps_its_content(self):
+        card = deterministic_format(self.MIXED)
+        for word in ("alpha", "bravo", "charlie"):
+            assert word in card["direct_answer"], f"lost the {word} block"
+
+    def test_a_single_fact_block_is_not_swallowed_either(self):
+        """The same bug reachable through abstain.single_fact."""
+        draft = (
+            "| Payer | Deadline |\n| --- | --- |\n| Molina | 180 days |\n\n"
+            "Escalation contact: provider.services@sunshinehealth.com\n"
+        )
+        card = deterministic_format(draft)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+        assert "provider.services@sunshinehealth.com" in card["direct_answer"]
+
+    def test_prose_property_still_subtracts_every_block(self):
+        from app.responder.deterministic_format import segment_draft
+        seg = segment_draft(self.MIXED)
+        assert "| Molina |" not in seg.prose
+        assert "alpha" not in seg.prose
+
+    def test_prose_excluding_subtracts_only_what_is_named(self):
+        from app.responder.deterministic_format import segment_draft
+        seg = segment_draft(self.MIXED)
+        kept = seg.prose_excluding([0])
+        assert "| Molina |" not in kept
+        assert "alpha" in kept
+
+
+class TestLabelledBullets:
+    """react writes "Label: value" bullets unprompted when the answer has a
+    label/value shape and the format rules give it nowhere to put one.
+
+    Live (cid 9c825ca5): five labelled items averaging 31 words. The bullet
+    path read them as an over-long list and abstained, so a definition table
+    the answer had already built was thrown away and the user got prose.
+    """
+
+    LIVE = (
+        "Molina's program is built on an integrated approach. Here's how it works:\n\n"
+        "*   Dedicated Team: The Care Management team includes licensed nurses and "
+        "clinicians with behavioral health experience to support members. [1]\n"
+        "*   Integrated Care Management (ICM): For members with high-risk psychiatric, "
+        "medical, or psychosocial needs, there's a specialized ICM program. [1, 20]\n"
+        "*   Provider Collaboration: Molina emphasizes the partnership between Primary "
+        "Care Providers and behavioral health specialists. [1]\n"
+        "*   Provider Resources: Molina offers an online Behavioral Health Tool Kit for "
+        "screening, assessment and diagnosis. [21]\n"
+        "*   Member Support: Members have access to a 24/7 behavioral health crisis "
+        "line staffed by clinicians. [3]\n"
+    )
+
+    def test_a_labelled_run_becomes_a_table(self):
+        card = deterministic_format(self.LIVE)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+        assert card["sections"][0]["data"]["headers"] == ["Item", "Detail"]
+
+    def test_the_labels_become_the_rows(self):
+        rows = deterministic_format(self.LIVE)["sections"][0]["data"]["rows"]
+        assert [r[0] for r in rows] == [
+            "Dedicated Team", "Integrated Care Management (ICM)",
+            "Provider Collaboration", "Provider Resources", "Member Support",
+        ]
+
+    def test_it_no_longer_abstains(self):
+        """This exact answer previously produced abstain.prose_list and no
+        card at all."""
+        card = deterministic_format(self.LIVE)
+        assert "presentation" not in card
+
+    def test_bold_markers_do_not_leak_into_row_labels(self):
+        """react's format rules ask for bold on entity names. A row header
+        carrying ** is markup leaking into data."""
+        draft = (
+            "- **Filing deadline**: 180 days from the date of service\n"
+            "- **Appeal deadline**: 60 days from the denial\n"
+            "- **Resubmission**: 90 days from the original claim\n"
+        )
+        rows = deterministic_format(draft)["sections"][0]["data"]["rows"]
+        assert [r[0] for r in rows] == ["Filing deadline", "Appeal deadline", "Resubmission"]
+
+    def test_all_or_nothing(self):
+        """One labelled line among unlabelled ones is a sentence with a colon.
+        Promoting on that basis puts prose in a cell and leaves half the rows
+        with empty labels."""
+        draft = (
+            "- Dedicated Team: licensed nurses and clinicians support members\n"
+            "- Molina emphasizes partnership between providers and specialists\n"
+            "- Provider Resources: an online Behavioral Health Tool Kit\n"
+        )
+        card = deterministic_format(draft)
+        assert card["sections"][0]["format"] == "bullets"
+
+    def test_short_labelled_bullets_are_still_a_table(self):
+        """The rule is the label/value SHAPE, not the length. A short labelled
+        list is a definition list too -- it just fits in stats tiles."""
+        draft = "- Filing: 180 days\n- Appeal: 60 days\n- Resubmission: 90 days\n"
+        card = deterministic_format(draft)
+        assert card["sections"][0]["format"] == "stats"
+
+    def test_an_unlabelled_long_list_still_abstains(self):
+        """The three-payer answer's bullets open with a bold entity name and
+        no colon. Those genuinely need a table from upstream, and the guard
+        must keep saying so."""
+        draft = "\n".join(
+            "- **Payer " + str(i) + "** focuses on " + " ".join(["word"] * 40)
+            for i in range(3)
+        )
+        card = deterministic_format(draft)
+        assert card["sections"] == []
+        assert card["presentation"]["rule_id"] == "abstain.prose_list"

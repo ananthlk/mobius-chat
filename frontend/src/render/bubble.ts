@@ -10,6 +10,7 @@ import type {
 } from "../answer-card";
 import { MAX_SECTIONS } from "../answer-card";
 import { TAB_ORDER, type TabKey } from "../card-render-model";
+import { STATS_MAX_ITEMS } from "../generated/envelope-thresholds";
 import {
   simpleMarkdownToHtml, renderConfidenceBadge, renderQcAuditBadge,
   type QcAuditInfo, type FollowupLineNormalized,
@@ -72,7 +73,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
   if (fmt === "stats" && data?.items) {
     const grid = document.createElement("div");
     grid.className = "ac-fmt-stats";
-    data.items.slice(0, 4).forEach((item) => {
+    data.items.slice(0, STATS_MAX_ITEMS).forEach((item) => {
       const tile = document.createElement("div");
       tile.className = "ac-fmt-stat-tile";
       const val = document.createElement("div");

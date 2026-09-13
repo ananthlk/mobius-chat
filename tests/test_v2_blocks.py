@@ -125,7 +125,11 @@ def test_every_block_declares_an_owner():
     """Wording ownership is the thing that decides who may edit it without a
     deploy. A block with no owner is prose nobody is responsible for."""
     for b in REGISTRY:
-        assert b.owner in {"governor", "llm_seat", "chat"}, (b.id, b.owner)
+        # "ux" added 2026-09-13 (Governor's ruling): the answer_shape block's
+        # sentences are the UX formatter seat's, and governor owns only its
+        # placement and gating. owner="governor" on a block whose wording
+        # another seat wrote would put the wrong name on that judgement.
+        assert b.owner in {"governor", "llm_seat", "chat", "ux"}, (b.id, b.owner)
 
 
 # ── COMMUNICATE: the role that addresses the asker, not the evidence ────────

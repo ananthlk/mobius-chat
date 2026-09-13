@@ -51,6 +51,12 @@ class Slot(IntEnum):
     USER_IDENTITY = 20
     ROLE = 30
     QUESTION = 40
+    # HOW to write it, when the question determines that. After QUESTION
+    # because the shape derives from it; before ANSWER because on a critic
+    # round the draft is measured AGAINST the shape. Slots are spaced in tens
+    # so a later block lands between two without a renumber -- this is that.
+    # (Proposed by the UX formatter seat, accepted 2026-09-13.)
+    ANSWER_SHAPE = 42
     # The draft answer, when there IS one. Sits between the question and the
     # evidence because that is what the critic round reads in that order:
     # what was asked, what we said, what we said it from.
@@ -98,6 +104,20 @@ class Facts:
     # rag, then we are likely with the answer". This is that signal, and it is
     # read from their field rather than inferred from how the round went.
     exact_tool: bool = False
+    # WHAT THE QUESTION WAS SPLIT INTO, and how much evidence each part got.
+    # Read by the answer_shape block: three payers named in one question is a
+    # comparison, and a comparison written as prose makes the reader do the
+    # comparing.
+    #
+    # `entities` is recovered from the planner's own sub-questions by set
+    # difference (answer_template.entities_from_subquestions), not parsed out
+    # of the question text -- a surface parser was tried, found three defects
+    # in four minutes of live traffic, and deleted rather than deprecated.
+    entities: tuple[str, ...] = ()
+    # DISTINCT pages per part. Distinct is the operative word: a live answer
+    # cited one payer twice and both were p5, which reads as two sources until
+    # you compare the numbers. Tuple-of-tuples, not a dict: Facts is frozen.
+    pages_per_entity: tuple[tuple[str, int], ...] = ()
     # react's own running judgement, carried forward.
     useful: tuple[str, ...] = ()              # what it kept and why it mattered
     discarded: tuple[str, ...] = ()           # what it saw and rejected
@@ -157,6 +177,40 @@ def _drafting(f: Facts) -> bool:
     cap and no round is asked to draft and review the same text at once.
     """
     return not f.answer.strip()
+
+
+def _communicating(f: Facts) -> bool:
+    """True when THIS round writes what the user reads.
+
+    Ananth, 2026-09-13: "with communicate means extended answer space exists".
+    So the extended answer keys on role_communicate RENDERING, not on the
+    round being the finalising one -- there is a third way in, the exact_tool
+    posture, where Tool Manifest declares a tool covers the question exactly
+    and communicate fires on ROUND 1 with no finalising round at all.
+
+    A function rather than a condition either seat retypes: the UX formatter's
+    answer_shape block needs the same test, and two copies of this expression
+    would drift the first time the posture changed.
+    """
+    return f.finalising or (
+        bool(f.preloaded or f.useful) and (not f.gaps or f.exact_tool)
+    )
+
+
+def _answer_shape(f: Facts) -> str | None:
+    """The suggested answer shape, or None when no signal supports one.
+
+    Imported lazily: the wording lives in the UX formatter's module and this
+    file owns only placement and gating. Deterministic -- regex and string
+    assembly, no model, hash-stable across processes.
+    """
+    from app.responder.answer_template import EvidenceShape, suggest_from_question
+
+    return suggest_from_question(
+        f.question,
+        entities=f.entities,
+        evidence=EvidenceShape(pages_per_entity=dict(f.pages_per_entity)),
+    )
 
 
 def _bullets(items) -> str:
@@ -426,6 +480,30 @@ REGISTRY: tuple[Block, ...] = (
           render=lambda f: f"[THE QUESTION] {f.question}",
           owner="chat"),
 
+    Block("answer_shape", Slot.ANSWER_SHAPE,
+          # Only on the round that writes what the user reads. Suggesting a
+          # table shape to a judging round is noise in a prompt that is
+          # already long.
+          #
+          # WHY THIS BLOCK EXISTS. REACT_FORMAT_RULES_TEXT (react/prompts.py)
+          # hard-codes one answer shape -- a bold line plus "2-4 short bullet
+          # points (each 10-25 words)" -- and never mentions a table. So a
+          # three-entity comparison is STRUCTURALLY unable to come back as
+          # one. Measured live: the three-payer care-management answer shipped
+          # bullets of 61, 64 and 69 words against react's own 25-word cap,
+          # forced into a list because no instruction permitted anything else.
+          # That is not the model choosing badly; it is the model having no
+          # option to choose.
+          #
+          # It SUGGESTS. The block's own text says so -- react has read the
+          # evidence and this has not, so evidence that contradicts the shape
+          # wins. The downstream formatter catches a violation either way
+          # (abstain.prose_list fires when bullets exceed react's own cap) and
+          # names it in the trace rather than rendering it.
+          when=lambda f: _communicating(f) and _answer_shape(f) is not None,
+          render=lambda f: _answer_shape(f) or "",
+          owner="ux"),
+
     Block("answer", Slot.ANSWER,
           when=lambda f: not _drafting(f),
           render=lambda f: "[THE ANSWER GIVEN — critique this]\n" + f.answer,
@@ -672,8 +750,22 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         # already judged and cost a fraction of the passages they replace.
         useful=tuple((stored_useful + useful)[-5:]),
         discarded=tuple(discarded[-3:]),
+        entities=_entities_from_plan(ctx),
+        pages_per_entity=(),
         can_complete=True,
     )
+
+
+def _entities_from_plan(ctx) -> tuple[str, ...]:
+    """The planner already split "compare X, Y and Z" into one sub-question
+    per entity. Recover the entity names from that split rather than from the
+    question's surface -- see answer_template.entities_from_subquestions."""
+    from app.responder.answer_template import entities_from_subquestions
+
+    plan = getattr(ctx, "plan", None)
+    subs = (getattr(plan, "subquestions", None) or ()) if plan else ()
+    texts = tuple(str(getattr(sq, "text", "") or "") for sq in subs)
+    return entities_from_subquestions(texts)
 
 
 # ── WHAT THE LIVE FRAME TAKES FROM THIS REGISTRY ────────────────────────────
@@ -687,7 +779,10 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
 #   USEFUL      what react kept, carried across rounds
 #   NOT_USEFUL  what it saw and rejected -- which has never been told back to
 #               it, so every round is free to re-retrieve and re-read it
-FRAME_SLOTS: tuple[Slot, ...] = (Slot.ROLE, Slot.USEFUL, Slot.NOT_USEFUL)
+#   ANSWER_SHAPE how to write the answer, when the question determines that.
+#                Nothing else renders it -- react's FORMAT RULES live in its
+#                own system prompt, not in this frame, and they have no table.
+FRAME_SLOTS: tuple[Slot, ...] = (Slot.ROLE, Slot.ANSWER_SHAPE, Slot.USEFUL, Slot.NOT_USEFUL)
 
 
 def frame_sections(f: Facts) -> tuple[list[str], tuple[str, ...]]:
