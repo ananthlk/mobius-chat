@@ -356,3 +356,99 @@ def test_the_finalising_flag_is_cleared_after_the_round_that_uses_it():
     # Cleared where the facts are built, i.e. once per round, not at exit.
     block = src[max(0, j - 700):j + 60]
     assert "FIRES ONCE" in block
+
+
+# ── the finalising round's composition, per Ananth ─────────────────────────
+
+def test_a_clean_finalising_round_is_communicate_then_validate():
+    """Ananth, 2026-09-12: "if complete = true then round 2 is not judge it is
+    communicate > validate"."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),),
+              gaps=(("S1", "g"),), suggest=("rag",))
+    r = _roles(assemble(Facts(**kw, finalising=True))[1])
+    assert r == ["role_communicate", "role_validate"]
+
+
+def test_findings_turn_it_into_incorporate_then_communicate():
+    """"if there was critic errors then incorporate >> communicate" — and
+    incorporate comes FIRST: an answer written and corrected after is two
+    answers, and the reader gets whichever one the renderer picked."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),),
+              gaps=(("S1", "g"),), suggest=("rag",))
+    r = _roles(assemble(Facts(**kw, finalising=True,
+                              critic_findings=('"optimal outcomes" unsupported',)))[1])
+    assert r == ["role_incorporate", "role_communicate"]
+
+
+def test_judging_is_not_repeated_on_the_finalising_round():
+    """The earlier rounds judged. Asking the finalising round to judge again
+    invites it to re-open a question it just closed — measured live: a
+    communicate round that also judged came back complete=false, 0 facts."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),))
+    assert "role_judge" not in _roles(assemble(Facts(**kw, finalising=True))[1])
+    assert "role_judge" in _roles(assemble(Facts(**kw))[1])
+
+
+def test_the_findings_are_named_in_the_prompt_not_just_counted():
+    """"fix the claims" without saying WHICH is an instruction react cannot
+    follow — the same defect as telling it 20 passages were rejected."""
+    txt = assemble(Facts(question=Q, preloaded=(("rag", True, "x"),),
+                         finalising=True,
+                         critic_findings=('"optimal outcomes" is not in the evidence',
+                                          "UHC goals unsupported")))[0]
+    assert '"optimal outcomes" is not in the evidence' in txt
+    assert "UHC goals unsupported" in txt
+
+
+def test_incorporate_forbids_silent_deletion():
+    """Dropping an unverified claim without saying so leaves the reader with a
+    shorter answer and no idea something was removed."""
+    txt = assemble(Facts(question=Q, preloaded=(("rag", True, "x"),),
+                         finalising=True, critic_findings=("x",)))[0]
+    assert "do not silently delete" in txt
+
+
+# ── the finalising round's composition, per Ananth ─────────────────────────
+
+def test_a_clean_finalising_round_is_communicate_then_validate():
+    """Ananth, 2026-09-12: "if complete = true then round 2 is not judge it is
+    communicate > validate"."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),),
+              gaps=(("S1", "g"),), suggest=("rag",))
+    assert _roles(assemble(Facts(**kw, finalising=True))[1]) == [
+        "role_communicate", "role_validate"]
+
+
+def test_findings_turn_it_into_incorporate_then_communicate():
+    """"if there was critic errors then incorporate >> communicate" — and
+    incorporate comes FIRST: an answer written and corrected after is two
+    answers, and the reader gets whichever the renderer picked."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),),
+              gaps=(("S1", "g"),), suggest=("rag",))
+    assert _roles(assemble(Facts(**kw, finalising=True,
+                                 critic_findings=("x unsupported",)))[1]) == [
+        "role_incorporate", "role_communicate"]
+
+
+def test_judging_is_not_repeated_on_the_finalising_round():
+    """Measured live: a communicate round that ALSO judged came back
+    complete=false with zero facts — it talked itself out of an answer it had
+    already decided was ready."""
+    kw = dict(question=Q, preloaded=(("rag", True, "15"),))
+    assert "role_judge" not in _roles(assemble(Facts(**kw, finalising=True))[1])
+    assert "role_judge" in _roles(assemble(Facts(**kw))[1])
+
+
+def test_the_findings_are_named_not_counted():
+    """"fix the claims" without saying WHICH is an instruction react cannot
+    follow — the same defect as telling it twenty passages were rejected."""
+    txt = assemble(Facts(question=Q, preloaded=(("rag", True, "x"),),
+                         finalising=True,
+                         critic_findings=('"optimal outcomes" not in evidence',)))[0]
+    assert '"optimal outcomes" not in evidence' in txt
+
+
+def test_incorporate_forbids_silent_deletion():
+    txt = assemble(Facts(question=Q, preloaded=(("rag", True, "x"),),
+                         finalising=True, critic_findings=("x",)))[0]
+    assert "do not silently delete" in txt

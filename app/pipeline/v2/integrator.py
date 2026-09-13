@@ -337,6 +337,41 @@ _NEXT_FALLBACK = (
 )
 
 
+def critique_only(*, question: str, answer: str, facts=(), open_gaps=(),
+                  runner) -> tuple[tuple[PartVerdict, ...], str, tuple[str, ...]]:
+    """Just the critic, run BEFORE the answer is finalised.
+
+    Ananth, 2026-09-12: "if there was critic errors then incorporate >>
+    communicate" — which only works if the critique exists before the round
+    that writes the answer. Running it at finalize, as the full integrator
+    does, produces a verdict on an answer nobody can still change.
+
+    Returns (verdicts, summary, findings) where findings are the claims the
+    critic could not tie to the evidence, phrased for react to act on.
+
+    Never raises, and never invents: no grounded facts means no critique, not
+    a list of unsupported claims (see run() for why that matters).
+    """
+    grounded = [f for f in (facts or ()) if getattr(f, "grounded", False)]
+    if not grounded or not (answer or "").strip():
+        return (), "", ()
+    problems: list[str] = []
+    try:
+        sys_p, user_p = _critic_prompt(question, answer, facts, open_gaps)
+        raw = _call(runner, sys_p, user_p, CRITIC_MAX_TOKENS, "v2_critic")
+    except Exception as e:            # pragma: no cover
+        logger.warning("[v2.integrator] pre-answer critique failed: %s", e)
+        return (), "", ()
+    verdicts, summary = _parse_critique(raw, problems)
+    # Only the ones react can DO something about. "supported" needs no action,
+    # and "unobservable" means we could not check — telling react to fix a
+    # claim we merely failed to verify would have it delete good material.
+    findings = tuple(
+        f"{v.part}: {v.why}" if v.why else v.part
+        for v in verdicts if v.status in ("unsupported", "partial"))
+    return verdicts, summary, findings
+
+
 def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
         decision, runner) -> Integration:
     """Assemble, then critique and plan next steps CONCURRENTLY.

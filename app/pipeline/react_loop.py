@@ -6718,8 +6718,42 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 and (getattr(ctx, "react_hard_ceiling_s", 0) or 0) > _pp_elapsed_s):
             ctx._v2_finalised = True
             ctx._v2_finalising = True          # read by facts_from next round
+
+            # ── WHERE VERIFIED FINDINGS ARRIVE ─────────────────────────
+            # Ananth, 2026-09-12: "for now leave critic to be outside.. work
+            # with deep research they may have developed a deterministic critic
+            # loop for corpus material. if that is true that is what we need ..
+            # we pass it facts and see if they are accurate or not".
+            #
+            # So this is a CHANNEL, not a call. Nothing populates it today: the
+            # LLM critic stays outside the loop (it still runs at finalize, as
+            # telemetry) and a deterministic verifier is the intended source.
+            #
+            # WHY DETERMINISTIC IS THE RIGHT ANSWER HERE, and why I am glad not
+            # to be wiring the LLM one in: every fact already carries its
+            # document and page, so checking whether a claim is in the source
+            # is a string match against text we hold — not a judgement. It
+            # cannot be lenient, cannot hallucinate a verdict, costs nothing,
+            # and is falsifiable. An LLM critic in this position is a second
+            # opinion asked to grade the first, and this session has already
+            # watched it mark correctly-cited claims "unsupported".
+            #
+            # Populated => the finalising round becomes incorporate →
+            # communicate. Empty => communicate → validate.
+            ctx._v2_critic_findings = tuple(
+                getattr(ctx, "_v2_verified_findings", ()) or ())
+            if ctx._v2_critic_findings:
+                emit(f"  ⚠ verification found {len(ctx._v2_critic_findings)} "
+                     "claim(s) not supported by the cited source — the next "
+                     "round will fix them before writing")
+                for _c in ctx._v2_critic_findings[:3]:
+                    emit(f"      ✗ {str(_c)[:150]}")
+
             emit("  → Answer is complete. Taking one more round to write it "
-                 "for the person who asked (role: communicate).")
+                 "for the person who asked (role: "
+                 + ("incorporate → communicate"
+                    if getattr(ctx, "_v2_critic_findings", ()) else
+                    "communicate → validate") + ").")
             logger.info("[v2.finalise] cid=%s round=%s → communicate round",
                         (ctx.correlation_id or "")[:8], rn)
             continue

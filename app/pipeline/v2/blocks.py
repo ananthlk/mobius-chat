@@ -104,6 +104,11 @@ class Facts:
     # SUMMARISE the evidence, never to answer the person. Those are different
     # jobs, which is the entire reason the roles are separate.
     finalising: bool = False
+    # What the critic could NOT tie to the evidence. Present => the finalising
+    # round's job changes from "write it" to "fix it, then write it".
+    # Ananth, 2026-09-12: "if there was critic errors then incorporate >>
+    # communicate".
+    critic_findings: tuple[str, ...] = ()
     can_complete: bool = True
 
 
@@ -166,7 +171,12 @@ REGISTRY: tuple[Block, ...] = (
 
     # ── ROLE: two jobs, rendered only when each is real ──────────────────
     Block("role_judge", Slot.ROLE, rank=1,
-          when=lambda f: _drafting(f) and (bool(f.preloaded)),
+          # Judging is what the earlier rounds did. The finalising round has
+          # already decided the evidence is enough — asking it to judge again
+          # invites it to re-open a question it just closed, which is exactly
+          # what happened live: a communicate round that also judged came back
+          # complete=false with zero facts.
+          when=lambda f: _drafting(f) and bool(f.preloaded) and not f.finalising,
           render=lambda f: "[YOUR ROLE — JUDGE] Evidence has already been "
                            "retrieved for you below. Read it and decide: does "
                            "it answer the question? Name every part it does "
@@ -197,7 +207,11 @@ REGISTRY: tuple[Block, ...] = (
           # round, or kept from an earlier one. Not gated on completeness: a
           # PARTIAL answer written from real evidence is the correct outcome on
           # a multi-part question, and the grounding contract says so.
-          when=lambda f: _drafting(f) and (bool(f.preloaded or f.useful)),
+          # NOT on the finalising round: that round communicates (and either
+          # validates or incorporates first). Ananth: "if complete = true then
+          # round 2 is not judge it is communicate > validate".
+          when=lambda f: _drafting(f) and bool(f.preloaded or f.useful)
+                         and not f.finalising,
           render=lambda f: "[YOUR ROLE — SUMMARISE] Write the best answer the "
                            "kept evidence supports, and say plainly which "
                            "parts it does not cover. A partial answer from "
@@ -205,7 +219,7 @@ REGISTRY: tuple[Block, ...] = (
                            "answer that fills gaps from memory is not.",
           owner="governor"),
 
-    Block("role_communicate", Slot.ROLE, rank=4,
+    Block("role_communicate", Slot.ROLE, rank=5,
           # Ananth, 2026-09-12: "FINAL = SUMMARIZE + COMMUNICATE".
           #
           # SUMMARISE and COMMUNICATE are not the same job, and collapsing them
@@ -231,7 +245,38 @@ REGISTRY: tuple[Block, ...] = (
                            "the reader to notice the omission.",
           owner="governor"),
 
-    Block("role_critic", Slot.ROLE, rank=5,
+    Block("role_incorporate", Slot.ROLE, rank=4,
+          # Ananth: "if there was critic errors then incorporate >> communicate".
+          # The critic named claims it could not tie to the evidence. Fixing
+          # them is a job of its own and it comes BEFORE writing: an answer
+          # written first and corrected after is two answers, and the reader
+          # gets whichever one the renderer picked.
+          when=lambda f: bool(f.finalising and f.critic_findings),
+          render=lambda f: (
+              "[YOUR ROLE — INCORPORATE] A check found claims in the draft "
+              "that the evidence does not support:\n"
+              + "\n".join(f"  ✗ {c}" for c in f.critic_findings[:6])
+              + "\n  Fix each one before you write the answer: drop it, or "
+                "restate it as what the evidence actually says, or say plainly "
+                "that it could not be verified. Do not keep a claim you cannot "
+                "tie to a source — and do not silently delete a fact the "
+                "reader needs; say it is unverified instead."),
+          owner="governor"),
+
+    Block("role_validate", Slot.ROLE, rank=6,
+          # Ananth: "round 2 is not judge it is communicate > validate".
+          # AFTER communicate, not before: you validate what you wrote, not
+          # what you are about to write.
+          when=lambda f: bool(f.finalising and not f.critic_findings),
+          render=lambda f: (
+              "[YOUR ROLE — VALIDATE] Before you finish, check the answer you "
+              "just wrote against the evidence above. Every claim should be "
+              "traceable to a fact you were given. If one is not, say so in "
+              "the answer rather than removing it quietly — the reader needs "
+              "to know which parts are solid."),
+          owner="governor"),
+
+    Block("role_critic", Slot.ROLE, rank=7,
           # Replaces the enrichment module's critique pass. It has what that
           # module never had: the evidence the answer was written from, and the
           # record of what was rejected getting there.
@@ -244,7 +289,7 @@ REGISTRY: tuple[Block, ...] = (
                            "say so — do not invent a criticism.",
           owner="governor"),
 
-    Block("role_next_steps", Slot.ROLE, rank=6,
+    Block("role_next_steps", Slot.ROLE, rank=8,
           when=lambda f: not _drafting(f),
           render=lambda f: "[YOUR ROLE — NEXT STEPS] Say what would actually "
                            "close what is still open: the specific document, "
@@ -480,6 +525,7 @@ def facts_from(ctx, state, *, targeted_gap: str = "",
         # Set by react_loop when react has proposed complete and we are taking
         # one more round purely to write the answer.
         finalising=bool(getattr(ctx, "_v2_finalising", False)),
+        critic_findings=tuple(getattr(ctx, "_v2_critic_findings", ()) or ()),
         preloaded=tuple((p.get("tool"), bool(p.get("ok")), str(p.get("summary") or ""))
                         for p in (preloaded or [])),
         suggest=tuple(suggest),
