@@ -301,6 +301,132 @@ class PreloadPlan:
 # it mid-flight would leave the turn's state half-written. So the guarantee is
 # "preload starts no new work after this", which is honest and enforceable;
 # "preload never exceeds this" would not be.
+# ── PRICING PRELOAD AGAINST THE TIER ───────────────────────────────────────
+#
+# Ananth, 2026-09-13: "price the fan out width per tier".
+#
+# 🔴 WIDTH IS NOT A KNOB I HOLD, AND I AM NOT GOING TO BUILD ONE THAT DOES
+# NOTHING. The body chat sends rag is caller_mode, token_budget_for_retrieval,
+# citable_required, call_number, correlation_id. There is NO arms/width
+# parameter. The fanout_0/1/2 slots are rag's OWN routing decomposition of the
+# question. A `max_arms` here would be a gate with no caller -- the exact
+# defect this module keeps finding elsewhere -- so what is priced is the
+# DECISION TO SPEND, which I do hold: preload rag, or leave it in `suggest`
+# for react to choose deliberately.
+#
+# THE COST CURVE IS MEASURED, not assumed. Retriever, 2026-09-13, tag_select
+# alone, same query, same tag codes, post-warmup baseline, concurrency
+# controlled:
+#
+#     width=1   4.6-5.1s          1 -> 2   +30-40%
+#     width=2   5.9-6.9s          2 -> 3   +15-20%
+#     width=3   6.8-7.6s
+#     width=1   4.6s   -- returns to baseline the moment concurrency drops
+#
+# Mechanism identified and explicitly NOT the obvious one: 3 of 15 pool
+# connections is nowhere near exhaustion, so it is DB-side CPU in
+# tag_select's jsonb_object_keys() iteration. I would have governed against
+# the wrong thing if they had stopped at "contention".
+#
+# THESE ARE A COMPONENT, NOT THE WHOLE CALL. My own end-to-end preload of rag
+# measured 12.4s / 15.9s / 31.1s at width 3, and 13.3-27.7s after Retriever's
+# embed dedup landed. So the curve gives the SHAPE (monotonic in width, ~35%
+# then ~18%) and my own measurements give the LEVEL. Both are recorded so the
+# next person can see which half is whose.
+PRELOAD_ARM_MS: dict[int, int] = {1: 5100, 2: 6900, 3: 7600}
+
+# What fraction of the promise preload may spend before react has said
+# anything. Not a guess dressed as a constant: a turn needs at least one react
+# round (measured 10-18s) plus a communicate round (measured 6-9s), so the
+# share is what is left after reserving for those.
+#   fast     13+/-5s  -> 18s ceiling. One round + communicate is ~16s at the
+#                       low end, so preload gets almost nothing: spending 5s
+#                       here would put the promise out of reach before the
+#                       model speaks.
+#   normal   31+/-8s  -> 39s ceiling. Observed good turns: preload 12s,
+#                       round 1 ~10-14s, communicate ~6-9s.
+#   thinking 95+/-25s -> depth is the point; preload is not the constraint.
+PRELOAD_BUDGET_SHARE: dict[str, float] = {
+    "fast": 0.40,
+    "normal": 0.40,
+    "thinking": 0.60,
+}
+
+
+def expected_preload_ms(width: int = 3) -> int:
+    """Worst-case cost of a rag preload at this width, from Retriever's curve.
+
+    Defaults to 3 because WE CANNOT KNOW THE WIDTH BEFORE THE CALL: rag
+    decomposes the question itself. Pricing the typical case and being
+    surprised by the worst is how a 30-second tool passed a check priced at
+    800ms — the same error this module's ceiling rule exists to refuse.
+    """
+    if width in PRELOAD_ARM_MS:
+        return PRELOAD_ARM_MS[width]
+    return max(PRELOAD_ARM_MS.values())
+
+
+# 🔴 THE TIER CAPS THE WIDTH. This replaces a blunt "refuse preload entirely
+# on fast" that I built an hour ago because chat had no way to ask for a
+# narrower retrieval. Retriever shipped `max_arms` (d7d84e0), so the lever is
+# no longer 0-or-N: a cheap tier gets ONE arm rather than nothing.
+#
+# Their guarantees, which are what make this safe to rely on:
+#   - omitted (None) is a byte-for-byte no-op for every existing caller
+#   - CEILING, NOT TARGET: a one-entity question with max_arms=3 stays at one
+#   - NEVER SILENT: contract.traces.fanout_arms_dropped says how many were cut
+#     whenever the cap actually bit, zero otherwise
+#
+# That third one is the one I asked hardest for. A narrowed retrieval that does
+# not say it was narrowed is a claim about the CORPUS ("this is what there is")
+# when it is really a claim about MY BUDGET — the same could-not-check /
+# checked-false line this pair of modules has now crossed three times.
+MAX_ARMS_BY_TIER: dict[str, int | None] = {
+    "fast": 1,          # the question as asked, nothing speculative beyond it
+    "normal": 3,        # what we run today; a no-op when arms <= 3 anyway
+    "thinking": None,   # depth is the point; omit the cap entirely
+}
+
+
+def max_arms_for_tier(tier: str | None) -> int | None:
+    """How many concurrent rag arms this tier may buy. None = uncapped."""
+    return MAX_ARMS_BY_TIER.get((tier or "normal").strip().lower(),
+                                MAX_ARMS_BY_TIER["normal"])
+
+
+def affordable_for_tier(tier: str | None, promise_s: float | None,
+                        elapsed_s: float | None = None,
+                        width: int | None = None) -> tuple[bool, str]:
+    """May preload spend on THIS tier? (ok, why_not)
+
+    UNKNOWN PROMISE MEANS YES. A missing contract is not evidence of a tight
+    budget, and refusing on it would make preload silently stop working
+    wherever the promise is not wired — an absence read as a verdict, which is
+    the error this file keeps cataloguing.
+    """
+    if promise_s is None:
+        return True, ""
+    t = (tier or "normal").strip().lower()
+    # PRICE WHAT WE WILL ACTUALLY SPEND. Before max_arms existed this priced
+    # the worst case (3 arms) on every question, because chat could not ask for
+    # fewer -- so a single-payer question on `fast` was charged for a fan-out
+    # it would never have run. Now the cap IS the width we buy, so that is the
+    # number to charge.
+    if width is None:
+        _cap = max_arms_for_tier(t)
+        width = _cap if _cap is not None else max(PRELOAD_ARM_MS)
+    share = PRELOAD_BUDGET_SHARE.get(t, PRELOAD_BUDGET_SHARE["normal"])
+    budget_ms = max(0.0, (promise_s * 1000.0) - ((elapsed_s or 0.0) * 1000.0)) * share
+    cost_ms = expected_preload_ms(width)
+    if cost_ms > budget_ms:
+        return False, (
+            f"tier={t}: preload's worst case {cost_ms}ms exceeds its "
+            f"{budget_ms:.0f}ms share ({share:.0%}) of the remaining "
+            f"{promise_s:.0f}s promise — OFFERED to react instead, which is a "
+            f"decision rather than a guess")
+    return True, ""
+
+
 PRELOAD_WALL_MS = int(os.environ.get("MOBIUS_V2_PRELOAD_WALL_MS", "20000")
                       or 20000)
 
@@ -443,7 +569,9 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
          reasons: dict | None = None,
          ceilings: dict | None = None,
          turn_state: dict | None = None,
-         slots: dict | None = None) -> PreloadPlan:
+         slots: dict | None = None,
+         tier: str | None = None,
+         promise_s: float | None = None) -> PreloadPlan:
     """Rank-ordered offer -> (execute, suggest, excluded).
 
     `offer_tool_keys` is Offer.tools in the order estimate() returned them --
@@ -561,7 +689,8 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
 # revisit -- with isolated contexts, not with a shared one.
 
 def execute(pl: PreloadPlan, runner, question: str,
-            inputs: dict | None = None) -> list[dict]:
+            inputs: dict | None = None,
+            max_arms: int | None = None) -> list[dict]:
     """Run the planned tools in order. `runner(tool, inputs) -> dict` is
     injected so this stays testable without a network or a PipelineContext.
 
@@ -610,6 +739,11 @@ def execute(pl: PreloadPlan, runner, question: str,
             # parameter that means nothing to most of them.
             if tool == "rag" and PRELOAD_TOKEN_BUDGET > 0:
                 _inputs["token_budget_for_retrieval"] = PRELOAD_TOKEN_BUDGET
+            # THE TIER'S CAP, on the one tool that fans out. Omitted entirely
+            # when None so `thinking` is byte-for-byte today's call -- their
+            # no-op guarantee only holds if we actually omit it.
+            if tool == "rag" and max_arms is not None:
+                _inputs["max_arms"] = int(max_arms)
             res = runner(tool, _inputs) or {}
             ok = bool(res.get("ok", True)) and not res.get("error")
             out.append({

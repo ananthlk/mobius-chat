@@ -170,6 +170,7 @@ def _post_skill(
     citable_required: bool,
     caller_id: str | None,
     call_number: int | None = None,
+    max_arms: int | None = None,
 ) -> dict[str, Any]:
     """POST to rag's production /api/retriever/answer endpoint (Phase 1
     cutover, 2026-08-06 — see module docstring).
@@ -210,6 +211,16 @@ def _post_skill(
         body["caller_mode"] = caller_mode
     if token_budget_for_retrieval is not None:
         body["token_budget_for_retrieval"] = int(token_budget_for_retrieval)
+    # 🔴 THE TIER'S FAN-OUT CAP (Retriever d7d84e0). Forwarded only when the
+    # caller set it, because their no-op guarantee is stated for an OMITTED
+    # parameter, not for a null one -- sending max_arms=None would be trusting
+    # a promise they did not make.
+    #
+    # v1 NEVER SETS IT. This is a passthrough, not a default: v2's preload is
+    # the only caller that supplies it, so the v1 arm's body is unchanged and
+    # the A/B stays clean.
+    if max_arms is not None:
+        body["max_arms"] = int(max_arms)
     if citable_required:
         body["citable_required"] = True
     # call_number (2026-08-08, Chat Master directive, Retriever-confirmed
@@ -619,6 +630,10 @@ def _run(call: SkillCall) -> SkillEnvelope:
             base_url=base_url,
             query=query,
             caller_mode=caller_mode,
+            # v2's preload is the only caller that sets this; v1 leaves it
+            # None and its body is unchanged.
+            max_arms=(inputs.get("max_arms")
+                      if isinstance(inputs, dict) else None),
             token_budget_for_retrieval=token_budget_for_retrieval,
             citable_required=citable_required,
             caller_id=caller_id,
