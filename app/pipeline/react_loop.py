@@ -1362,6 +1362,57 @@ def _terms_not_returned(asked: str, res: dict) -> list[str]:
 # call implies for the turn comes back in `ctx_effects` and is applied HERE, in
 # our order. That is what makes concurrency their choice rather than a hazard
 # we inherit.
+def _fact_store_sources(payload) -> list:
+    """A certified fact-store answer, as a source react and the verifier can use.
+
+    🔴 payor_fact CITES A REAL DOCUMENT AND WE THREW THE CITATION AWAY.
+    Measured, cid a87898fa — all four facts:
+
+        document    "Sunshine Provider Manual"   <- real, in the corpus
+        page        null
+        document_id ""
+
+    The envelope carries it:
+        source.source  = "Sunshine Provider Manual"
+        source.locator = "page 121, 'Timely Claim Submission' table"
+        as_of          = "2026-09-12T03:27:26Z"
+
+    So the page was in the response and nothing parsed it, and verification
+    then refused every fact for want of provenance we had been handed. The
+    document_id is still missing — the fact store does not carry corpus ids —
+    but a name and a page make the citation checkable by a human and resolvable
+    the moment the id map has that document from any other retrieval.
+    """
+    if not isinstance(payload, dict):
+        return []
+    src = payload.get("source")
+    if not isinstance(src, dict):
+        return []
+    name = str(src.get("source") or "").strip()
+    if not name:
+        return []
+    page = None
+    m = re.search(r"\bpages?\s*([0-9]{1,4})", str(src.get("locator") or ""),
+                  re.I)
+    if m:
+        try:
+            page = int(m.group(1))
+        except ValueError:
+            page = None
+    val = payload.get("value")
+    text = (val.get("text") if isinstance(val, dict) else None) or ""
+    return [{
+        "document_name": name,
+        "page_number": page,
+        "text": str(text)[:2000],
+        # NOT a corpus id and not pretending to be one. Named so a reader can
+        # see why scoping fails rather than inferring an absence.
+        "document_id": "",
+        "authority": str(payload.get("authority") or "") or "fact_store",
+        "as_of": str(payload.get("as_of") or ""),
+    }]
+
+
 def _arms_dropped(res) -> int:
     """How many rag fan-out arms the tier's cap cut. 0 if none or unknown.
 
@@ -1440,6 +1491,10 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
                   if isinstance(payload.get("contract"), dict) else None)
         if isinstance(_c, list):
             sources = [x for x in _c if isinstance(x, dict)]
+    # A certified fact-store answer carries its provenance in `source`, not in
+    # chunks — surface it so the citation survives and the page is not lost.
+    if not sources:
+        sources = _fact_store_sources(payload)
     _asked = str((inputs or {}).get("query") or "").strip()
 
     # Their effects, our ordering. Unknown keys are IGNORED rather than setattr'd
@@ -7168,15 +7223,19 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 ctx._v2_verify = _vr
                 # THE EMIT SAYS WHICH OF THE THREE HAPPENED, because "we could
                 # not check" must never read as "we checked and it is fine".
+                # THE STORY, NOT THE MACHINE. What a person needs from this
+                # step is whether their answer was checked, what it cost them,
+                # and what happens next — never the tool key or the bar.
                 if _vr.skipped:
-                    _head = f"⊘ verification NOT RUN — {_vr.skipped[:90]}"
+                    _head = ("⊘ I could not check these claims against their "
+                             "sources — the answer stands unverified")
                 elif _vr.findings:
-                    _head = (f"⚠ verification: {len(_vr.findings)} claim(s) the "
-                             f"cited page does not support — going back to react")
+                    _head = (f"⚠ {len(_vr.findings)} claim(s) do not match the "
+                             f"page they cite — going back to correct them")
                 else:
-                    _head = (f"✓ verification: {_vr.supported}/{_vr.checked} "
-                             f"claim(s) confirmed at the cited page"
-                             + (f", {_vr.unverifiable} unverifiable"
+                    _head = (f"✓ Checked {_vr.supported} claim(s) against the "
+                             f"page each one cites — all confirmed"
+                             + (f" ({_vr.unverifiable} could not be checked)"
                                 if _vr.unverifiable else ""))
                 _det = [_v2vtr.kv("from", "verify_claims (Tool Manifest) — "
                                           "deterministic, not an LLM opinion"),

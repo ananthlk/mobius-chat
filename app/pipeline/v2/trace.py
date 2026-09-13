@@ -26,6 +26,7 @@ The marks match what react and rag already use, so one stream stays readable:
 from __future__ import annotations
 
 import logging
+import re
 
 from dataclasses import dataclass, field
 
@@ -147,19 +148,39 @@ def emit_step(emitter, correlation_id: str, step: Step, *, round=None,
                            "stage=%s: %r", step.stage, e2)
 
 
+# 🔴 THE HEADLINE IS THE STORY. THE DETAIL IS THE MACHINE.
+#
+# Ananth, 2026-09-13: "in your own user facing emits take all the technical
+# details out - not required.. tell the story and see what emits are missing
+# and incorporate. this is the user story."
+#
+# Every Step already has both: `headline` is the line a person reads, `detail`
+# is what opens underneath it. The internals were in the HEADLINE — block
+# counts, char counts, shape=mixed, composition hashes, tool keys — so the
+# visible trace read like a debugger and the story had to be reconstructed by
+# someone who knew the code.
+#
+# Nothing is deleted. Every number below moved DOWN into detail, where it is
+# one click away and still exact. What changed is which of the two a person
+# meets first.
+#
+# The rule: a headline says what happened FOR THE PERSON WHO ASKED. It names
+# documents, not tool keys; what we learned, not what shape it arrived in; what
+# we are about to do, not which module does it.
+
 def memory_step(rc) -> Step:
     """HEADLINE CARRIES THE NUMBERS that change a reader's mind: how much we
     already know, and whether the store answered at all."""
     if rc.unavailable:
-        head = "🧠 memory: UNAVAILABLE — " + rc.unavailable[0]
+        head = "🧠 I could not reach what I knew from earlier in this thread"
     elif rc.facts or rc.not_useful:
-        head = (f"🧠 memory: {len(rc.facts)} fact(s) known, "
-                f"{len(rc.not_useful)} source(s) already rejected"
+        head = (f"🧠 Picking up where we left off — {len(rc.facts)} thing(s) "
+                f"already established"
                 + (f", {rc.turn_chunks} chunk(s) held this turn"
                    if rc.turn_chunks else ""))
     else:
         # A NEW THREAD IS NOT A FAILURE, and must not read as one.
-        head = "🧠 memory: new thread — nothing known yet"
+        head = "🧠 New conversation — starting from scratch"
     det = []
     for u in rc.unavailable:
         det.append(kv("degraded", u))
@@ -179,10 +200,12 @@ def memory_step(rc) -> Step:
 
 
 def preload_step(execute, suggest, excluded) -> Step:
-    head = (f"◌ preload: running {', '.join(execute)}" if execute
+    head = (f"◌ Looking this up before I answer" if execute
             else "⊘ preload: nothing to run — react searches blind this round")
     if suggest:
-        head += f" (+{len(suggest)} offered to react)"
+        # "offered to react" is our plumbing. What a person can
+        # follow is that more places are available if these fall short.
+        head += f" ({len(suggest)} more source(s) available if needed)"
     det = [kv("running", ", ".join(execute) or "(nothing)"),
            kv("offering", " · ".join(suggest) or "(none)")]
     if excluded:
@@ -202,10 +225,10 @@ def fair_share_step(tool, report, kept, total) -> Step:
     if starved:
         # THE HEADLINE SAYS THE BAD NEWS. A starved arm means an entity will be
         # missing from the answer, and that cannot be one expand away.
-        head = (f"↓ {tool}: kept {kept}/{total} — {len(starved)} fan-out arm(s) "
+        head = (f"↓ Keeping {kept} of {total} passages — {len(starved)} part(s) "
                 f"got NOTHING: {', '.join(starved)}")
     else:
-        head = f"✂ {tool}: kept {kept}/{total} passages across {len(report or {})} arm(s)"
+        head = f"✂ Keeping the {kept} most relevant passages of {total}"
     det = [kv("kept", f"{kept} of {total} passages")]
     for arm, r in (report or {}).items():
         mark = "✓" if r["kept"] == r["had"] else ("⊘" if r["kept"] == 0 else "✂")
@@ -237,13 +260,35 @@ def preload_done_step(results, elapsed_s=None) -> Step:
     empty = [r for r in (results or []) if not r.get("ok")]
     took = f" in {elapsed_s:.1f}s" if elapsed_s is not None else ""
     if not results:
-        head = "⊘ preload returned nothing — react starts with no evidence"
+        head = "⊘ Nothing came back — I will go and search properly"
     elif ok:
-        head = (f"✓ preloaded{took}: "
-                + " · ".join(str(r.get("tool")) for r in ok)
-                + (f" ({len(empty)} returned nothing)" if empty else ""))
+        # NAME WHAT WE FOUND, NOT WHICH TOOL FOUND IT. "preloaded: rag" is a
+        # tool key; "Found 15 passages across 3 documents" is the same fact in
+        # the reader's terms. The summary already carries the count and the
+        # document spread, so this reads it rather than inventing a second
+        # count that could disagree with it.
+        _n = 0
+        for r in ok:
+            m = re.match(r"\s*(\d+)\s+passage", str(r.get("summary") or ""))
+            if m:
+                _n += int(m.group(1))
+        _docs = set()
+        for r in ok:
+            for src in (r.get("sources") or []):
+                d = (src.get("document_name") if isinstance(src, dict) else None)
+                if d:
+                    _docs.add(str(d))
+        if _n and _docs:
+            head = (f"✓ Found {_n} passage(s) across {len(_docs)} "
+                    f"document(s){took}")
+        elif _n:
+            head = f"✓ Found {_n} passage(s){took}"
+        else:
+            head = f"✓ Found what I needed{took}"
+        if empty:
+            head += f" ({len(empty)} source(s) had nothing)"
     else:
-        head = f"⊘ preload{took}: every tool ran and returned nothing"
+        head = f"⊘ Nothing useful came back{took} — searching instead"
     detail = [f"  ✓ {r.get('tool')} → {r.get('summary')}" for r in ok]
     # "Ran and found nothing" is a DIFFERENT fact from "was never run", and the
     # user is owed the distinction for the same reason react is.
@@ -297,7 +342,10 @@ def prompt_step(*, blocks, skipped=(), statements=(), dropped=(),
     if chars:
         det.append(kv("size", f"{chars:,} chars of governor block"))
     roles = [b.replace("role_", "") for b in blocks if b.startswith("role_")]
-    head = (f"🧭 prompt: {len(blocks)} block(s)"
+    # A PERSON DOES NOT NEED THE BLOCK COUNT. What they can follow is that we
+    # decided what to read and in what order; the ids, statements and sizes are
+    # one click down.
+    head = (f"🧭 Deciding what to work from"
             + (f" · roles in order: {' → '.join(roles)}" if roles
                else " · NO ROLE")
             + (f" · {len(skipped)} not sent" if skipped else ""))
@@ -339,8 +387,30 @@ def invoke_step(*, stage, system_chars, user_chars, evidence_chars,
         det.append(f"  latency budget: {latency_budget_ms}ms")
     if composition_id or composition_hash:
         det.append(f"  prompt block: id={composition_id} hash={str(composition_hash)[:12]}")
-    head = (f"🤖 asking react ({stage}): {system_chars + user_chars:,} chars in, "
-            f"up to {max_tokens:,} out")
+    # NAMED BY THE JOB, NOT THE CALL. "asking react (react_2): 86,432 chars
+    # in" tells a person nothing they can use; what the round is FOR is the
+    # thing they can follow. Roles come from the governor's own stack, so this
+    # cannot drift from what was actually asked.
+    _r = ", ".join(roles or ())
+    # MOST SPECIFIC PAIR FIRST. confirm+communicate is one round doing two
+    # jobs and reading it as plain "writing your answer" loses the check that
+    # makes the fast path safe.
+    if "incorporate" in _r and "communicate" in _r:
+        head = "✍ Correcting the claims that did not check out, then writing your answer"
+    elif "confirm" in _r and "communicate" in _r:
+        head = "🔎 Checking this answers what you asked, then writing it"
+    elif "incorporate" in _r:
+        head = "✍ Correcting the claims that did not check out"
+    elif "communicate" in _r:
+        head = "✍ Writing your answer"
+    elif "confirm" in _r:
+        head = "🔎 Checking whether that answers what you asked"
+    elif "scope" in _r:
+        head = "🔎 Working out exactly what I need to find"
+    elif "judge" in _r or "summarise" in _r:
+        head = "📖 Reading what came back"
+    else:
+        head = "🤔 Thinking"
     return Step("invoke", head, tuple(det),
                 key=f"react_{round_index or ''}", state="running",
                 source="governor — prompt assembled here; the MODEL is chosen "
@@ -405,14 +475,15 @@ def shared_step(resp, usage=None, elapsed_s=None, round_index=None) -> Step:
 
     ungrounded = sum(1 for f in resp.facts if not f.grounded)
     if resp.problems:
-        head = (f"⚠ react{took} via {model}: shape={resp.shape_seen}, "
-                f"{len(resp.problems)} problem(s) — {resp.problems[0][:70]}")
+        head = (f"⚠ I could not use that result{took} — "
+                f"{resp.problems[0][:90]}")
     else:
-        head = (f"✓ react{took} via {model}: {len(resp.facts)} fact(s)"
-                + (f" ({ungrounded} UNSOURCED)" if ungrounded else "")
-                + f", {len(resp.gaps)} gap(s)"
-                + (f", complete={str(resp.is_complete).lower()}"
-                   if resp.is_complete is not None else ", complete not stated"))
+        head = (f"✓ Found {len(resp.facts)} thing(s) I can cite{took}"
+                + (f" — {ungrounded} of them WITHOUT a source"
+                   if ungrounded else "")
+                + (f"; {len(resp.gaps)} question(s) still open"
+                   if resp.gaps else "")
+                + ("; that answers it" if resp.is_complete else ""))
     return Step("react", head, tuple(det),
                 key=f"react_{round_index or ''}", state="done",
                 source=f"react (the model: {provider}/{model})",
@@ -447,9 +518,9 @@ def reply_step(resp, elapsed_s=None) -> Step:
 
 def remembered_step(stored, refused, not_useful) -> Step:
     if not (stored or refused or not_useful):
-        head = "⊘ nothing learned this round worth remembering"
+        head = "⊘ Nothing new worth carrying forward"
     else:
-        head = (f"💾 remembered {stored} fact(s), {not_useful} rejection(s)"
+        head = (f"💾 Remembering {stored} thing(s) for the rest of this conversation"
                 + (f" — REFUSED {refused} unsourced" if refused else ""))
     det = [kv("stored", f"{stored} fact(s) — next turn re-sends them as text "
                         "instead of retrieving"),

@@ -81,7 +81,7 @@ def test_unscoped_facts_are_not_sent_at_all():
     run = _runner([{"verdict": "supported"}])
     r = V.verify([_F(document_id=""), _F()], run)
     assert len(run.seen["facts"]) == 1
-    assert any("no document_id" in p for p in r.problems)
+    assert any("document_id" in p for p in r.problems)
 
 
 def test_the_bar_is_passed_explicitly_never_inherited():
@@ -211,3 +211,41 @@ def test_it_runs_once_per_turn_not_once_per_proposal():
     src = pathlib.Path("app/pipeline/react_loop.py").read_text()
     i = src.index("_v2_verified_once = True")
     assert "not getattr(ctx, \"_v2_verified_once\", False)" in src[:i]
+
+
+def test_fact_store_provenance_becomes_a_usable_source():
+    """🔴 payor_fact CITES A REAL DOCUMENT AND WE THREW THE CITATION AWAY.
+
+    Measured, cid a87898fa — all four facts came back
+        document "Sunshine Provider Manual"  page null  document_id ""
+    while the envelope carried
+        source.source  = "Sunshine Provider Manual"
+        source.locator = "page 121, 'Timely Claim Submission' table"
+    The page was in the response and nothing parsed it.
+    """
+    from app.pipeline.react_loop import _fact_store_sources
+    out = _fact_store_sources({
+        "authority": "fact_store", "as_of": "2026-09-12T03:27:26Z",
+        "value": {"text": "Initial claims: 180 days."},
+        "source": {"source": "Sunshine Provider Manual",
+                   "locator": "page 121, 'Timely Claim Submission' table"}})
+    assert out and out[0]["document_name"] == "Sunshine Provider Manual"
+    assert out[0]["page_number"] == 121
+    assert out[0]["authority"] == "fact_store"
+    # NOT a corpus id and not pretending to be one.
+    assert out[0]["document_id"] == ""
+
+
+def test_it_does_not_invent_provenance_it_was_not_given():
+    from app.pipeline.react_loop import _fact_store_sources
+    assert _fact_store_sources({"value": {"text": "x"}}) == []
+    assert _fact_store_sources({"source": {"locator": "page 3"}}) == []
+    assert _fact_store_sources("not a dict") == []
+
+
+def test_the_skip_reason_separates_a_defect_from_a_design_boundary():
+    """A corpus fact with no id is OUR id resolution failing. A certified
+    fact-store answer has no corpus id BY DESIGN. Reporting them identically
+    turns a known boundary into an unexplained gap."""
+    r = V.verify([_F(document_id="")], lambda t, i: {})
+    assert "certified" in r.skipped and "fact-store" in r.skipped

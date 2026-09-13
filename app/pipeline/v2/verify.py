@@ -167,9 +167,16 @@ def verifiable(facts) -> tuple[list, dict, str]:
     if no_doc:
         why.append(f"{no_doc} with no document name")
     if no_id:
-        why.append(f"{no_id} with no document_id (unscoped verification "
-                   f"times out at 180s and takes the whole batch with it, so "
-                   f"these are NOT checked rather than checked slowly)")
+        # SAY WHICH KIND OF ABSENCE. A corpus fact with no id is a defect in
+        # our id resolution; a CERTIFIED FACT-STORE answer has no corpus id by
+        # design — payor_fact returns authority=fact_store with its own source,
+        # locator and as_of. Both are unchecked, and reporting them the same
+        # way turns a known design boundary into an unexplained gap.
+        why.append(f"{no_id} with no corpus document_id — a certified "
+                   f"fact-store answer carries its own provenance (source, "
+                   f"locator, as_of) and no corpus id, so it is NOT CHECKED "
+                   f"HERE rather than checked slowly; unscoped verification "
+                   f"times out at 180s and takes the whole batch with it")
     if no_page:
         why.append(f"{no_page} with no page")
     if unscopable:

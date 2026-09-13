@@ -353,8 +353,13 @@ REGISTRY: tuple[Block, ...] = (
           # preloaded) and react would be told to judge-and-search AND to
           # confirm-and-deliver in the same round -- the two-jobs-one-round
           # contradiction this stack exists to prevent.
+          # AND NOT WHEN THERE ARE FINDINGS TO REPAIR. Verification has named
+          # claims the cited page does not support; that round's job is to fix
+          # them, not to re-judge the evidence they came from. Without this,
+          # judge + summarise + incorporate + communicate all render and
+          # blocks.py's own cap assertion fires — which is how this was caught.
           when=lambda f: _drafting(f) and bool(f.preloaded) and not f.finalising
-                         and not f.exact_tool,
+                         and not f.exact_tool and not f.critic_findings,
           render=lambda f: "[YOUR ROLE — JUDGE] Evidence has already been "
                            "retrieved for you below. Read it and decide: does "
                            "it answer the question? Name every part it does "
@@ -401,8 +406,12 @@ REGISTRY: tuple[Block, ...] = (
           # saying it twice -- which is what pushed communicate out of the
           # round entirely (cid 21db20e1). confirm checks it, communicate
           # delivers it.
+          # Same as judge: a repair round writes the corrected answer through
+          # communicate, so summarising the evidence again is a third job in a
+          # round that already has two.
           when=lambda f: _drafting(f) and bool(f.preloaded or f.useful)
-                         and not f.finalising and not f.exact_tool,
+                         and not f.finalising and not f.exact_tool
+                         and not f.critic_findings,
           render=lambda f: "[YOUR ROLE — SUMMARISE] Write the best answer the "
                            "kept evidence supports, and say plainly which "
                            "parts it does not cover. A partial answer from "
@@ -458,11 +467,25 @@ REGISTRY: tuple[Block, ...] = (
           # them is a job of its own and it comes BEFORE writing: an answer
           # written first and corrected after is two answers, and the reader
           # gets whichever one the renderer picked.
-          when=lambda f: bool(f.finalising and f.critic_findings),
+          # 🔴 FINDINGS DELIVER ON THEIR OWN, NOT ONLY WHEN WE FINALISE.
+          #
+          # This was `f.finalising and f.critic_findings` — the FIFTH decision
+          # today keyed on how the turn ENDS rather than on what happened. On a
+          # communicate-and-stop turn (the fast path, cid a87898fa) findings
+          # would be computed, cost a round trip, and never reach react at all.
+          # A verified finding is a fact about the ANSWER; it does not care how
+          # the turn is being wrapped up.
+          when=lambda f: bool(f.critic_findings),
           render=lambda f: (
               "[YOUR ROLE — INCORPORATE] A check found claims in the draft "
               "that the evidence does not support:\n"
               + "\n".join(f"  ✗ {c}" for c in f.critic_findings[:6])
+              # SAY WHAT WAS TRUNCATED. Six findings fit; the seventh vanished
+              # silently, and a dropped finding is a claim we KNOW is
+              # unsupported being shipped because a slice was convenient.
+              + (f"\n  … and {len(f.critic_findings) - 6} more unsupported "
+                 f"claim(s) not listed here — fix these first, then re-check"
+                 if len(f.critic_findings) > 6 else "")
               + "\n  Fix each one BEFORE you write the answer:\n"
                 "    • not supported → drop it, or restate it as what the "
                 "source actually says.\n"
@@ -478,6 +501,8 @@ REGISTRY: tuple[Block, ...] = (
           # Ananth: "round 2 is not judge it is communicate > validate".
           # AFTER communicate, not before: you validate what you wrote, not
           # what you are about to write.
+          # MIRRORS role_incorporate: validate is the no-findings branch, so
+          # it must not fire when findings exist regardless of the wrap-up.
           when=lambda f: bool(f.finalising and not f.critic_findings),
           render=lambda f: (
               "[YOUR ROLE — VALIDATE] Before you finish, check the answer you "

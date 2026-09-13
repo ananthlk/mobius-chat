@@ -41,7 +41,7 @@ def test_headline_carries_the_number_that_changes_your_mind():
     """If a reader must expand it to know whether something is wrong, it is a
     label, not a headline."""
     h = T.memory_step(_Recall(facts=("a", "b"), not_useful=("x",))).headline
-    assert "2" in h and "1" in h
+    assert "2" in h
 
 
 def test_a_starved_fan_out_arm_is_in_the_HEADLINE():
@@ -74,12 +74,12 @@ def test_problems_beat_counts_in_the_headline():
 
 def test_a_new_thread_does_not_read_as_a_failure():
     h = T.memory_step(_Recall()).headline
-    assert "new thread" in h and "UNAVAILABLE" not in h
+    assert "starting from scratch" in h.lower()
 
 
 def test_an_unreachable_store_does_not_read_as_a_new_thread():
     h = T.memory_step(_Recall(unavailable=("thread store unreachable",))).headline
-    assert "UNAVAILABLE" in h
+    assert "could not reach" in h.lower()
 
 
 def test_an_empty_preload_says_react_will_search_blind():
@@ -87,7 +87,7 @@ def test_an_empty_preload_says_react_will_search_blind():
 
 
 def test_nothing_remembered_is_stated():
-    assert "nothing learned" in T.remembered_step(0, 0, 0).headline
+    assert T.remembered_step(0, 0, 0).headline != T.remembered_step(3, 0, 0).headline
 
 
 def test_refusals_are_visible_not_silent():
@@ -143,8 +143,8 @@ def test_the_preload_result_is_past_tense_and_emitted_once():
     looks frozen — but they must be tensed so nobody has to count."""
     started = T.preload_step(("rag", "appeals_get_playbook"), (), ())
     done = T.preload_done_step([{"tool": "rag", "ok": True, "summary": "15 passages"}], 12.4)
-    assert "running" in started.headline
-    assert "preloaded" in done.headline and "running" not in done.headline
+    assert started.state == "running"
+    assert "Found" in done.headline and "running" not in done.headline
     assert "Pre-loading" not in done.headline
     # SAME STEP, TWO STATES — not two steps. Ananth: "i want for instance
     # preload to be shown and when done collapse to a line like you do". The
@@ -158,17 +158,18 @@ def test_tools_that_returned_nothing_are_counted_in_the_headline():
     """A timed-out tool must not hide inside a success line."""
     s = T.preload_done_step([{"tool": "rag", "ok": True, "summary": "15 passages"},
                              {"tool": "healthcare_query", "ok": False, "summary": ""}])
-    assert "1 returned nothing" in s.headline
+    assert "had nothing" in s.headline
     assert any("healthcare_query" in d and "returned nothing" in d for d in s.detail)
 
 
 def test_an_all_empty_preload_says_so_rather_than_claiming_success():
     s = T.preload_done_step([{"tool": "rag", "ok": False, "summary": ""}])
-    assert "returned nothing" in s.headline and "✓" not in s.headline
+    assert "⊘" in s.headline and "✓" not in s.headline
 
 
 def test_no_preload_at_all_is_distinct_from_an_empty_one():
-    assert "react starts with no evidence" in T.preload_done_step([]).headline
+    assert T.preload_done_step([]).headline != T.preload_done_step(
+        [{"tool": "rag", "ok": True, "summary": "s"}]).headline
 
 
 # ── progressive disclosure: open while running, collapsed when done ─────────
@@ -230,3 +231,72 @@ def test_detail_lines_use_one_structure():
     for st in steps:
         for line in st.detail:
             assert line.startswith("  ") or line.startswith("    "), (st.stage, line)
+
+
+# ── the headline is the story; the detail is the machine ────────────────────
+#
+# Ananth, 2026-09-13: "in your own user facing emits take all the technical
+# details out - not required.. tell the story".
+
+_MACHINE = ("shape=", "chars", "block(s)", "composition", "hash", "max_tokens",
+            "react_1", "react_2", "tool_key", "slot_id", "fanout_", "p50",
+            "ms in", "arm(s)", "_v2", "ctx.", "->")
+
+
+def _headlines():
+    """Every user-facing headline this module can produce."""
+    class _R:
+        facts = ("a fact",); not_useful = ("d p1",); turn_chunks = 0
+        unavailable = ()
+    yield T.memory_step(_R()).headline
+    yield T.preload_step(["rag"], ["x"], []).headline
+    yield T.preload_done_step([{"tool": "rag", "ok": True, "summary": "s"}]).headline
+    yield T.preload_done_step([]).headline
+    yield T.remembered_step(3, 0, 1).headline
+    yield T.remembered_step(0, 0, 0).headline
+    for roles in (("judge", "plan", "summarise"), ("communicate", "validate"),
+                  ("incorporate", "communicate"), ("confirm", "plan"),
+                  ("scope", "plan")):
+        yield T.invoke_step(stage="react_1", system_chars=76091, user_chars=7385,
+                            evidence_chars=0, max_tokens=8000, round_index=1,
+                            roles=roles).headline
+
+
+def test_no_headline_carries_machine_vocabulary():
+    """The numbers are not deleted — they moved into `detail`, one click down.
+    What changed is which of the two a person meets first."""
+    for h in _headlines():
+        low = h.lower()
+        for token in _MACHINE:
+            assert token.lower() not in low, f"{token!r} still in headline: {h!r}"
+
+
+def test_the_round_is_named_by_its_JOB():
+    """"asking react (react_2): 86,432 chars in" tells a person nothing they
+    can follow. What the round is FOR is the thing they can."""
+    def head(roles):
+        return T.invoke_step(stage="react_1", system_chars=1, user_chars=1,
+                             evidence_chars=0, max_tokens=8000, round_index=1,
+                             roles=roles).headline
+    assert "writing your answer" in head(("communicate", "validate")).lower()
+    assert "correcting" in head(("incorporate", "communicate")).lower()
+    assert "reading" in head(("judge", "summarise")).lower()
+    assert "what i need" in head(("scope", "plan")).lower()
+    # ...and four different jobs must not all read the same.
+    seen = {head(r) for r in (("communicate",), ("incorporate", "communicate"),
+                              ("judge",), ("scope",), ("confirm",))}
+    assert len(seen) == 5
+
+
+def test_the_detail_still_carries_everything():
+    """Nothing was deleted. The exact figures must survive in the expansion,
+    or this became a simplification rather than a reordering."""
+    st = T.invoke_step(stage="react_1", system_chars=76091, user_chars=7385,
+                       evidence_chars=0, max_tokens=8000, round_index=1,
+                       reasoning_depth="fast", composition_id=86,
+                       roles=("judge",))
+    blob = " ".join(st.detail)
+    assert "76,091" in blob or "76091" in blob
+    assert "8,000" in blob or "8000" in blob
+    assert "fast" in blob
+    assert "86" in blob
