@@ -66,7 +66,8 @@ class EnrichDecision:
 
 def should_enrich(*, answer: str, facts=(), open_gaps=(), is_complete=None,
            elapsed_s: float | None = None, promise_s: float | None = None,
-           rounds_left: int = 0, round_cost_s: float | None = None) -> EnrichDecision:
+           rounds_left: int = 0, round_cost_s: float | None = None,
+           finalised_via_communicate: bool = False) -> EnrichDecision:
     """Run the critic and next-steps for this answer?
 
     NAMED should_enrich, not decide: posture.decide() already exists in this
@@ -110,6 +111,10 @@ def should_enrich(*, answer: str, facts=(), open_gaps=(), is_complete=None,
         "over_promise": (None if (elapsed_s is None or promise_s is None)
                          else elapsed_s > promise_s),
         "rounds_left": rounds_left,
+        # react wrote the final prose itself, under the communicate
+        # role. Nothing downstream is waiting on a second opinion to
+        # render it.
+        "finalised_via_communicate": bool(finalised_via_communicate),
     }
 
     if not answer:
@@ -117,6 +122,41 @@ def should_enrich(*, answer: str, facts=(), open_gaps=(), is_complete=None,
         # against an empty string returns confident prose about nothing.
         return EnrichDecision(False, False,
                               "no answer yet — nothing to critique",
+                              criteria, affordable)
+
+    if finalised_via_communicate:
+        # 🔴 THE COMMUNICATE ROUND ALREADY WROTE THE ANSWER.
+        #
+        # Ananth, 2026-09-13: "the second call should have been communicate and
+        # direct to our v2 deterministic module and no UX". Measured on the
+        # three-payer turn: the loop declared complete at +41.9s and the card
+        # did not go out until +48.7s -- 6.8s spent on two model calls that
+        # nothing downstream was waiting for. assemble() is deterministic and
+        # had already finished; critique returned nothing to fix; next_steps is
+        # advisory.
+        #
+        # AND IT IS ALSO THE STANDING RULING. Ananth, 2026-09-12: "for now leave
+        # critic to be outside .. work with deep research they may have
+        # developed a deterministic critic loop".
+        #
+        # ⚠ NOT YET REPLACED. verify-claims is deployed (Deep Research,
+        # 2026-09-13) but is NOT wired into this path. So on a communicate
+        # round there is currently NO claim checking at all -- deterministic
+        # coverage and citations only. That is a deliberate, recorded gap, not
+        # an oversight, and it closes when verify-claims is registered by Tool
+        # Manifest and called from here. Until then do not read this branch as
+        # "checked elsewhere"; read it as "not checked".
+        #
+        # What it is NOT is a regression in checking QUALITY: the LLM critic
+        # this replaces was measured rendering could-not-check as
+        # checked-false, marking three correctly-grounded payers unsupported.
+        #
+        # SKIPPED IS NOT UNCHECKED: run() still returns the deterministic
+        # coverage and citations, and marks the two model sections "skipped".
+        return EnrichDecision(False, False,
+                              "answer written by the communicate round — "
+                              "deterministic coverage only; claim checking "
+                              "claim checking NOT yet wired (verify-claims pending)",
                               criteria, affordable)
 
     if ALWAYS_ENRICH:
