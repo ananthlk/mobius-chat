@@ -333,6 +333,29 @@ def _prewarm_worker_caches() -> None:
         parts.append(f"react_prompt={int((time.perf_counter()-t)*1000)}ms")
     except Exception as e:
         parts.append(f"react_prompt=FAIL({type(e).__name__})")
+    # 🔴 TOOL MANIFEST'S CATALOGUE AND MCP SCHEMAS, ONCE, HERE.
+    #
+    # Their measurement: a cold tools/list cost 13,749ms — inside a 20s preload
+    # wall — returning could_not_run for a tool that is not even on MCP. Two
+    # thirds of the budget spent discovering a route does not exist. After
+    # warm(): 1,060ms once at boot, and the same verdict then costs 653ms.
+    # They also closed 619ms of per-call catalogue bookkeeping (a fresh
+    # Postgres connection per execution in _routes() and _consequence()),
+    # taking payor_fact to 247ms median against my hand-measured 257ms.
+    #
+    # SAME DEFECT AND SAME REMEDY AS estimate()'s COLD PATH — 3.75s cold vs
+    # 0.386ms steady. A bound is the floor; warming is the answer. Wall clocks
+    # would have masked this as "preload was slow".
+    #
+    # NEVER FATAL. A prewarm that can fail a boot trades a latency
+    # optimisation for an outage.
+    try:
+        from toolreg.execute import warm as _tr_warm
+        t = time.perf_counter()
+        _tr_warm()
+        parts.append(f"toolreg_warm={int((time.perf_counter()-t)*1000)}ms")
+    except Exception as e:
+        parts.append(f"toolreg_warm=FAIL({type(e).__name__})")
     logger.info(
         "worker-prewarm: complete in %.2fs (%s) — first user turn skips this work",
         time.perf_counter() - t0, " ".join(parts),
