@@ -5301,7 +5301,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 for _t in (getattr(_off, "tools", None) or []):
                     _tool_inputs[_t.tool_key] = getattr(_t, "inputs", None)
                     _tool_reasons[_t.tool_key] = getattr(_t, "preload_reason", "") or ""
-                    _tool_ceilings[_t.tool_key] = getattr(_t, "declared_ceiling_ms", None)
+                    # CARRY THE KIND, NOT JUST THE NUMBER. Tool Manifest's
+                    # 110 distinguishes a cap from a floor, and a floor read as
+                    # a cap prices an unknown as measured.
+                    _tool_ceilings[_t.tool_key] = {
+                        "ms": getattr(_t, "declared_ceiling_ms", None),
+                        "lower_bound": bool(
+                            getattr(_t, "ceiling_is_lower_bound", False)),
+                    }
                     # slot: gate | ranked | default | standard | utility.
                     # Only `ranked` carries a score, and a score is a claim
                     # about THIS question. Tool Manifest froze that invariant

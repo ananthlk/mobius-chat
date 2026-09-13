@@ -86,3 +86,61 @@ def test_the_wall_clock_stops_starting_new_work():
     after = [r for r in out if r["tool"] == "after"]
     assert after and after[0].get("not_started"), (
         "the skipped tool must say it was not started, not vanish")
+
+
+# ── a floor is not a cap ────────────────────────────────────────────────────
+#
+# Tool Manifest's migration 110 carries `ceiling_is_lower_bound` because I
+# asked them to KEEP a lower-bound label and they pointed out the label was
+# prose in a migration while every consumer reads the bare integer. These tests
+# are the consumer.
+
+def test_a_lower_bound_under_the_budget_is_treated_as_UNKNOWN():
+    """🔴 THE FAILURE THE FIELD EXISTS TO PREVENT. If a lower bound is ever
+    revised downward toward the budget, reading it as a cap prices an unknown
+    as measured: "at least 15s" becomes "at most 15s", the same word doing
+    opposite work."""
+    assert preload.affordable_to_preload(15000)[0] is True
+    ok, why = preload.affordable_to_preload(15000, ceiling_is_lower_bound=True)
+    assert ok is False
+    assert "AT LEAST" in why and "not a cap" in why
+
+
+def test_a_lower_bound_already_over_the_budget_is_a_settled_refusal():
+    """corpus_contains: 200,000ms and rising. No relaxation applies — the real
+    figure is larger and unmeasured."""
+    ok, why = preload.affordable_to_preload(
+        200000, claim_backed=True, args_exact=True, ceiling_is_lower_bound=True)
+    assert ok is False and "AT LEAST" in why
+
+
+def test_a_claim_backed_arg_exact_tool_may_still_buy_an_unknown():
+    """Consistent with a MISSING ceiling: the same two conditions that make an
+    unmeasured cost acceptable make an unmeasured floor acceptable. Otherwise a
+    tool is punished for declaring a floor rather than declaring nothing."""
+    assert preload.affordable_to_preload(
+        15000, claim_backed=True, args_exact=True,
+        ceiling_is_lower_bound=True)[0] is True
+    assert preload.affordable_to_preload(
+        None, claim_backed=True, args_exact=True)[0] is True
+
+
+def test_the_default_is_a_cap_so_nothing_priced_today_changes():
+    """Their column defaults false; every existing ceiling keeps its meaning."""
+    assert preload.affordable_to_preload(15000)[0] is True
+    assert preload.affordable_to_preload(15000, ceiling_is_lower_bound=False)[0] is True
+
+
+def test_the_kind_survives_the_journey_from_the_offer():
+    """A field that does not reach the decision is a producer with no consumer
+    — which is the defect this pair of seats has traded all day."""
+    import ast
+    import pathlib
+    src = pathlib.Path("app/pipeline/react_loop.py").read_text()
+    assert "ceiling_is_lower_bound" in src, (
+        "the offer's lower-bound flag is never read from ToolOffer")
+    i = src.index("_tool_ceilings[_t.tool_key]")
+    assert "lower_bound" in src[i:i + 320]
+    # ...and plan() must branch on it rather than drop it on the floor.
+    pre = pathlib.Path("app/pipeline/v2/preload.py").read_text()
+    assert "ceiling_is_lower_bound=_lb" in pre

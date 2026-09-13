@@ -453,7 +453,9 @@ PRELOAD_MAX_CEILING_MS = int(
 
 
 def affordable_to_preload(ceiling_ms, *, claim_backed: bool = False,
-                          args_exact: bool = False) -> tuple[bool, str]:
+                          args_exact: bool = False,
+                          ceiling_is_lower_bound: bool = False
+                          ) -> tuple[bool, str]:
     """(ok, why_not) from the tool's DECLARED WORST CASE.
 
     UNKNOWN IS NOT CHEAP. A missing ceiling means nobody has measured the
@@ -486,6 +488,36 @@ def affordable_to_preload(ceiling_ms, *, claim_backed: bool = False,
     requirement this rule was only ever a proxy for. A ceiling is still
     better, and a declared one still wins.
     """
+    # 🔴 A FLOOR IS NOT A CAP, AND ONLY THE FIELD CAN SAY WHICH.
+    #
+    # Tool Manifest's 110 carries `ceiling_is_lower_bound` because I asked them
+    # to keep a lower-bound LABEL and they pointed out the label was prose in a
+    # migration while every consumer reads the bare integer. This is the
+    # consumer: without it, a lower bound revised downward toward my budget
+    # would be read as measured, and "at least 15s" would be priced as "at most
+    # 15s" — the same word doing opposite work.
+    #
+    # An "at least N" that already exceeds the bound is a settled refusal: the
+    # real number is larger. An "at least N" UNDER the bound is not a
+    # measurement at all, so it takes the unknown path — refused speculatively
+    # unless the tool both scored against this question and was handed exact
+    # arguments, which is exactly how a missing ceiling is treated.
+    if ceiling_is_lower_bound and ceiling_ms not in (None, ""):
+        try:
+            _lb = int(ceiling_ms)
+        except (TypeError, ValueError):
+            _lb = None
+        if _lb is not None:
+            if PRELOAD_MAX_CEILING_MS and _lb > PRELOAD_MAX_CEILING_MS:
+                return False, (f"worst case is AT LEAST {_lb}ms, already over "
+                               f"the {PRELOAD_MAX_CEILING_MS}ms preload bound "
+                               f"— the real figure is larger and unmeasured")
+            if not (claim_backed and args_exact):
+                return False, (f"worst case is AT LEAST {_lb}ms and unmeasured "
+                               f"above that — a floor is not a cap, so this is "
+                               f"treated as unknown, not as affordable")
+            return True, ""
+
     if ceiling_ms in (None, ""):
         if claim_backed and args_exact:
             return True, ""
@@ -632,10 +664,16 @@ def plan(offer_tool_keys: list[str], *, execute_ranked: int = EXECUTE_RANKED,
             # args_exact is knowable HERE: the inputs check immediately above
             # already `continue`d every tool whose arguments the offer could
             # not supply, so anything reaching this line has them.
+            _c = ceilings.get(key)
+            _lb = False
+            if isinstance(_c, dict):          # {"ms": int, "lower_bound": bool}
+                _lb = bool(_c.get("lower_bound"))
+                _c = _c.get("ms")
             ok, why = affordable_to_preload(
-                ceilings.get(key),
+                _c,
                 claim_backed=((slots or {}).get(key) in CLAIM_SLOTS),
-                args_exact=(inputs is not None and inputs.get(key) is not None))
+                args_exact=(inputs is not None and inputs.get(key) is not None),
+                ceiling_is_lower_bound=_lb)
             if not ok:
                 # Unpriced for SPECULATIVE spend. react calling it later is a
                 # decision, not a guess, so it stays offerable.
