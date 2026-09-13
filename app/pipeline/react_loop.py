@@ -255,6 +255,32 @@ def _extract_chunk_blocks(raw: str) -> list[tuple[int, str]]:
     callers must treat that as "nothing to prune/store", not an error."""
     if not raw:
         return []
+    # 🔴 A TOOL RESULT IS NOT ALWAYS A STRING ANY MORE.
+    #
+    # Tool Manifest's executor returns `payload` WHOLE and deliberately never
+    # reshaped -- for rag that is the parsed contract, a dict -- and v2 preload
+    # seeds it into ctx.seed_tool_results as `result`. This function has always
+    # assumed rag-formatted TEXT, so finditer() got a dict:
+    #
+    #   react_loop:6637  _kept_chunk_stats(tool_results[-1].get("result") or "")
+    #   react_loop:258   _CHUNK_HEADER_RE.finditer(raw)
+    #   TypeError: expected string or bytes-like object, got 'dict'
+    #
+    # It killed the whole turn -- "ReAct stage error", error card to the user,
+    # 2 of 2 runs on rev 01086-l6s. A latent mismatch between a new payload
+    # contract and an old text assumption, exposed (not caused) by my finalise
+    # fix: before it, round 1 finalised immediately and never reached :6637.
+    #
+    # Structured payload means NO CHUNK BLOCKS, which is the honest answer and
+    # exactly what the docstring above already promises callers -- "nothing to
+    # prune/store, not an error". Logged rather than silent, because a
+    # structured payload arriving where text was expected is worth knowing
+    # about even when it is handled.
+    if not isinstance(raw, str):
+        logger.info("[chunk_stats] non-text tool result (%s) — no chunk blocks "
+                    "to count; structured payloads carry no rag chunk headers",
+                    type(raw).__name__)
+        return []
     matches = list(_CHUNK_HEADER_RE.finditer(raw))
     if not matches:
         return []
