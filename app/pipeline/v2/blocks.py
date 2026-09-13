@@ -170,6 +170,45 @@ REGISTRY: tuple[Block, ...] = (
           owner="chat"),
 
     # ── ROLE: two jobs, rendered only when each is real ──────────────────
+    Block("role_scope", Slot.ROLE, rank=0,
+          # 🔴 THE BLIND ROUND HAD NO ROLE AT ALL.
+          #
+          # Ananth, 2026-09-13, reading a 3-round trace: "WHY 3 ROUNDS .. FIRST
+          # ROUND DOES NOT FEEL LIKE IT WAS JUDING". It was not. Nothing asked
+          # it to.
+          #
+          # Every other drafting role keys off preload's output -- judge needs
+          # f.preloaded, summarise needs f.preloaded or f.useful, plan needs
+          # f.gaps (which round 1 has not produced yet). So when preload runs
+          # nothing, EVERY gate is false, the role stack renders empty, and
+          # react silently reverts to bare v1 behaviour: pick a tool, say
+          # nothing useful about why. Measured on cid c1b560c6 -- rounds 1 and
+          # 2 both logged roles=- and the turn took three rounds instead of
+          # two.
+          #
+          # The mechanism that reports "nothing happened" went quiet when
+          # nothing happened. Tool Manifest, on the same turn: "every gate that
+          # keys off preload output inherits the same failure."
+          #
+          # So this is the ONE role defined by the ABSENCE of evidence. It is
+          # not a consolation prize for a wasted round -- a round that names
+          # precisely what it needs is what makes the NEXT retrieval good, and
+          # it is the round Ananth asked for when he said react "needs to
+          # provide real feedback in the form of gaps so that we can use that".
+          when=lambda f: _drafting(f) and not f.finalising
+                         and not f.preloaded and not f.useful,
+          render=lambda f: "[YOUR ROLE — SCOPE] No evidence has been retrieved "
+                           "for you this round. Do NOT answer from memory. "
+                           "Break the question into its parts, and for each "
+                           "one state exactly what you would need to answer it "
+                           "— the document, the payer, the specific provision. "
+                           "Be specific enough that a retrieval built from "
+                           "your words would find it; \"more information about "
+                           "X\" is not. If nothing offered to you can supply a "
+                           "part, say so plainly: that is a finding, not a "
+                           "failure.",
+          owner="governor"),
+
     Block("role_judge", Slot.ROLE, rank=1,
           # Judging is what the earlier rounds did. The finalising round has
           # already decided the evidence is enough — asking it to judge again
@@ -190,8 +229,14 @@ REGISTRY: tuple[Block, ...] = (
           # Never on the finalising round: planning the next tool while
           # writing the final answer is the two-jobs-one-round contradiction
           # this stack exists to prevent.
-          when=lambda f: _drafting(f) and (bool(f.gaps) and bool(f.suggest))
-                         and not f.finalising,
+          # SUGGEST IS NOT A GATE. It used to require bool(f.suggest) too,
+          # so a gap with no offered tool produced NO plan role at all --
+          # silently, on exactly the turn where "nothing offered covers this"
+          # is the single most useful thing react could tell us. Measured on
+          # cid c1b560c6: gaps=1, suggest empty, plan OFF, round wasted.
+          # An empty tool list is a FINDING to report, not a reason to stop
+          # asking for the report.
+          when=lambda f: _drafting(f) and bool(f.gaps) and not f.finalising,
           render=lambda f: "[YOUR ROLE — PLAN] For each gap still open, say "
                            "which tool would close it. Name the tool in your "
                            "gap report; you are not calling it this round.",
@@ -234,9 +279,15 @@ REGISTRY: tuple[Block, ...] = (
           # negation of role_plan's condition. That keeps any single round at
           # or under MAX_ROLES without a cap that silently drops a role: a
           # round still choosing tools is not the round that delivers.
+          # MIRRORS role_plan EXACTLY, and must keep doing so. When plan's
+          # gate dropped bool(f.suggest) and this one did not, a round with a
+          # gap and no offered tool matched BOTH -- four roles rendered and
+          # blocks.py's own cap assertion fired. The negation is the
+          # invariant, not a coincidence: a round still choosing tools is not
+          # the round that delivers.
           when=lambda f: _drafting(f) and (
               f.finalising or (bool(f.preloaded or f.useful)
-                               and not (bool(f.gaps) and bool(f.suggest)))),
+                               and not bool(f.gaps))),
           render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
                            "user reads. Answer every part they asked, in the "
                            "order they asked it, naming each one. Cite the "

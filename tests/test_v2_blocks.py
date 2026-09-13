@@ -54,11 +54,24 @@ def test_round_one_judges_and_summarises_but_does_not_plan():
     assert _roles(rendered) == ["role_judge", "role_summarise", "role_communicate"]
 
 
-def test_plan_requires_both_a_gap_and_a_tool_to_suggest():
-    gaps_only = assemble(Facts(question=Q, gaps=(("S1", "a gap"),)))[1]
+def test_plan_requires_a_gap_but_not_a_tool_to_suggest():
+    """SUPERSEDES test_plan_requires_both_a_gap_and_a_tool_to_suggest.
+
+    The gap half still holds: planning with nothing to plan FOR asks react to
+    choose a tool for nothing. The SUGGEST half was wrong and cost a round.
+
+    Measured, cid c1b560c6: gaps=1 and suggest empty (every offered tool was
+    excluded for unmet preconditions), so plan did not render — on exactly the
+    turn where "nothing offered to me covers this" is the single most useful
+    thing react could say. An empty tool list is a FINDING to report, not a
+    reason to stop asking for the report.
+    """
     tools_only = assemble(Facts(question=Q, suggest=("web_scrape",)))[1]
-    assert "role_plan" not in gaps_only
-    assert "role_plan" not in tools_only
+    assert "role_plan" not in tools_only, "planning with no gap plans for nothing"
+
+    gaps_only = assemble(Facts(question=Q, gaps=(("S1", "a gap"),)))[1]
+    assert "role_plan" in gaps_only, "a gap nothing covers still needs planning"
+
     both = assemble(Facts(question=Q, gaps=(("S1", "a gap"),),
                           suggest=("web_scrape",)))[1]
     assert "role_plan" in both
