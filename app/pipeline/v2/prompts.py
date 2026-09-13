@@ -167,6 +167,74 @@ WHAT THIS MEANS FOR HOW YOU READ THEM
     failure."""
 
 
+# ── THE ANSWER THE USER READS (finalising round only) ──────────────────────
+#
+# Ananth, 2026-09-13: "this feels too short and succinct without facts.. this
+# feels like the summary, in which case are we even passing the expanded
+# answer to the integrate and front end".
+#
+# MEASURED, cid 3fc33ed1: round 1 answer 1012 chars, round 2 -- the COMMUNICATE
+# round -- 847 chars. The round whose whole job is to deliver the answer made
+# it SHORTER, with 8,000 output tokens available and roughly 210 used. Not
+# truncation. Instruction.
+#
+# THE CAUSE IS A COMPETING INSTRUCTION, NOT A MISSING CHANNEL. contract.py
+# already carries `answer` separately from `running_answer`, and it is already
+# populated. But v1's REACT_FORMAT_RULES_TEXT caps that field at "2-4 short
+# bullet points (each 10-25 words)" and "Do NOT write paragraphs" -- about 100
+# words, which is the 847 chars we measured. role_communicate asks for every
+# part answered and cited; the format rule caps it at four bullets. The format
+# rule wins, because it is the specific structural one.
+#
+# WHY HERE AND NOT THERE. The cap lives in react/prompts.py, which is v1's and
+# stays pure for A/B. So v2 supersedes it from v2's own surface, on the one
+# round where it is wrong, and says WHICH rule it is superseding so the model
+# is not left resolving a contradiction on its own.
+#
+# AND WHY THE SYSTEM PROMPT. facts[] only started arriving when the ask moved
+# from the user prompt to the system prompt -- position, not wording. The
+# communicate ROLE block is in the user prompt and has been asking for
+# citations all along; it has been losing to a system-prompt format rule. The
+# same ask, in the same place as the rule it must beat.
+#
+# USER PREFERENCES STILL WIN. The format rules make preferences final
+# authority over length, and that does not change here: a reader who asked for
+# terse gets terse. This supersedes the DEFAULT, never the person.
+ANSWER_SHAPE_FINALISING = """
+
+── THE "answer" FIELD, THIS ROUND ──
+This is the round the user reads. The FORMAT RULES above cap "answer" at 2-4
+short bullets and forbid paragraphs. THAT CAP DOES NOT APPLY THIS ROUND — it
+is the default for a mid-loop answer, and this is the delivery. Where the two
+disagree, this section governs. (USER PREFERENCES still take final authority
+over both, including length — if the reader asked for brief, give brief.)
+
+Write the full answer:
+
+  • ANSWER EVERY PART THEY ASKED, in the order they asked it, each one NAMED.
+    A question about three payers gets three named answers — not one merged
+    paragraph that happens to mention all three.
+
+  • CITE EACH CLAIM where it came from, the same document and page you put in
+    facts[]. An uncited claim reads as your opinion; the reader is an operator
+    about to act on it and needs to know which manual says it.
+
+  • USE THE SOURCE'S OWN WORDING for anything load-bearing — a program name, a
+    threshold, a timeframe, a condition. Same rule as facts[], same reason: a
+    tidied paraphrase cannot be found on the page.
+
+  • KEEP WHAT THE EVIDENCE SUPPORTS. If a part is thinner than the others, say
+    what you have and name what is missing. Do not trim it to match the
+    others, and do not pad it to match them either.
+
+  • SAY WHAT IS NOT ANSWERED, explicitly. A part you could not close is the
+    reader's problem to plan around, and they can only do that if you name it.
+
+LENGTH IS WHAT THE EVIDENCE NEEDS. Do not aim for short, and do not aim for
+long. A thin answer that had ten grounded facts available has thrown nine of
+them away."""
+
+
 def system_suffix(ctx) -> str:
     """v2's additions to the reasoning system prompt. Empty for v1.
 
@@ -175,4 +243,13 @@ def system_suffix(ctx) -> str:
     """
     if str(getattr(ctx, "orchestrator_version", "v1")) != "v2":
         return ""
-    return PRODUCT_CONTEXT + RESPONSE_SHAPE_SUFFIX
+    out = PRODUCT_CONTEXT + RESPONSE_SHAPE_SUFFIX
+    # _v2_round_communicates, NOT _v2_finalising: the latter is cleared at
+    # react_loop:5579 and this function is called at :5968, so reading it here
+    # returns False on the exact round the expansion is for. The capture at
+    # :5579 is taken while it is still true. And NOT _v2_finalised either,
+    # which stays True for the rest of the turn and would expand every later
+    # round too.
+    if bool(getattr(ctx, "_v2_round_communicates", False)):
+        out += ANSWER_SHAPE_FINALISING
+    return out

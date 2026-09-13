@@ -5580,6 +5580,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         #
                         # Same shape as _v2_proposed_complete two blocks down,
                         # which carries the same comment for the same reason.
+                        # CAPTURED BEFORE THE CLEAR, AND READ 390 LINES LATER.
+                        # system_suffix(ctx) runs at :5968 -- AFTER this line --
+                        # so a prompt gate reading _v2_finalising there sees
+                        # False on the very round it is meant to fire, and
+                        # fires never. Same shape as _gap_status, _keep_raw and
+                        # _pp_time_mod: a value read further down a function
+                        # long enough that "is it still set here?" is not
+                        # answerable by reading nearby code. Set EVERY round
+                        # from the current value, so it is True on the
+                        # communicate round and False on all the others.
+                        ctx._v2_round_communicates = bool(
+                            getattr(ctx, "_v2_finalising", False))
                         ctx._v2_finalising = False
 
                         ctx._v2_governor_block, _v2_sel = _v2fr.render(

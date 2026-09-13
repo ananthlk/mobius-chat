@@ -348,14 +348,34 @@ def test_the_finalising_flag_is_cleared_after_the_round_that_uses_it():
     judge → summarise → communicate.
 
     Same shape as _v2_proposed_complete in the same block, which carries the
-    same comment for the same reason."""
+    same comment for the same reason.
+
+    ORDER MATTERS AND IS ASSERTED AS PROGRAM, NOT PROSE. This test used to
+    slice 700 characters before the clear and look for the words "FIRES ONCE".
+    Adding an eleven-line comment above the clear pushed the phrase out of the
+    window and turned it red while the invariant was untouched -- a test
+    reading its own author's prose inside a char count. The positions below
+    are facts about what executes.
+    """
     src = open("app/pipeline/react_loop.py").read()
-    i = src.index("ctx._v2_finalising = True")
-    j = src.index("ctx._v2_finalising = False")
-    assert j != i, "the flag is set but never cleared"
-    # Cleared where the facts are built, i.e. once per round, not at exit.
-    block = src[max(0, j - 700):j + 60]
-    assert "FIRES ONCE" in block
+    set_at = src.index("ctx._v2_finalising = True")
+    clear_at = src.index("ctx._v2_finalising = False")
+    assert clear_at != set_at, "the flag is set but never cleared"
+
+    # Cleared once per round, where the facts are built -- not at loop exit.
+    facts_at = src.index("_v2bl.facts_from(")
+    assert facts_at < clear_at, (
+        "the clear moved above facts_from: the round that should communicate "
+        "would no longer see the flag it is gated on")
+
+    # AND the capture for the prompt is taken while the flag is still true.
+    # system_suffix() runs ~390 lines below the clear, so a prompt gate
+    # reading _v2_finalising directly fires never.
+    capture_at = src.index("ctx._v2_round_communicates = bool(")
+    suffix_at = src.index("_v2pr.system_suffix(ctx)")
+    assert capture_at < clear_at < suffix_at, (
+        "the communicate capture must be taken before the flag is cleared "
+        "and read after it")
 
 
 # ── the finalising round's composition, per Ananth ─────────────────────────
