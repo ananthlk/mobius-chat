@@ -35,6 +35,56 @@ class VertexTruncatedError(RuntimeError):
     finish_reason=2 printed in the same message that called it blocked."""
     pass
 
+def extract_vertex_text(response: object) -> str | None:
+    """Read a Vertex response's text directly from its parts, never via the
+    SDK's ``.text`` property accessor.
+
+    Deep Research / Tool Manifest, 2026-09-11: ``.text`` raises ValueError
+    for TWO unrelated conditions -- a candidate with NO parts (the case
+    ``vertex_no_content_error`` below exists to classify), and a candidate
+    with MORE THAN ONE part, which is a completely normal, successful
+    response (finish_reason=STOP) that the SDK's single-string accessor
+    just can't return without a caller choosing how to join them. The
+    exception carries no distinction between the two, so the code at the
+    call site below caught it as "no content parts" for BOTH -- reporting
+    a real ~25k-character answer, sitting in part 0 of 3, as "blocked."
+    Measured live: a planner call this long hit this every time; with
+    Anthropic credit-exhausted that turn, EVERY draw landed on Gemini and
+    every one of 7 planner calls in the run died the same way.
+
+    Same shape as this file's own VertexTruncatedError fix (c622f0d): a
+    guard written for one condition (no parts) silently absorbed a second,
+    unrelated one (many parts) into the same ``except ValueError`` --
+    twice now for the same accessor, which is why the fix here is reading
+    the parts before deciding anything, not adding a third finish_reason
+    case to the classifier below.
+
+    Returns the joined text if the candidate has ANY usable parts (however
+    many), or None if it genuinely has none -- callers use None to decide
+    whether to fall into vertex_no_content_error's classification, exactly
+    as the ValueError branch used to unconditionally assume.
+    """
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return None
+        content = getattr(candidates[0], "content", None)
+        parts = getattr(content, "parts", None) if content is not None else None
+        if not parts:
+            return None
+        chunks = []
+        for p in parts:
+            t = getattr(p, "text", None)
+            if t:
+                chunks.append(t)
+        return "".join(chunks) if chunks else None
+    except Exception:
+        # Defensive only -- a malformed response object falls through to
+        # the existing no-content classification below, same as before
+        # this function existed.
+        return None
+
+
 def vertex_no_content_error(finish_reason: object, max_tokens: object,
                             cause: Exception) -> Exception:
     """Choose the RIGHT error for a candidate that carried no visible content.
@@ -640,23 +690,18 @@ def _vertex_generate_sync(
                 pass
         raise
     logger.info("[vertex] generate_content returned (elapsed=%.1fs)", _time.perf_counter() - t0)
-    try:
-        text = response.text or ""
-    except ValueError as _ve:
-        # `response.text` raises ValueError("...has no parts...") whenever the
-        # candidate carries no visible content — which happens for a SAFETY
-        # stop, for MAX_TOKENS, and for RECITATION alike. The SDK's own message
-        # guesses "likely blocked by the safety filters" in every case.
-        #
-        # finish_reason is what actually distinguishes them, and it was already
-        # being read here — but only to decorate the message, never to decide
-        # the error. So a budget exhaustion was raised as a safety block with
-        # the number that disproves it printed alongside.
+    _extracted = extract_vertex_text(response)
+    if _extracted is not None:
+        text = _extracted
+    else:
+        # Genuinely no usable parts -- ONLY reachable here now, not for the
+        # multi-part case extract_vertex_text already handled above.
         _finish = None
         try:
             _finish = str(response.candidates[0].finish_reason) if response.candidates else "unknown"
         except Exception:
             pass
+        _ve = ValueError("vertex response carried no usable content parts")
         _err = vertex_no_content_error(
             _finish, (gen_config or {}).get("max_output_tokens"), _ve)
         if isinstance(_err, VertexTruncatedError):
