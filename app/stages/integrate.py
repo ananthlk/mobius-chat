@@ -932,12 +932,49 @@ def run_integrate(
     # synthesis) -- Call B/C still run, but as fire-and-forget background jobs that
     # patch the persisted card when they land, never blocking this response. Only
     # consulted on the parallel path; sequential is untouched by this feature.
+    # 🔴 THE v1 INTEGRATOR IS NOT FOR v2.
+    #
+    # Ananth: "why is it not as simple as integrator v1 is not for v2".
+    #
+    # It is that simple, and my first attempt was not: I threaded v2 through
+    # v1's sufficiency formula instead of saying the plain thing. v2 has its
+    # own integrator (app/pipeline/v2/integrator.py — deterministic assemble,
+    # coverage, citations) and its own formatter. Running v1's as well means
+    # TWO integrators on every v2 turn, and the one the user waits for is the
+    # one we replaced.
+    #
+    # TRACED IN FULL, cid 3628f1f2:
+    #     +73.1s  v2 integrator done — assemble ok, critique/next_steps skipped
+    #     +73.2s  integrator_mode=P
+    #     +73.3s  THREE vertex calls: 35,890 / 27,885 / 29,656 chars
+    #     +80.1s    returned  6.8s
+    #     +85.3s    returned 12.0s
+    #     +97.9s    returned 24.6s   <- the card waits for the slowest
+    #     +98.2s  AnswerCard
+    # 25 seconds AFTER all reasoning had finished.
+    #
+    # WHY IT WAS REACHED: the deterministic pass is refused when gaps are open,
+    # and that turn had gaps=6. For v1 an open gap means the answer is
+    # unfinished; for v2 the gap ledger is a FEATURE — role_communicate is
+    # instructed to name what is still open — so a complete v2 answer routinely
+    # carries gaps and v2 took the slow path essentially always.
+    #
+    # v1's APPROVED FORMULA IS UNTOUCHED. _is_sufficient_for_deterministic_pass
+    # says "do not loosen without a new approval" (Chat Master, Task #76) and I
+    # have not: it is simply not consulted for an arm it was not written for.
+    # The v1 arm reaches it exactly as before.
+    _v2_arm = getattr(ctx, "orchestrator_version", "v1") == "v2"
+    if _v2_arm:
+        logger.info(
+            "[integrate] v2 arm — deterministic card, NOT the v1 parallel "
+            "integrator (v2 assembled this answer already; a second pass is "
+            "3 LLM calls the user waits for)")
     _dyn_enrich_used = False
     if (
         not _disambiguation_used
         and _integ_path == "parallel"
         and _dynamic_enrichment_enabled()
-        and _is_sufficient_for_deterministic_pass(ctx)
+        and (_v2_arm or _is_sufficient_for_deterministic_pass(ctx))
     ):
         from app.responder.deterministic_format import deterministic_format
         from app.responder.v2_adapter import budget_from_v2

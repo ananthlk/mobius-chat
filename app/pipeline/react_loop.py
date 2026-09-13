@@ -1420,6 +1420,26 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     outcome = str(r.get("outcome") or "")
     payload = r.get("payload")
     sources = r.get("sources") or []
+    # 🔴 rag's EVIDENCE IS `chunks`, NOT `sources`, AND THE IDS LIVE THERE.
+    #
+    # The executor maps payload["sources"] / payload["matches"]; rag returns
+    # contract.chunks, so sources came back EMPTY — and with no document_id
+    # nothing can be scoped, so verification refused every fact:
+    #     [v2.verify] checked=0 skipped=10 with no document_id
+    # The guard was right (unscoped verification is 144s, so a fact with no id
+    # is NOT checked rather than checked slowly) and it was refusing on an
+    # absence we created here.
+    #
+    # Recovered from the payload rather than asked of the executor: the chunk
+    # shape is chat's own knowledge — corpus_search already maps it — and a
+    # generic executor should not have to learn one tool's envelope.
+    if not sources and isinstance(payload, dict):
+        _c = payload.get("chunks")
+        if not isinstance(_c, list):
+            _c = ((payload.get("contract") or {}).get("chunks")
+                  if isinstance(payload.get("contract"), dict) else None)
+        if isinstance(_c, list):
+            sources = [x for x in _c if isinstance(x, dict)]
     _asked = str((inputs or {}).get("query") or "").strip()
 
     # Their effects, our ordering. Unknown keys are IGNORED rather than setattr'd
