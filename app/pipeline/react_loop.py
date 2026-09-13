@@ -1310,6 +1310,77 @@ def _terms_not_returned(asked: str, res: dict) -> list[str]:
     return out
 
 
+# 🔴 THE SEAT THAT SELECTS A TOOL NOW RUNS IT.
+#
+# Ananth, 2026-09-13: "move it there.. this way they selct the tool and they
+# exectue", and when I asked whether "execute" meant running the owner's code
+# or invoking it: "when i say execute it is calling them". Tool Manifest calls
+# the tool over the owner's published interface; owners keep their own
+# implementation and in-process probes (RAG's 088_probe stands untouched).
+#
+# WHAT THIS REPLACES. chat resolved tool_key against its OWN skill registry.
+# `payor_fact` is offered, ranked, priced and fillable by Tool Manifest, and
+# chat registers `payor_lookup` (display_name "Payor Fact Lookup") and no
+# `payor_fact` -- so the dispatch returned {"result": "Unknown tool:
+# payor_fact"}, 24 bytes, and a question the fact store answers in 360ms cost
+# a live turn three rounds (cid 9de5c318).
+#
+# THE THREE OUTCOMES COME FROM THEIR TYPE, not from string shapes here:
+#     evidence       it ran and returned something
+#     empty          it ran and found nothing  -- a claim about the CORPUS
+#     could_not_run  it did not run, and `reason` says why -- OUR bug
+# That distinction is the whole of tonight's defect, and it belongs on the side
+# that knows which it was.
+#
+# ctx EFFECTS ARE DATA. Their runner never touches our object; anything the
+# call implies for the turn comes back in `ctx_effects` and is applied HERE, in
+# our order. That is what makes concurrency their choice rather than a hazard
+# we inherit.
+def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
+    """Bridge preload.execute() to Tool Manifest's executor."""
+    from toolreg.execute import runner as _tr_runner
+
+    r = _tr_runner(tool, inputs or {}, speculative=True) or {}
+    outcome = str(r.get("outcome") or "")
+    payload = r.get("payload")
+    sources = r.get("sources") or []
+    _asked = str((inputs or {}).get("query") or "").strip()
+
+    # Their effects, our ordering. Unknown keys are IGNORED rather than setattr'd
+    # blindly: a new effect name should be a deliberate change here, not a
+    # silent write into the turn's state.
+    _allowed = {"sources", "plan", "react_bypass_integrate"}
+    for _k, _v in (r.get("ctx_effects") or {}).items():
+        if _k in _allowed:
+            try:
+                setattr(ctx, _k, _v)
+            except Exception:
+                pass
+
+    if outcome == "could_not_run":
+        return {"tool": tool, "ok": False, "payload": "", "sources": [],
+                "asked": _asked,
+                "summary": f"COULD NOT RUN — {str(r.get('reason') or '')[:120]} "
+                           "(no lookup was performed)"}
+
+    # Same four-part summary the chat-side runner built: what came back, across
+    # which documents, and -- the part that changes behaviour -- the terms in
+    # the ask that appear in NOTHING returned.
+    _res_for_summary = {"chunks": sources, "sources": sources}
+    _docs = _preload_doc_spread(_res_for_summary)
+    _uncovered = _terms_not_returned(_asked, _res_for_summary)
+    n = len(sources)
+    if outcome == "empty" or (not payload and not n):
+        return {"tool": tool, "ok": False, "payload": "", "sources": [],
+                "asked": _asked, "summary": ""}
+    _parts = ["%d passage(s) across %d doc(s): %s" % (n, len(_docs), "; ".join(_docs[:4]))
+              if _docs else "%d passage(s)" % n]
+    if _uncovered:
+        _parts.append("not mentioned in anything returned: " + ", ".join(_uncovered[:4]))
+    return {"tool": tool, "ok": True, "payload": payload or "",
+            "sources": sources, "asked": _asked, "summary": " | ".join(_parts)}
+
+
 def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     """Bridge preload.execute() to the real tool dispatch.
 
@@ -5033,7 +5104,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _t_pre = _preload_time.monotonic()
                 ctx._v2_preloaded = _v2pre.execute(
                     _plan,
-                    lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter),
+                    # Tool Manifest executes by default now; the flag is the
+                    # ~90-second revert, not a design choice deferred.
+                    (lambda _tool, _inputs: _preload_runner_toolreg(_tool, _inputs, ctx, emitter))
+                    if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip() not in ("0", "false", "no")
+                    else (lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter)),
                     _pre_q,
                     inputs=_tool_inputs or None,
                 )
