@@ -5019,6 +5019,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # code the question raised -- and since their 1149d63, only a
                 # tool that can actually be CALLED may set it.
                 ctx._v2_rag_suppressed = not bool(getattr(_off, "rag_needed", True))
+                # A PREDICTOR OF rag's FAN-OUT WIDTH, and their field says so
+                # in its own basis string. Used to NARROW the tier's arm cap
+                # and its price, never to raise either: being wrong about the
+                # prediction must cost latency, not the promise.
+                ctx._v2_entity_count = int(getattr(_off, "entity_count", 0) or 0)
                 ctx._v2_rag_reason = str(getattr(_off, "rag_reason", "") or "")[:200]
             except Exception as _tr_e:
                 # toolreg is not in the image yet. rag alone is the floor and

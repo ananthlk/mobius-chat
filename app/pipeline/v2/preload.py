@@ -388,15 +388,33 @@ MAX_ARMS_BY_TIER: dict[str, int | None] = {
 }
 
 
-def max_arms_for_tier(tier: str | None) -> int | None:
-    """How many concurrent rag arms this tier may buy. None = uncapped."""
-    return MAX_ARMS_BY_TIER.get((tier or "normal").strip().lower(),
-                                MAX_ARMS_BY_TIER["normal"])
+def max_arms_for_tier(tier: str | None, entity_count: int | None = None
+                      ) -> int | None:
+    """How many concurrent rag arms this tier may buy. None = uncapped.
+
+    ENTITY COUNT NARROWS THE CAP, NEVER WIDENS IT. Tool Manifest resolves the
+    question's j: entities and now carries them on the Offer (entity_count,
+    with the full list beside it). rag fans out roughly one arm per entity, so
+    a one-entity question capped at 3 would still only run one -- and pricing
+    it at 3 charges for a fan-out that will not happen.
+
+    🔴 IT IS A PREDICTOR, NOT A PROMISE, and their field says so in its own
+    basis string: "rag owns its decomposition and may split differently. Price
+    against it, then measure the gap." So it lowers what we CHARGE and what we
+    ALLOW; it never raises the ceiling above the tier's, because being wrong
+    about the prediction must cost latency and not the promise.
+    """
+    cap = MAX_ARMS_BY_TIER.get((tier or "normal").strip().lower(),
+                               MAX_ARMS_BY_TIER["normal"])
+    if not entity_count or entity_count < 1:
+        return cap
+    return entity_count if cap is None else min(cap, int(entity_count))
 
 
 def affordable_for_tier(tier: str | None, promise_s: float | None,
                         elapsed_s: float | None = None,
-                        width: int | None = None) -> tuple[bool, str]:
+                        width: int | None = None,
+                        entity_count: int | None = None) -> tuple[bool, str]:
     """May preload spend on THIS tier? (ok, why_not)
 
     UNKNOWN PROMISE MEANS YES. A missing contract is not evidence of a tight
@@ -413,7 +431,7 @@ def affordable_for_tier(tier: str | None, promise_s: float | None,
     # it would never have run. Now the cap IS the width we buy, so that is the
     # number to charge.
     if width is None:
-        _cap = max_arms_for_tier(t)
+        _cap = max_arms_for_tier(t, entity_count)
         width = _cap if _cap is not None else max(PRELOAD_ARM_MS)
     share = PRELOAD_BUDGET_SHARE.get(t, PRELOAD_BUDGET_SHARE["normal"])
     budget_ms = max(0.0, (promise_s * 1000.0) - ((elapsed_s or 0.0) * 1000.0)) * share

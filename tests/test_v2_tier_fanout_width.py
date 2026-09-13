@@ -81,3 +81,45 @@ def test_only_rag_gets_it():
     preload.execute(plan, runner, "q", max_arms=1)
     assert sent["rag"].get("max_arms") == 1
     assert "max_arms" not in sent["payor_fact"]
+
+
+def test_entity_count_narrows_the_cap_and_the_price():
+    """🔴 THE OVERCHARGE THIS REMOVES. Before Tool Manifest exposed
+    entity_count (they computed it and dropped it at the Offer boundary), every
+    question was priced at the tier's ceiling. "the timely filing deadline for
+    Sunshine Health" resolves ONE entity and was charged for three."""
+    assert preload.max_arms_for_tier("normal", 1) == 1
+    assert preload.max_arms_for_tier("normal", 3) == 3
+    assert (preload.expected_preload_ms(preload.max_arms_for_tier("normal", 1))
+            < preload.expected_preload_ms(preload.max_arms_for_tier("normal", 3)))
+
+
+def test_entity_count_never_widens_past_the_tier():
+    """It is a PREDICTOR, not a promise — their basis string says rag may split
+    differently. So it lowers what we buy and never raises the ceiling: being
+    wrong must cost latency, not the promise."""
+    assert preload.max_arms_for_tier("fast", 5) == 1
+    assert preload.max_arms_for_tier("normal", 99) == 3
+
+
+def test_an_absent_entity_count_falls_back_to_the_tier():
+    """Absence is not evidence of a narrow question. An offer without the
+    field must behave exactly as before it existed."""
+    for absent in (None, 0, -1):
+        assert preload.max_arms_for_tier("normal", absent) == 3
+        assert preload.max_arms_for_tier("thinking", absent) is None
+
+
+def test_the_signal_has_a_PRODUCER():
+    """The lesson from _v2_rag_suppressed, applied before it bites: a field
+    perfectly consumed and never written passes every test that sets it
+    itself."""
+    import ast
+    import pathlib
+    tree = ast.parse(pathlib.Path("app/pipeline/react_loop.py").read_text())
+    writes = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              for t in n.targets
+              if isinstance(t, ast.Attribute) and t.attr == "_v2_entity_count"]
+    assert writes, "_v2_entity_count is never written"
+    assert any("entity_count" in ast.dump(n.value) for n in writes), (
+        "entity_count must come from the offer, not from a constant")
