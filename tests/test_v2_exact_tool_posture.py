@@ -104,3 +104,39 @@ def test_the_signal_has_a_PRODUCER():
         "_v2_rag_suppressed is assigned from something other than the offer's "
         "rag_needed — the posture would fire on our own optimism rather than "
         "on Tool Manifest's claim")
+
+
+def test_communicate_renders_even_with_a_gap_open():
+    """🔴 THE ROUND THAT HAD THE ANSWER WAS TOLD TO PLAN INSTEAD.
+
+    Measured, cid 21db20e1 on rev 01079-7f6: payor_fact preloaded (ok=1), and
+    round 1 rendered confirm,plan,summarise — NOT communicate — because
+    role_communicate required `not bool(f.gaps)` and a gap was open. So the
+    round holding a 360ms authoritative answer was told to judge and plan, and
+    the turn still took three rounds and 42s.
+
+    An open gap is not a reason to withhold an authoritative answer. It is a
+    reason to say what is still open ALONGSIDE it — which plan does, in the
+    same round.
+    """
+    ids = roles_for(_exact(gaps=(("S1", "what about non-par"),)))
+    assert "role_communicate" in ids, (
+        "the exact-tool round cannot deliver — this is the 3-round turn")
+    assert "role_plan" in ids, "what is still open must still be named"
+    assert len(ids) <= MAX_ROLES, ids
+
+
+def test_summarise_steps_aside_so_communicate_fits():
+    """Three slots. summarise and communicate are the same job when one
+    authoritative tool answered, and rendering both is what pushed communicate
+    out of the round."""
+    ids = roles_for(_exact(gaps=(("S1", "g"),)))
+    assert "role_summarise" not in ids
+    assert "role_confirm" in ids and "role_communicate" in ids
+
+
+def test_an_open_gap_still_blocks_communicate_WITHOUT_the_signal():
+    """The relaxation is scoped to the exact-tool posture. In the ordinary
+    corpus-sweep case an open gap still means the answer is not ready."""
+    ids = roles_for(_exact(exact_tool=False, gaps=(("S1", "g"),)))
+    assert "role_communicate" not in ids

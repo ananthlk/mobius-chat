@@ -307,8 +307,15 @@ REGISTRY: tuple[Block, ...] = (
           # NOT on the finalising round: that round communicates (and either
           # validates or incorporates first). Ananth: "if complete = true then
           # round 2 is not judge it is communicate > validate".
+          # STEPS ASIDE FOR THE EXACT-TOOL POSTURE. summarise writes the best
+          # answer the evidence supports; communicate writes the answer the
+          # user reads. With an authoritative single-tool answer they are the
+          # same job, and rendering both would spend one of three role slots
+          # saying it twice -- which is what pushed communicate out of the
+          # round entirely (cid 21db20e1). confirm checks it, communicate
+          # delivers it.
           when=lambda f: _drafting(f) and bool(f.preloaded or f.useful)
-                         and not f.finalising,
+                         and not f.finalising and not f.exact_tool,
           render=lambda f: "[YOUR ROLE — SUMMARISE] Write the best answer the "
                            "kept evidence supports, and say plainly which "
                            "parts it does not cover. A partial answer from "
@@ -337,9 +344,19 @@ REGISTRY: tuple[Block, ...] = (
           # blocks.py's own cap assertion fired. The negation is the
           # invariant, not a coincidence: a round still choosing tools is not
           # the round that delivers.
+          # EXACT-TOOL IS THE THIRD WAY IN, and it is why "emphasising more
+          # on communicate" is load-bearing rather than cosmetic. Measured,
+          # cid 21db20e1: round 1 rendered confirm,plan,summarise and NOT
+          # communicate, because a gap was open -- so the round that had the
+          # authoritative 360ms answer in front of it was told to judge and
+          # plan, and the turn still took three rounds.
+          #
+          # When a tool that declares it covers this question has answered, an
+          # open gap is not a reason to withhold the answer: it is a reason to
+          # say what is still open ALONGSIDE it. plan still renders for that.
           when=lambda f: _drafting(f) and (
               f.finalising or (bool(f.preloaded or f.useful)
-                               and not bool(f.gaps))),
+                               and (not bool(f.gaps) or f.exact_tool))),
           render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
                            "user reads. Answer every part they asked, in the "
                            "order they asked it, naming each one. Cite the "
