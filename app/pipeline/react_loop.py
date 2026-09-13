@@ -7512,6 +7512,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                         _v2_dec, _v2p.exit_mode(_v2_state),
                                         extensions_used=_pp_extension_rounds_used,
                                         model_proposes_complete=True,
+                                        # What THIS round rendered, from
+                                        # frame_sections() — the same signal
+                                        # the [v2.roles] line logs. If the
+                                        # round already answered the person,
+                                        # an open gap is something the ANSWER
+                                        # should name, not a reason to buy
+                                        # another retrieval round.
+                                        communicated=bool(getattr(
+                                            ctx, "_v2_round_communicates", False)),
                                         affordable=_v2p.spendable(_v2_state),
                                     )
                                     # The dissent's producer. react proposed

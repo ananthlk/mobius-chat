@@ -192,6 +192,7 @@ MAX_V2_EXTENSIONS = 6   # [GUESS] -- a fuse, not a target
 def decide(decision: Decision, exit: ExitMode | None = None,
            extensions_used: int = 0, *,
            model_proposes_complete: bool = False,
+           communicated: bool = False,
            affordable: bool | None = None) -> Action:
     """Posture -> the action v1's loop already knows how to take.
 
@@ -244,7 +245,51 @@ def decide(decision: Decision, exit: ExitMode | None = None,
     # it, since overruling a finish is exactly how the 98-round runaway began.
     # The test for it failed on the first run, which is the only reason this
     # comment is not a post-mortem.
+    # 🔴 AND NEVER OVERRULE A ROUND THAT ALREADY ANSWERED THE PERSON.
+    #
+    # Ananth: "react should be able to call it done at any point .. communicate
+    # is more than summarize so why not stop then".
+    #
+    # Measured, cid ed5d06fd: round 1 rendered confirm·plan·COMMUNICATE, react
+    # returned complete with 4 grounded facts, and this branch extended it
+    # anyway because a gap was still targeted in the ledger —
+    #     [v2.exec] round=1 v1=complete -> v2=extend posture=explore
+    # buying a second round that produced the same 4 facts.
+    #
+    # The overrule is right when the completing round only SUMMARISED: react
+    # can call the evidence sufficient without ever having answered the
+    # question, and a targeted gap is real evidence against it. It is wrong
+    # once communicate has rendered, because then the answer the user reads
+    # already exists and the open gap is something the ANSWER should name —
+    # which role_communicate explicitly instructs it to do — not something to
+    # spend another retrieval round on.
+    #
+    # THIRD TIME TODAY the same error: a decision keyed on control flow rather
+    # than on what the round produced. The other two were finalise buying a
+    # duplicate communicate round, and the integrator paying for a critic on a
+    # turn that had communicated. Same signal fixes all three.
+    #
+    # SAFE W.R.T. THE RUNAWAY. This can only ever REDUCE extensions, so the
+    # 98-round failure this fuse exists for cannot be reached through it.
+    # HONOURED, NOT MERELY NOT-OVERRULED. Suppressing the overrule alone was
+    # not enough: control falls through to the posture's own directive, and
+    # EXPLORE maps to EXTEND regardless of what react said. So a round that
+    # answered the person and declared itself done must RETURN complete here,
+    # not decline to argue and then be extended by the table anyway. The test
+    # for this failed on the first run, which is the only reason this is a
+    # comment and not another measured regression.
+    if model_proposes_complete and communicated:
+        return Action(
+            directive=COMPLETE, posture=posture,
+            because=("react proposed complete on a round that had already "
+                     "COMMUNICATED — the answer the user reads exists, and an "
+                     "open gap is for that answer to name rather than a reason "
+                     "to buy another retrieval round"),
+            exit_mode=exit, overran=decision.overran,
+            gap_targeted=decision.gap_targeted,
+        )
     if (model_proposes_complete
+            and not communicated
             and directive == EXTEND
             and decision.gap_targeted
             and exit is not ExitMode.CAPABILITY
