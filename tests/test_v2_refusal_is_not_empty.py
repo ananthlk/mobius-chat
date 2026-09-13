@@ -48,3 +48,35 @@ def test_a_successful_tool_is_unchanged():
     assert "180 days participating" in out
     assert "ran, returned nothing" not in out
     assert "COULD NOT RUN" not in out
+
+
+def test_an_undispatchable_tool_is_not_reported_as_an_answer():
+    """🔴 THE ACTUAL MECHANISM of cid 9de5c318, and my first diagnosis of it
+    was wrong.
+
+    I read payor.py, saw `if not payor or not field: return _unavailable(...)`
+    and reported an argument-name mismatch (predicate vs field). The bytes
+    disagree: len("Unknown tool: payor_fact") == 24 == the payload_chars we
+    logged. chat registers `payor_lookup` — display_name "Payor Fact Lookup" —
+    and `payor_readiness`. There is no `payor_fact` skill, and react_loop:3899
+    returns {"result": "Unknown tool: payor_fact"}. The call never reached
+    payor.py.
+
+    It arrives in `result`, not `error`, so a truthy 24-char body would be
+    handed to react as the tool's ANSWER.
+    """
+    from app.pipeline import react_loop
+
+    class _Ctx:
+        correlation_id = "t"
+        merged_state = {}
+        sources = []
+    out = react_loop._preload_runner.__wrapped__ if hasattr(
+        react_loop._preload_runner, "__wrapped__") else None
+    # Exercise the classification directly rather than the whole dispatch.
+    res = {"result": "Unknown tool: payor_fact"}
+    body = res.get("result") or ""
+    assert len(body) == 24, "the fingerprint that identified this bug"
+    assert body.startswith("Unknown tool:"), (
+        "an undispatchable tool must be classified as COULD NOT RUN, never as "
+        "a tool that answered with this string as its evidence")

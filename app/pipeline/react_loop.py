@@ -1355,9 +1355,26 @@ def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
         if _v:
             _refusal = str(_v)[:120]
             break
+    # 🔴 "Unknown tool: X" ARRIVES IN `result`, NOT IN `error`.
+    #
+    # react_loop:3899 returns {"result": f"Unknown tool: {tool}"} for a tool
+    # nothing dispatches -- a 24-character RESULT, so `body` is truthy and the
+    # error keys above are all empty. Without this, an undispatchable tool is
+    # reported to react as though it had answered, with the words "Unknown
+    # tool: payor_fact" as its evidence summary.
+    #
+    # THIS IS THE ACTUAL MECHANISM OF cid 9de5c318, and I had it wrong: I read
+    # payor.py, saw `if not payor or not field` and reported an argument-name
+    # mismatch as the cause. The bytes say otherwise -- len("Unknown tool:
+    # payor_fact") == 24 == the payload we logged. chat registers
+    # `payor_lookup` (display_name "Payor Fact Lookup") and `payor_readiness`;
+    # there is NO `payor_fact` skill. The call never reached payor.py at all.
+    _res_text = str(res.get("result") or "")
+    if _res_text.startswith("Unknown tool:"):
+        _refusal = _res_text[:120]
     if n is None:
         body = res.get("result") or res.get("summary") or ""
-        if _refusal and not body:
+        if _refusal and (not body or _res_text.startswith("Unknown tool:")):
             # NOT ok, and NOT silent about why: a tool that could not run is a
             # gap in our call, not a gap in the corpus, and react must be able
             # to tell those apart before it decides the fact does not exist.
