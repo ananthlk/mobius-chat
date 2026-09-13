@@ -143,3 +143,67 @@ def test_the_key_count_in_the_preamble_matches_what_is_asked():
     block, where an addendum framing lost facts[] entirely."""
     assert "THREE ADDITIONAL KEYS" in _frame(4)
     assert "TWO ADDITIONAL KEYS" in _frame(0)
+
+
+# ── BOTH runners, because only one of them is the default ───────────────────
+#
+# 2026-09-13, live, cid 48ffdd23: numbering and `rendered` went into
+# _preload_runner. Tool Manifest's executor (_preload_runner_toolreg) is the
+# DEFAULT (react_loop:5419). So on every real turn passages were unnumbered,
+# `rendered` was absent, numbered_passages was 0, and react was correctly never
+# asked for "kept". The gate worked and the feature was inert.
+#
+# A test of one runner passes whichever runner ships. This asserts the contract
+# on EVERY function that feeds _v2_kept_order.
+
+def test_every_preload_runner_returns_rendered():
+    """Any runner whose result reaches _v2_kept_order must carry `rendered`."""
+    import ast as _ast
+    import inspect
+
+    import app.pipeline.react_loop as RL
+
+    src = inspect.getsource(RL)
+    tree = _ast.parse(src)
+    runners = [n for n in tree.body
+               if isinstance(n, _ast.FunctionDef)
+               and n.name.startswith("_preload_runner")]
+    assert len(runners) >= 2, f"expected both runners, found {[r.name for r in runners]}"
+
+    for fn in runners:
+        # Every dict literal RETURNED from a success path must key `rendered`.
+        returns = [n for n in _ast.walk(fn)
+                   if isinstance(n, _ast.Return)
+                   and isinstance(n.value, _ast.Dict)]
+        oks = []
+        for r in returns:
+            keys = {k.value for k in r.value.keys
+                    if isinstance(k, _ast.Constant)}
+            # success returns are the ones carrying real evidence
+            if "sources" in keys and "payload" in keys:
+                vals = dict(zip([k.value for k in r.value.keys if isinstance(k, _ast.Constant)],
+                                r.value.values))
+                ok_v = vals.get("ok")
+                if isinstance(ok_v, _ast.Constant) and ok_v.value is False:
+                    continue      # refusal path: no evidence, nothing to number
+                oks.append(keys)
+        assert oks, f"{fn.name}: found no success return to check"
+        for keys in oks:
+            assert "rendered" in keys, (
+                f"{fn.name} returns evidence without `rendered` — "
+                "_v2_kept_order will be empty on this path and react will "
+                "never be asked which passages it kept"
+            )
+
+
+def test_kept_order_reads_rendered_from_every_preloaded_entry():
+    import app.pipeline.react_loop as RL
+
+    class _C:
+        _v2_preloaded = [
+            {"tool": "rag", "rendered": [{"chunk_id": "a"}, {"chunk_id": "b"}]},
+            {"tool": "other", "rendered": []},
+            {"tool": "prose"},                       # no key at all
+        ]
+    assert [c["chunk_id"] for c in RL._v2_kept_order(_C())] == ["a", "b"]
+    assert RL._v2_kept_order(type("X", (), {"_v2_preloaded": []})()) == []

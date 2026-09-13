@@ -1578,8 +1578,46 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
         _parts.append(f"NARROWED BY BUDGET: {_dropped} retrieval arm(s) were not "
                       f"run — parts of the question were NOT searched, and their "
                       f"absence here is ours, not the corpus's")
+    # 🔴 NUMBER THE PASSAGES ON THIS PATH TOO — IT IS THE DEFAULT ONE.
+    #
+    # Measured 2026-09-13, live, cid 48ffdd23: I put fair_share numbering and
+    # `rendered` into _preload_runner and shipped it. Tool Manifest's executor
+    # is the DEFAULT runner (:5419, "executes by default now"), so on every
+    # real turn the passages were never numbered, `rendered` was absent,
+    # numbered_passages was 0, and react was correctly never asked for "kept".
+    # The gate worked perfectly and the feature was inert. Branch exists is not
+    # branch reached, and a test of the other runner passes either way.
+    #
+    # fair_share is applied HERE rather than left to the executor's own payload
+    # text because the numbering and the `rendered` order must be produced by
+    # ONE call -- the index react echoes and the list we resolve against are
+    # the same list or they are nothing.
+    _rendered: list = []
+    if sources:
+        try:
+            from app.pipeline.v2 import preload as _v2pl_n
+            _num_text, _rendered, _ = _v2pl_n.fair_share(
+                sources,
+                per_arm_tokens=_v2pl_n.PER_FANOUT_TOKENS,
+                total_tokens=_v2pl_n.TOTAL_MAX_TOKENS)
+            if _num_text:
+                payload = _num_text
+        except Exception as _num_e:   # pragma: no cover — never lose the turn
+            # NOT SILENT. Falling back to the executor's unnumbered payload is
+            # survivable; doing it invisibly means react stops being asked for
+            # "kept" and nobody can tell why the signal went quiet.
+            logger.warning("[v2.toolreg] cid=%s tool=%s numbering FAILED (%r) "
+                           "— passages unnumbered, react will not be asked "
+                           "which it kept",
+                           (getattr(ctx, "correlation_id", "") or "")[:8],
+                           tool, _num_e)
+            _rendered = []
+    logger.info("[v2.toolreg] cid=%s tool=%s asked=%r numbered=%d",
+                (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                _asked[:160], len(_rendered))
     return {"tool": tool, "ok": True, "payload": payload or "",
-            "sources": sources, "asked": _asked, "summary": " | ".join(_parts)}
+            "sources": sources, "asked": _asked, "rendered": _rendered,
+            "summary": " | ".join(_parts)}
 
 
 def _preload_runner(tool: str, inputs: dict, ctx, emitter=None) -> dict:
