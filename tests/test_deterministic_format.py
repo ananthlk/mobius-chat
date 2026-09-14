@@ -200,12 +200,24 @@ class TestBullets:
         result = deterministic_format(draft)
         assert result["sections"][0]["format"] == "bullets"
 
-    def test_two_bullets_not_promoted(self):
-        """Fewer than 3 isn't confidently a list -- could be a stray dash
-        in prose."""
+    def test_two_bullets_ARE_a_list(self):
+        """Changed 2026-09-14: the minimum was 3, on the reasoning that fewer
+        "could be a stray dash in prose". True of ONE line; not of two that
+        both carry a marker.
+
+        And 3 contradicted react's own contract -- REACT_FORMAT_RULES_TEXT
+        asks for "2-4 short bullet points", so the floor was rejecting the
+        bottom of the range the answer was instructed to write in. Measured on
+        Ananth's 15 paired A/B drafts: four real answers had well-formed
+        2-item lists at 16-20 words each and produced nothing."""
         draft = "- Only one\n- Also this\n"
         result = deterministic_format(draft)
-        assert result["sections"] == []
+        assert result["sections"][0]["format"] == "bullets"
+        assert len(result["sections"][0]["bullets"]) == 2
+
+    def test_a_single_bullet_is_still_not_a_list(self):
+        """The original rationale, kept where it actually applies."""
+        assert deterministic_format("- Only one line here\nplain prose follows")["sections"] == []
 
     def test_bullets_take_priority_over_label_value_pairs(self):
         draft = (

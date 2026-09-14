@@ -69,13 +69,19 @@ def _run(ctx) -> dict:
 
 # ── every real draft, end to end ────────────────────────────────────────────
 
-#: The thin-evidence hedge is 112 characters, and the sufficiency gate has a
-#: 200-char floor — so it never reaches the deterministic path at all. That is
-#: correct pipeline behaviour, not a formatter result, and a test that expected
-#: otherwise would be asserting the gate away.
-_BELOW_THE_LENGTH_FLOOR = "Thin-evidence hedge"
+#: _is_sufficient_for_deterministic_pass requires a draft of at least this
+#: many characters, so shorter ones take the LLM path. That is correct
+#: pipeline behaviour, not a formatter result.
+#:
+#: FILTERED BY THE RULE, NOT BY A LABEL. This used to exclude one case by
+#: name; when Governor added 15 paired A/B drafts, two of them (187 and 195
+#: chars) fell under the floor and the suite failed for a reason that had
+#: nothing to do with them. A filter that encodes the actual gate keeps
+#: working as the corpus grows.
+_DRAFT_LENGTH_FLOOR = 200
 
-_REACHES_THE_FORMATTER = [c for c in CORPUS if not c[2].startswith(_BELOW_THE_LENGTH_FLOOR)]
+_REACHES_THE_FORMATTER = [c for c in CORPUS if len(c[1].strip()) >= _DRAFT_LENGTH_FLOOR]
+_BELOW_THE_FLOOR = [c for c in CORPUS if len(c[1].strip()) < _DRAFT_LENGTH_FLOOR]
 
 
 @pytest.mark.parametrize(
@@ -89,11 +95,14 @@ def test_every_real_draft_publishes_a_card_with_no_model_call(question, draft, n
     assert isinstance(card.get("sections"), list)
 
 
-def test_a_draft_below_the_length_floor_goes_to_the_llm_path():
+@pytest.mark.parametrize(
+    "question,draft,note", _BELOW_THE_FLOOR,
+    ids=[n[:34].replace(" ", "_") for _q, _d, n in _BELOW_THE_FLOOR],
+)
+def test_a_draft_below_the_length_floor_goes_to_the_llm_path(question, draft, note):
     """The other half of the same rule, asserted rather than skipped. A short
     draft is exactly the turn the deterministic pass should NOT take."""
-    short = next(d for _q, d, n in CORPUS if n.startswith(_BELOW_THE_LENGTH_FLOOR))
-    ctx = _ctx(short)
+    ctx = _ctx(draft, question)
     with (
         patch.dict(os.environ, _DETERMINISTIC_ENV),
         patch("app.stages.integrate.format_response_parallel") as parallel,

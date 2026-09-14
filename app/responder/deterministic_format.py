@@ -377,6 +377,51 @@ def extract_payload(text: str) -> ContentPayload:
 _BLANK_RE = re.compile(r"^\s*$")
 
 
+def _marked_run(
+    lines: list[str], start: int, n: int, pattern: re.Pattern[str],
+) -> tuple[list[str], int]:
+    """A run of marked lines, TOLERATING BLANK LINES BETWEEN THEM.
+
+    A list written with a blank line between each item is one list. The
+    earlier version ended the run at the first blank, so
+
+        *   **UnitedHealthcare:** members can access ...
+        <blank>
+        *   **Sunshine Health & Molina:** based on ...
+        <blank>
+        *   **Florida Medicaid:** under the state plan ...
+
+    became THREE blocks of one item each, and nothing fired on any of them --
+    a three-payer comparison, correctly bulleted by react, rendered as prose.
+    Found on real A/B drafts (cid 3a3d30a7 and four others), which is also
+    most of the reason the abstain rate on that corpus looked like a property
+    of prose rather than a bug in here.
+
+    Blank-tolerant for MARKED runs only -- bullets and steps, where the marker
+    makes the intent unambiguous. Label:value runs stay strict: a colon is not
+    a marker, and letting a pair run jump a paragraph break would sweep up
+    unrelated sentences that happen to contain one.
+
+    Returns (items, index after the last MATCHED line) -- trailing blanks are
+    left unconsumed so they stay available as prose separators.
+    """
+    items: list[str] = []
+    j = start
+    last_match = start
+    while j < n:
+        stripped = lines[j].strip()
+        if _BLANK_RE.match(stripped):
+            j += 1
+            continue
+        m = pattern.match(stripped)
+        if not m:
+            break
+        items.append(m.group(1).strip())
+        j += 1
+        last_match = j
+    return items, last_match
+
+
 @dataclass(frozen=True)
 class Segmentation:
     """What segment_draft found: the structural blocks, the draft's lines, and
@@ -479,11 +524,7 @@ def segment_draft(text: str) -> Segmentation:
 
         # Bullet run.
         if _BULLET_LINE_RE.match(stripped):
-            run: list[str] = []
-            j = i
-            while j < n and _BULLET_LINE_RE.match(lines[j].strip()):
-                run.append(_BULLET_LINE_RE.match(lines[j].strip()).group(1).strip())
-                j += 1
+            run, j = _marked_run(lines, i, n, _BULLET_LINE_RE)
             labelled_run = _as_labelled_pairs(run)
             if labelled_run:
                 blocks.append(ContentPayload(
@@ -501,11 +542,7 @@ def segment_draft(text: str) -> Segmentation:
         # Step run. Checked after bullets so "1. text" inside a bullet run
         # cannot split it.
         if _STEP_LINE_RE.match(stripped):
-            run = []
-            j = i
-            while j < n and _STEP_LINE_RE.match(lines[j].strip()):
-                run.append(_STEP_LINE_RE.match(lines[j].strip()).group(1).strip())
-                j += 1
+            run, j = _marked_run(lines, i, n, _STEP_LINE_RE)
             blocks.append(ContentPayload(
                 items=tuple(Item(label=s) for s in run),
                 ordered=True,
