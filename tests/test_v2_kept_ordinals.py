@@ -257,3 +257,58 @@ def test_the_full_chain_produces_a_nonzero_numbered_count():
     assert len(RL._v2_kept_order(ctx)) == 3, (
         "the chain runner->execute->ctx->_v2_kept_order lost the render order"
     )
+
+
+# ── the address space is round-scoped ───────────────────────────────────────
+#
+# Live, cid 09cf4edf: preload runs ONCE, so _v2_kept_order returned round 1's
+# 15 passages on every round while react read more each time ([v2.evidence]
+# results 1 -> 3 -> 5). Round 4 answered kept=[...,23] -- correctly numbering a
+# list we were not showing it. Its eleven in-range indices resolved cleanly to
+# real chunk_ids react never selected: every index valid, every mapping wrong,
+# no error anywhere.
+
+def test_the_numbered_list_is_returned_only_for_its_own_round():
+    import app.pipeline.react_loop as RL
+
+    class _C:
+        _v2_preload_round = 1
+        _v2_preloaded = [{"tool": "rag",
+                          "rendered": [{"chunk_id": f"c{i}"} for i in range(15)]}]
+
+    assert len(RL._v2_kept_order(_C(), 1)) == 15, "its own round lost the list"
+    for stale in (2, 3, 4, 6):
+        assert RL._v2_kept_order(_C(), stale) == [], (
+            f"round {stale} got round 1's list -- indices would resolve to "
+            "chunks react never selected"
+        )
+
+
+def test_an_unstamped_payload_is_treated_as_stale():
+    """No stamp means we cannot prove which round it belongs to. Unprovable is
+    stale: a wrong chunk_id is worse than no chunk_id."""
+    import app.pipeline.react_loop as RL
+
+    class _C:
+        _v2_preloaded = [{"tool": "rag", "rendered": [{"chunk_id": "c1"}]}]
+
+    assert RL._v2_kept_order(_C(), 1) == []
+
+
+def test_round_index_omitted_keeps_the_unscoped_behaviour():
+    """Callers that genuinely want everything (diagnostics) still can."""
+    import app.pipeline.react_loop as RL
+
+    class _C:
+        _v2_preload_round = 1
+        _v2_preloaded = [{"tool": "rag", "rendered": [{"chunk_id": "c1"}]}]
+
+    assert len(RL._v2_kept_order(_C())) == 1
+
+
+def test_kept_is_named_in_the_consequence_line_when_it_is_asked_for():
+    """`facts[]` was dropped before when it was a footnote; the fix was naming
+    the cost of omitting it. kept must carry the same weight or it is dropped
+    the same way -- measured 1 of 6 rounds."""
+    assert "facts[] and kept[]" in _frame(15)
+    assert "facts[] and kept[]" not in _frame(0)

@@ -297,34 +297,42 @@ def render(c: ST.Ctx, posture: Posture,
     parts.append("     Only what THIS round's evidence supports. A fact with "
                  "no document is DROPPED — we cannot check it later, so it "
                  "must not be remembered as if we could.")
+    # 🔴 kept SITS WITH facts, NOT AFTER not_useful.
+    #
+    # Measured live, cid 09cf4edf: react returned `kept` on ONE of six rounds
+    # while the ask rendered in every posture. Same failure this block already
+    # records for facts[] -- a key listed last in a sequence gets dropped, and
+    # the fix that worked there was making it part of the object rather than an
+    # addendum to it.
+    #
+    # So kept is stated as a PROPERTY OF THE FACTS ABOVE: every fact came from
+    # a numbered passage, and this is those numbers. That makes it derivable
+    # from work react has already done rather than a separate chore at the end
+    # of a long block.
+    #
+    # ASKED ONLY WHEN THERE IS A LIST TO ADDRESS. Asking with nothing numbered
+    # tells the model to address something it cannot see, and a model asked for
+    # indices WILL produce some -- they parse as valid ints and resolve against
+    # the wrong thing.
+    if numbered_passages:
+        parts.append(f'  "kept": [<the numbers of the passages those facts '
+                     f'came from>]')
+        parts.append(f"     The passages you were given are numbered [1] to "
+                     f"[{numbered_passages}]. Every fact above came from one "
+                     "of them — list those numbers. Nothing else: not what you "
+                     "skimmed, not what you rejected.")
+        parts.append(f"     ONLY numbers between 1 and {numbered_passages}. If "
+                     "you are reading something that is not in that numbered "
+                     "list, it does not belong here.")
+        parts.append("     Just the numbers, e.g. [2, 5]. An empty list is a "
+                     "real answer and means no numbered passage earned a fact.")
     parts.append('  "not_useful": ["<document or document p<page> you read '
                  'and are NOT using>"]')
     parts.append("     What you looked at and rejected. Recorded so no later "
                  "round retrieves or re-reads it — this is the only way that "
                  "knowledge survives the turn.")
-    # 🔴 ASKED FOR ONLY WHEN THERE IS A LIST TO ADDRESS.
-    #
-    # The passages react reads are numbered [1]..[N] (preload._render_chunk).
-    # Asking for indices when nothing was numbered -- a round whose payload was
-    # prose, or a blind round -- tells the model to address a list it cannot
-    # see, and a model asked for indices WILL produce some. They would parse as
-    # valid ints and resolve against the wrong thing.
-    #
-    # This is the defect I caught in the original proposal for this feature,
-    # which assumed a numbered list already existed. It did not. So the ask is
-    # gated on the count, and the count comes from the render, not from intent.
-    if numbered_passages:
-        parts.append('  "kept": [<numbers of the passages you actually USED>]')
-        parts.append(f"     The passages above are numbered [1] to "
-                     f"[{numbered_passages}]. List ONLY the numbers you drew a "
-                     "fact from. Not every passage you read — the ones that "
-                     "earned a place in the answer.")
-        parts.append("     Just the numbers, e.g. [2, 5]. Do not write the "
-                     "document name here; it is already on the passage.")
-        parts.append("     This is how the next retrieval learns what was "
-                     "worth finding. An empty list is a real answer and means "
-                     "none of them helped.")
-    parts.append("  Returning the earlier shape WITHOUT facts[] means this "
+    _missing = "facts[] and kept[]" if numbered_passages else "facts[]"
+    parts.append(f"  Returning the earlier shape WITHOUT {_missing} means this "
                  "turn learns nothing: the evidence dies with the round and "
                  "the next round starts blind.")
 

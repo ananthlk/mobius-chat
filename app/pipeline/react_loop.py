@@ -1464,18 +1464,46 @@ def _arms_dropped(res) -> int:
 
 
 
-def _v2_kept_order(ctx) -> list:
-    """The passages react was shown this round, in the order they were numbered.
+def _v2_kept_order(ctx, round_index=None) -> list:
+    """The passages react was shown THIS ROUND, in the order they were numbered.
+
+    🔴 ROUND-SCOPED, BECAUSE THE ADDRESS SPACE GOES STALE.
+    -----------------------------------------------------------------------
+    Measured live, cid 09cf4edf: preload runs ONCE, so this returned round 1's
+    15 passages on every round while react read progressively more material
+    ([v2.evidence] results=1 -> 3 -> 5). Round 4 answered `kept=[...,23]` -- and
+    23 was not a hallucination, react was correctly numbering a list we were
+    not showing it.
+
+    The eleven in-range indices from that round resolved cleanly to real
+    chunk_ids react never selected. Every one in range, every one wrong, no
+    error anywhere. That is the exact silent-misattribution failure the ordinal
+    scheme was chosen to avoid, arriving through a different door -- and the
+    ONLY reason it surfaced was recording the one out-of-range index instead of
+    dropping it.
+
+    So: the numbered list is returned only for the round that actually rendered
+    it. Any later round gets nothing, which makes numbered_passages 0, which
+    stops react being asked at all. A narrower true signal beats a broader one
+    that cannot be trusted -- and a wrong chunk_id handed to Retriever would
+    have excluded evidence react had used, while looking like it worked.
 
     ONE function, because the number react echoes and the list we resolve it
     against must come from the same place. preload's runner returns `rendered`
-    per tool (react_loop:1793); this flattens them in the order the frame
-    renders them, which is the order fair_share numbered them.
+    per tool; this flattens them in the order the frame renders them, which is
+    the order fair_share numbered them.
 
-    Empty when nothing was numbered -- a prose payload, or a blind round. The
-    caller must then not ask for indices at all: a model asked to address a
-    list it cannot see will still produce numbers.
+    Empty when nothing was numbered -- a prose payload, a blind round, or a
+    round the numbered list does not belong to. The caller must then not ask
+    for indices at all: a model asked to address a list it cannot see will
+    still produce numbers.
     """
+    # The round the numbered payload was actually rendered for. Set where
+    # preload runs; absent means we cannot prove which round it belongs to, and
+    # unprovable is treated as stale.
+    _pr = getattr(ctx, "_v2_preload_round", None)
+    if round_index is not None and _pr != round_index:
+        return []
     out: list = []
     for r in (getattr(ctx, "_v2_preloaded", None) or []):
         if isinstance(r, dict):
@@ -5450,6 +5478,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # reading nearby code.
                 import time as _preload_time
                 _t_pre = _preload_time.monotonic()
+                # STAMP THE ROUND THE NUMBERED PAYLOAD BELONGS TO. Without
+                # this, _v2_kept_order cannot tell a fresh list from a stale
+                # one, and a stale one resolves every index to the wrong
+                # passage -- silently, because they are all in range.
+                ctx._v2_preload_round = rn
                 ctx._v2_preloaded = _v2pre.execute(
                     _plan,
                     # Tool Manifest executes by default now; the flag is the
@@ -6126,7 +6159,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             # Deriving it twice from different places is how an
                             # index comes to mean a different passage on the way
                             # out than it did on the way in.
-                            numbered_passages=len(_v2_kept_order(ctx)),
+                            numbered_passages=len(_v2_kept_order(ctx, rn)),
                             # ONLY ASK WHEN WE COULD ACTUALLY GO AGAIN.
                             # Feasible is ours (rounds left, budget); worth it
                             # is theirs. Asking when we cannot afford it
@@ -6829,7 +6862,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # numbered for it. _v2_kept_order is the one source of that
                 # order -- see its docstring for why it must not be re-derived.
                 _v2_resp, ctx._v2_kept_chunks = _v2c.with_kept_chunks(
-                    _v2_resp, _v2_kept_order(ctx))
+                    _v2_resp, _v2_kept_order(ctx, rn))
                 # LOG WHENEVER WE ASKED, NOT ONLY WHEN WE GOT SOMETHING.
                 #
                 # This fired only when indices came back, so "react returned
@@ -6839,7 +6872,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # second is a prompt that is not landing. Measured on cid
                 # eb309a95: numbered=1, no [v2.kept] line, and no way to tell
                 # which had happened.
-                _n_numbered = len(_v2_kept_order(ctx))
+                _n_numbered = len(_v2_kept_order(ctx, rn))
                 if _n_numbered or _v2_resp.kept_indices or _v2_resp.kept_unresolved:
                     # LOG BOTH SIDES. An index react named that does not exist
                     # means it is addressing a list it cannot see, which is a
