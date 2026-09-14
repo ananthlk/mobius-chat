@@ -470,6 +470,44 @@ def _dynamic_enrichment_enabled() -> bool:
     return random.random() * 100 < pct
 
 
+
+def _sections_from_v2_facts(card: dict, ctx) -> dict:
+    """Render v2's grounded facts as one cited bullets section.
+
+    ONLY grounded facts. A fact with no document is exactly the ungrounded
+    claim the whole v2 contract exists to keep out of an answer, and promoting
+    one into a section would give it MORE prominence than the prose did.
+
+    Deduplicated on the fact text, because the same fact re-stated across
+    rounds is one thing learned, not two.
+    """
+    facts = getattr(getattr(ctx, "_v2_last_contract", None), "facts", ()) or ()
+    seen: set[str] = set()
+    bullets: list[str] = []
+    for f in facts:
+        if not getattr(f, "grounded", False):
+            continue
+        text = (getattr(f, "fact", "") or "").strip()
+        key = " ".join(text.lower().split())
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        doc = (getattr(f, "document", "") or "").strip()
+        pg = getattr(f, "page", None)
+        cite = f" [{doc}" + (f" p{pg}]" if pg else "]") if doc else ""
+        bullets.append(f"{text}{cite}")
+    if len(bullets) < 2:
+        # One bullet is not a list. Below two, the prose says it better and a
+        # section would be structure for its own sake.
+        return card
+    card.setdefault("sections", []).append({
+        "intent": "evidence",
+        "label": "What the documents say",
+        "format": "bullets",
+        "bullets": bullets[:8],
+    })
+    return card
+
 def _appeals_hint_pseudo_sources(tool_section_hints: list[dict] | None) -> list[dict]:
     """Appeals tools (appeals_find_carc/appeals_lookup_rules) return sources=[] --
     their rule text only reaches the card via pre_built_sections (a copy-verbatim
@@ -994,6 +1032,33 @@ def run_integrate(
         # (deterministic, not LLM-composed) must survive regardless of which
         # integrator path produced the card (traced cid=2803928f).
         _det_card = ensure_pre_built_sections(_det_card, getattr(ctx, "tool_section_hints", None))
+        # 🔴 SECTIONS FROM THE FACTS, WHEN THE PROSE YIELDED NONE.
+        #
+        # Measured on 15 paired A/B questions, 2026-09-14:
+        #     v1  avg 0.7 sections/answer  (bullets x8, table x3)
+        #     v2  avg 0.0 sections         -- every answer one prose block
+        #
+        # Cause: v1's integrator is an LLM that WRITES bullets and tables. v2
+        # replaced it with a deterministic formatter, which can only PRESERVE
+        # structure the draft already has -- and classify_envelope rejects
+        # react's prose with "no confident structure; prose is the honest
+        # rendering". It is right to: guessing structure out of prose is how a
+        # renderer invents emphasis the author did not mean.
+        #
+        # But v2 holds something v1 never does: FACTS, each already carrying
+        # the document and page it came from. Those are structure we were
+        # given, not structure we inferred -- so rendering them as a cited
+        # bullet list is a faithful presentation of data we already verified,
+        # not a heuristic re-reading of prose.
+        #
+        # Only when the formatter produced nothing. A draft that DID carry
+        # clean structure keeps it; this never overrides the formatter.
+        try:
+            if not (_det_card.get("sections") or []):
+                _det_card = _sections_from_v2_facts(_det_card, ctx)
+        except Exception as _sf_e:   # pragma: no cover — never lose the answer
+            logger.warning("[integrate] v2 fact-sections failed (%r) — card "
+                           "ships with prose only", _sf_e)
         final_message = json.dumps(_det_card)
         integrator_usages = []
         integrator_usage = None

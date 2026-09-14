@@ -197,9 +197,40 @@ def _communicating(f: Facts) -> bool:
     answer_shape block needs the same test, and two copies of this expression
     would drift the first time the posture changed.
     """
-    return f.finalising or (
-        bool(f.preloaded or f.useful) and (not f.gaps or f.exact_tool)
-    )
+    # 🔴 OPEN GAPS ARE SOMETHING TO COMMUNICATE, NOT A REASON TO WITHHOLD.
+    #
+    # This used to require `not f.gaps or f.exact_tool` on top of the
+    # evidence test, so on any question with a part still open only a
+    # FINALISING round could communicate. Measured across 61 live rounds,
+    # 2026-09-14:
+    #
+    #     34  roles=plan,summarise
+    #     24  roles=scope,plan
+    #      3  roles=communicate,validate     <- 5%
+    #
+    # Two consequences, both bad and both invisible from inside a round:
+    #
+    #   1. THE EXTENDED ANSWER NEVER EXISTED. Ananth, 2026-09-13: "with
+    #      communicate means extended answer space exists". It keys on this
+    #      block rendering, so 95% of rounds had no extended answer at all.
+    #   2. THE ANSWER SHAPE NEVER ARRIVED. The answer_shape block is gated on
+    #      this same test, so react fell back to REACT_FORMAT_RULES_TEXT --
+    #      which hard-codes a bold line plus 2-4 bullets and never mentions a
+    #      table. A three-entity comparison was structurally unable to come
+    #      back as one. Measured downstream: v2 shipped 0.0 sections per
+    #      answer against v1's 0.7 (bullets x8, table x3) over 15 paired
+    #      questions.
+    #
+    # Ananth: "FINAL = SUMMARIZE + COMMUNICATE" -- and summarise fires on
+    # evidence alone. Communicate was strictly narrower than the role it is
+    # supposed to pair with, which is the defect: a question with three
+    # payers and one still open should get two answered and the third named,
+    # not one merged paragraph withheld until everything closes.
+    #
+    # So it now matches summarise: drafting, with something to say. `gaps`
+    # still shapes WHAT is communicated -- the role text tells react to name
+    # what is still open -- it just no longer decides WHETHER.
+    return f.finalising or bool(f.preloaded or f.useful)
 
 
 #: Kill switch. This block is a SUGGESTION -- a turn is strictly better off

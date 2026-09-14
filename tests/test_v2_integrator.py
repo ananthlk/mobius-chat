@@ -89,50 +89,71 @@ def _runner(critic=None, steps=None, fail=None):
     return r
 
 
-def test_critic_and_next_steps_both_run():
+def test_next_steps_still_runs_with_no_llm_critic():
+    """The LLM critic is gone; next_steps is the only model call left here."""
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
               decision=_decision(),
-              runner=_runner(critic='{"summary":"UHC missing","parts":[]}',
-                             steps='{"next_steps":["Search the UHC manual"]}'))
-    assert out.critique_summary == "UHC missing"
+              runner=_runner(steps='{"next_steps":["Search the UHC manual"]}'))
     assert out.next_steps == ("Search the UHC manual",)
-    assert out.ran["critique"] == "ok" and out.ran["next_steps"] == "ok"
+    assert out.ran["next_steps"] == "ok"
+    assert out.ran["critique"].startswith("deterministic")
 
 
-def test_a_failed_critic_does_not_take_next_steps_with_it():
+def test_no_llm_critic_is_ever_called():
+    """🔴 THE POINT OF THIS FILE NOW.
+
+    Ananth, 2026-09-12: "take it out.. critic is a dynamic thing as part of
+    react.. we dont need it here.. we will bake in a deterministic critique
+    which we already have". It was removed from the per-round path then and
+    NOT from finalisation, so it kept running: measured 2026-09-14 across 15
+    A/B questions, v2_critic fired on 10 of 15 turns at 13.0s average.
+
+    Asserts on the STAGES the runner was asked for, so a critic reintroduced
+    under any prompt or name fails this.
+    """
+    seen = []
+
+    def _spy(system, user, max_tokens, stage):
+        seen.append(stage)
+        return '{"next_steps":[]}'
+
+    run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
+        decision=_decision(), runner=_spy)
+    assert "v2_critic" not in seen, f"an LLM critic ran: {seen}"
+    assert seen == ["v2_next_steps"], seen
+
+
+def test_critique_comes_from_the_deterministic_findings():
+    """verify_claims compared each claim to the page it cites. That verdict --
+    not a model's second opinion -- is what reaches the trace."""
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
               decision=_decision(),
-              runner=_runner(steps='{"next_steps":["x"]}', fail="v2_critic"))
-    assert out.ran["critique"] == "failed"
-    assert out.next_steps == ("x",)
-    assert any("critique call failed" in p for p in out.problems)
+              verified_findings=("Sunshine 180 days: cited page says 365",),
+              runner=_runner(steps='{"next_steps":[]}'))
+    assert len(out.critique) == 1
+    assert out.critique[0].part == "Sunshine 180 days"
+    assert "365" in out.critique[0].why
+    assert out.critique[0].status == "unsupported"
+    assert "1 claim(s)" in out.critique_summary
 
 
-def test_a_failed_call_is_recorded_never_invented():
-    """An integrator that invents a critique when the critic did not answer is
-    worse than one that returns nothing -- the invention reads as a check that
-    happened."""
+def test_no_findings_means_no_critique_and_says_so():
+    """Nothing flagged and nothing checked must not read the same. ran[] states
+    which it was."""
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-              decision=_decision(), runner=_runner(fail="v2_critic"))
+              decision=_decision(), runner=_runner(steps='{"next_steps":[]}'))
     assert out.critique == () and out.critique_summary == ""
-    assert out.ran["critique"] == "failed"
+    assert "nothing flagged" in out.ran["critique"]
 
 
-def test_supported_with_no_evidence_is_downgraded():
-    """The verdict a lenient judge produces. The point of the critic is not
-    taking the model's word for it."""
+def test_a_failed_next_steps_call_is_recorded_never_invented():
+    """An integrator that invents next steps the model did not return is worse
+    than one returning none -- the invention reads as advice that was reasoned."""
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-              decision=_decision(),
-              runner=_runner(critic='{"parts":[{"part":"Sunshine","status":"supported","evidence":[]}]}'))
-    assert out.critique[0].status == "unobservable"
-    assert any("no evidence" in p for p in out.problems)
-
-
-def test_supported_with_evidence_survives():
-    out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-              decision=_decision(),
-              runner=_runner(critic='{"parts":[{"part":"Molina","status":"supported","evidence":["molina_fl.pdf p102"]}]}'))
-    assert out.critique[0].status == "supported"
+              decision=_decision(), runner=_runner(fail="v2_next_steps"))
+    assert out.next_steps == ()
+    assert out.ran["next_steps"] == "failed"
+    assert any("next_steps call failed" in p for p in out.problems)
 
 
 def test_fenced_json_parses():
@@ -167,11 +188,18 @@ def test_a_missing_prompt_block_falls_back_instead_of_shipping_the_placeholder()
     a critic returning confident nonsense with no error anywhere.
 
     Same shape as an honest-empty dressed as evidence: the value is present so
-    every falsiness check passes, and the thing it represents is absent."""
-    from app.pipeline.v2.integrator import _critic_prompt
-    system, _ = _critic_prompt("q", "a", (), ())
+    every falsiness check passes, and the thing it represents is absent.
+
+    Retargeted 2026-09-14 from _critic_prompt, which was deleted with the LLM
+    critic. The defect is a property of _prompt_text, not of which block uses
+    it, so the coverage moves to the prompt builder that survives -- deleting
+    the test with the function would have retired a guard that still has
+    something to guard.
+    """
+    from app.pipeline.v2.integrator import _next_steps_prompt
+    system, _ = _next_steps_prompt("q", "a", ())
     assert "missing prompt block" not in system
-    assert "checking an answer" in system
+    assert system.strip()
 
 
 def test_the_prompt_source_is_recorded_not_inferred():
@@ -230,51 +258,28 @@ def test_a_truncated_reply_says_TRUNCATED_and_names_the_budget():
     diagnosis sent me to the prompt."""
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
               decision=_decision(),
-              runner=_runner(critic='```json\n{"summary": "the answer accur'))
-    assert any("TRUNCATED" in p and "CRITIC_MAX_TOKENS" in p for p in out.problems)
+              runner=_runner(steps='```json\n{"summary": "the answer accur'))
+    assert any("TRUNCATED" in p and "NEXT_STEPS_MAX_TOKENS" in p for p in out.problems)
     assert not any("was not JSON" in p for p in out.problems)
 
 
 def test_genuinely_malformed_still_says_not_json():
     out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-              decision=_decision(), runner=_runner(critic="I think it looks fine!"))
+              decision=_decision(), runner=_runner(steps="I think it looks fine!"))
     assert any("was not JSON" in p for p in out.problems)
 
 
-def test_empty_string_evidence_does_not_count_as_evidence():
-    """LIVE CASE: the critic returned status=supported with evidence [""] for a
-    fact that had no document. An empty string is not a citation."""
-    out = run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-              decision=_decision(),
-              runner=_runner(critic='{"parts":[{"part":"UHC","status":"supported","evidence":[""]}]}'))
-    assert out.critique[0].status == "unobservable"
+# test_empty_string_evidence_does_not_count_as_evidence REMOVED 2026-09-14,
+# with the code it guarded. It asserted that an LLM critic returning
+# status="supported" with evidence [""] was downgraded to "unobservable" -- a
+# real live defect, and a property of asking a model to grade our own answer.
+#
+# The deterministic verifier cannot produce that failure: it compares a claim
+# to the page it cites, so it has no way to assert support it did not find.
+# Keeping the test would mean keeping _parse_critique alive to satisfy it.
 
 
 # ── an empty fact list cannot make a claim unsupported ─────────────────────
-
-def test_the_critic_does_not_run_without_grounded_facts():
-    """🔴 MEASURED LIVE. react returned a v1-shaped response (no facts[]), the
-    critic was handed an empty list, and concluded "none of these claims can be
-    supported as no facts were provided" — marking all three payers UNSUPPORTED
-    on an answer that WAS grounded, with citations [1][3][7][9] from real
-    passages.
-
-    That is could-not-check rendered as checked-false: this module's own first
-    rule, broken by this module's own prompt. A false "unsupported" is worse
-    than no critique, because it reads as a check that happened and failed."""
-    called = []
-
-    def runner(system, user, *, max_tokens, stage=None):
-        called.append(stage)
-        return '{"parts":[{"part":"x","status":"unsupported","why":"no facts"}]}'
-
-    out = run(question="q", answer="Molina uses ICM [1]", facts=(),
-              open_gaps=GAPS, decision=_decision(facts=()), runner=runner)
-    assert "v2_critic" not in called, "the critic ran with nothing to check"
-    assert out.critique == ()
-    assert out.ran["critique"] == "skipped"
-    assert any("cannot make a claim unsupported" in p for p in out.problems)
-
 
 def test_next_steps_still_runs_without_facts():
     """"What would close what is still open" is answerable from the gaps alone
@@ -299,19 +304,6 @@ def test_an_ungrounded_fact_does_not_count_as_something_to_check_against():
     run(question="q", answer="a", facts=(Fact("floating", "", None),),
         open_gaps=GAPS, decision=_decision(facts=()), runner=runner)
     assert "v2_critic" not in called
-
-
-def test_the_critic_DOES_run_when_there_is_evidence():
-    """The guard is about absence, not about disabling the critic."""
-    called = []
-
-    def runner(system, user, *, max_tokens, stage=None):
-        called.append(stage)
-        return '{"summary":"ok","parts":[]}'
-
-    run(question="q", answer="a", facts=FACTS, open_gaps=GAPS,
-        decision=_decision(), runner=runner)
-    assert "v2_critic" in called
 
 
 def test_a_token_inside_another_part_cannot_distinguish():

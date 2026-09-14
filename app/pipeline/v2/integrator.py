@@ -64,7 +64,7 @@ NEXT_STEPS_BLOCK = "v2.integrator.next_steps"
 # sent me looking at the prompt.
 #
 # Cost is unaffected by the ceiling: we pay for tokens produced, not offered.
-CRITIC_MAX_TOKENS = 8000
+# CRITIC_MAX_TOKENS removed with the LLM critic (2026-09-14).
 NEXT_STEPS_MAX_TOKENS = 3000
 
 
@@ -297,16 +297,6 @@ def _prompt_text(block_key: str, fallback: str) -> str:
     return fallback
 
 
-def _critic_prompt(question, answer, facts, open_gaps) -> tuple[str, str]:
-    body = {
-        "question": question,
-        "answer": answer[:6000],
-        "facts": [{"fact": f.fact, "source": _cite(f)} for f in facts or ()],
-        "open_gaps": list(open_gaps or ()),
-    }
-    return _prompt_text(CRITIC_BLOCK, _CRITIC_FALLBACK), json.dumps(body, ensure_ascii=False)
-
-
 def _next_steps_prompt(question, answer, open_gaps) -> tuple[str, str]:
     body = {"question": question, "answer": answer[:3000],
             "open_gaps": list(open_gaps or ())}
@@ -337,42 +327,17 @@ _NEXT_FALLBACK = (
 )
 
 
-def critique_only(*, question: str, answer: str, facts=(), open_gaps=(),
-                  runner) -> tuple[tuple[PartVerdict, ...], str, tuple[str, ...]]:
-    """Just the critic, run BEFORE the answer is finalised.
-
-    Ananth, 2026-09-12: "if there was critic errors then incorporate >>
-    communicate" — which only works if the critique exists before the round
-    that writes the answer. Running it at finalize, as the full integrator
-    does, produces a verdict on an answer nobody can still change.
-
-    Returns (verdicts, summary, findings) where findings are the claims the
-    critic could not tie to the evidence, phrased for react to act on.
-
-    Never raises, and never invents: no grounded facts means no critique, not
-    a list of unsupported claims (see run() for why that matters).
-    """
-    grounded = [f for f in (facts or ()) if getattr(f, "grounded", False)]
-    if not grounded or not (answer or "").strip():
-        return (), "", ()
-    problems: list[str] = []
-    try:
-        sys_p, user_p = _critic_prompt(question, answer, facts, open_gaps)
-        raw = _call(runner, sys_p, user_p, CRITIC_MAX_TOKENS, "v2_critic")
-    except Exception as e:            # pragma: no cover
-        logger.warning("[v2.integrator] pre-answer critique failed: %s", e)
-        return (), "", ()
-    verdicts, summary = _parse_critique(raw, problems)
-    # Only the ones react can DO something about. "supported" needs no action,
-    # and "unobservable" means we could not check — telling react to fix a
-    # claim we merely failed to verify would have it delete good material.
-    findings = tuple(
-        f"{v.part}: {v.why}" if v.why else v.part
-        for v in verdicts if v.status in ("unsupported", "partial"))
-    return verdicts, summary, findings
+# critique_only() REMOVED 2026-09-14. It was the pre-answer LLM critic, it had
+# no callers, and it carried the only remaining v2_critic invocation outside
+# _call's default. Ananth: "take it out.. we will bake in a deterministic
+# critique which we already have". Dead code holding a live LLM call is a trap
+# for whoever reads it next and thinks it is the supported path -- and the
+# supported path is verify_claims, which checks a claim against the page it
+# cites instead of asking a model for a second opinion.
 
 
 def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
+        verified_findings=(),
         decision, runner) -> Integration:
     """Assemble, then critique and plan next steps CONCURRENTLY.
 
@@ -411,34 +376,50 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
     # answerable from the gaps alone and needs no facts.
     _grounded = [f for f in (facts or ()) if getattr(f, "grounded", False)]
     if not _grounded:
-        ran["critique"] = "skipped"
         problems.append(
-            "critique skipped: no grounded facts to check the answer against — "
-            "an empty fact list cannot make a claim unsupported, only "
-            "unverifiable (see coverage, which reports those parts as "
-            "unobservable)")
+            "no grounded facts to check the answer against — an empty fact "
+            "list cannot make a claim unsupported, only unverifiable (see "
+            "coverage, which reports those parts as unobservable)")
 
-    def _critic():
-        if not _grounded:
-            return ""
-        sys_p, user_p = _critic_prompt(question, answer, facts, open_gaps)
-        return _call(runner, sys_p, user_p, CRITIC_MAX_TOKENS, "v2_critic")
+    # 🔴 NO LLM CRITIC. Ananth, 2026-09-12: "take it out.. critic is a dynamic
+    # thing as part of react.. we dont need it here.. we will bake in a
+    # deterministic critique which we already have (the tool that manifets
+    # developed for check a fact)".
+    #
+    # It was removed from the per-round path then and NOT from here, so it kept
+    # running at finalisation. Measured on 15 A/B questions, 2026-09-14:
+    # v2_critic fired on 10 of 15 turns at 13.0s average -- roughly 8.7s per
+    # turn of a second opinion nobody asked for, on the arm that was already
+    # losing on latency.
+    #
+    # What replaces it is not nothing: verify_claims checks each claim against
+    # the page it cites, deterministically, and those findings arrive as
+    # `verified_findings`. A string match against text we hold cannot be
+    # lenient and cannot hallucinate a verdict -- and this session watched the
+    # LLM critic mark correctly-cited claims "unsupported".
+    #
+    # `critique` stays populated so the trace keeps its line; the SOURCE
+    # changes from a model's opinion to a check.
+    critique = tuple(
+        PartVerdict(part=str(f).split(":", 1)[0][:120],
+                    status="unsupported",
+                    why=(str(f).split(":", 1)[1].strip()[:200]
+                         if ":" in str(f) else ""))
+        for f in (verified_findings or ()))
+    summary = (f"{len(critique)} claim(s) the cited page does not support"
+               if critique else "")
+    ran["critique"] = ("deterministic (verify_claims)" if verified_findings
+                       else "deterministic (verify_claims) — nothing flagged")
 
-    def _next():
-        sys_p, user_p = _next_steps_prompt(question, answer, open_gaps)
-        return _call(runner, sys_p, user_p, NEXT_STEPS_MAX_TOKENS,
-                     "v2_next_steps")
-
-    # SAFE TO PARALLELISE: both closures take strings and return strings and
-    # touch no ctx. preload.execute is sequential because _execute_tool assigns
-    # fifteen ctx attributes; that hazard does not exist here.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_critic, f_next = pool.submit(_critic), pool.submit(_next)
-        critic_raw = ("" if not _grounded
-                      else _settle(f_critic, "critique", ran, problems))
-        next_raw = _settle(f_next, "next_steps", ran, problems)
-
-    critique, summary = _parse_critique(critic_raw, problems)
+    # One call now, so no pool. _settle's contract is a future; this is the
+    # same degrade-never-fabricate handling for a direct call, and it reuses
+    # _settle rather than growing a second convention for one call site.
+    sys_p, user_p = _next_steps_prompt(question, answer, open_gaps)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        next_raw = _settle(
+            pool.submit(_call, runner, sys_p, user_p,
+                        NEXT_STEPS_MAX_TOKENS, "v2_next_steps"),
+            "next_steps", ran, problems)
     steps = _parse_next_steps(next_raw, problems)
 
     return Integration(
@@ -532,37 +513,6 @@ def _loads(raw):
             except Exception:
                 return None
     return None
-
-
-def _parse_critique(raw, problems) -> tuple[tuple[PartVerdict, ...], str]:
-    d = _loads(raw)
-    if not isinstance(d, dict):
-        if _truncated(raw):
-            problems.append(
-                f"critique TRUNCATED at {len(str(raw))} chars — the reply was "
-                f"valid JSON with its tail missing; raise CRITIC_MAX_TOKENS "
-                f"(currently {CRITIC_MAX_TOKENS}), do not change the prompt")
-        elif raw:
-            problems.append("critique was not JSON")
-        return (), ""
-    out = []
-    for p in (d.get("parts") or []):
-        if not isinstance(p, dict):
-            continue
-        ev = tuple(str(x) for x in (p.get("evidence") or []) if str(x).strip())
-        status = str(p.get("status") or "unobservable")
-        # A SUPPORTED VERDICT WITH NO EVIDENCE IS A CONTRADICTION, and it is
-        # the one a lenient judge produces. Downgraded here rather than
-        # trusted, because the whole point of the critic is not taking the
-        # model's word for it.
-        if status == "supported" and not ev:
-            status = "unobservable"
-            problems.append(
-                f"critic said 'supported' for {str(p.get('part'))[:40]!r} with "
-                "no evidence — downgraded to unobservable")
-        out.append(PartVerdict(str(p.get("part") or ""), status,
-                               str(p.get("why") or ""), ev))
-    return tuple(out), str(d.get("summary") or "")
 
 
 def _parse_next_steps(raw, problems) -> tuple[str, ...]:

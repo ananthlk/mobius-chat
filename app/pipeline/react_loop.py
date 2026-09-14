@@ -4615,6 +4615,12 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
         out = _v2int.run(question=(ctx.message or ""), answer=final_answer or "",
                          facts=facts, open_gaps=gaps, all_parts=_all_gaps,
                          decision=decision,
+                         # THE CRITIQUE, FROM THE CHECK RATHER THAN A MODEL.
+                         # verify_claims already compared each claim to the
+                         # page it cites; the integrator no longer asks an LLM
+                         # for a second opinion on our own answer.
+                         verified_findings=tuple(
+                             getattr(ctx, "_v2_verified_findings", ()) or ()),
                          runner=_v2int.default_runner(ctx))
         ctx.v2_integration = out.to_dict()
         ctx.v2_enrich_decision = {"why": decision.why,
