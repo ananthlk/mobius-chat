@@ -53,14 +53,28 @@ def test_both_terms_are_written_after_adjudication():
     assert "SUM(cost_usd)" in sums, "cost is not summed from llm_calls"
 
 
-def test_the_row_reader_is_the_shared_helper():
-    """🔴 I wrote res.get("rows") and it silently returned nothing -- the
-    codebase reads SELECTs through _rows_as_dicts. A wrong reader does not
-    raise; it yields None, which looks exactly like 'no priced calls'."""
+def test_cost_is_read_through_llm_calls_OWN_pool():
+    """🔴 THREE ATTEMPTS, TWO SILENT FAILURES.
+
+    1. res.get("rows") -- wrong shape, returned nothing.
+    2. db_execute("chat", ...) + _rows_as_dicts -- llm_calls is written
+       through llm_analytics' asyncpg pool, while db_execute routes via the
+       manifest-gated db-agent. The refusal became [] and read as "no priced
+       calls". Measured: cid 9ccb537a logged cost_c=None while llm_calls held
+       6 rows summing $0.0338 for that turn.
+
+    Neither failure logged anything, which is why it took three passes. Read
+    the table the way the table is written."""
     import inspect
 
     import app.services.post_run_adjudication as A
 
     src = inspect.getsource(A)
-    assert "_rows_as_dicts" in src
+    assert "_acquire_conn" in src, "cost no longer reads llm_calls' own pool"
+    assert "fetchval" in src
     assert '.get("rows")' not in src, "hand-rolled row read is back"
+    assert 'db_execute(\n                "SELECT SUM(cost_usd)' not in src
+
+    # And the failure must be loud -- the two silent ones are the reason.
+    i = src.index("cost sum FAILED")
+    assert "logger.warning" in src[max(0, i - 200):i]

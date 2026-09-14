@@ -323,7 +323,6 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     # is a different failure and inventing a row here would hide it.
     try:
         from app.db_client import db_execute
-        from app.storage.turns import _rows_as_dicts
 
         # COST IS SUMMED HERE, NOT AT CLOSE. This runs after publish and after
         # this module's own priced call, so it is the first moment the bill is
@@ -335,20 +334,43 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         # CENTS, because promised_cost_c is cents (fast 16, normal 45,
         # thinking 81). A delivered figure in dollars against a promise in
         # cents reads as a 100x saving.
+        # 🔴 READ llm_calls THE WAY llm_calls IS WRITTEN.
+        #
+        # My first two attempts used db_execute("chat", ...). llm_calls is
+        # written through llm_analytics' asyncpg pool (_acquire_conn), and
+        # db_execute routes via the manifest-gated db-agent -- whose refusal
+        # _rows_as_dicts turns into an empty list. So the query failed,
+        # returned [], and read as "this turn made no priced call".
+        #
+        # Measured: cid 9ccb537a logged `attested quality=1.0 cost_c=None`
+        # while llm_calls held 6 rows summing $0.0338 for that exact turn.
+        # Two silent layers -- a refused query and a reader that cannot
+        # distinguish refusal from emptiness -- and neither logged anything.
+        #
+        # CENTS, because promised_cost_c is cents (fast 16, normal 45,
+        # thinking 81). A delivered figure in dollars against a promise in
+        # cents reads as a 100x saving.
         _cost_c = None
         try:
-            _cr = db_execute(
-                "SELECT SUM(cost_usd) AS usd FROM llm_calls "
-                "WHERE correlation_id = :cid AND cost_usd IS NOT NULL",
-                "chat", params={"cid": ctx.correlation_id})
-            _crows = _rows_as_dicts(_cr)
-            _usd = _crows[0].get("usd") if _crows else None
-            # None, never 0.0: a turn that made no priced call and a turn whose
-            # cost we could not read are different facts, and zero asserts the
-            # first.
-            _cost_c = round(float(_usd) * 100.0, 4) if _usd is not None else None
+            from app.services.llm_analytics import _acquire_conn
+            async with _acquire_conn() as _conn:
+                if _conn is None:
+                    logger.warning("[promise] cost sum skipped cid=%s: no pool",
+                                   (ctx.correlation_id or "")[:8])
+                else:
+                    _usd = await _conn.fetchval(
+                        "SELECT SUM(cost_usd) FROM llm_calls "
+                        "WHERE correlation_id = $1 AND cost_usd IS NOT NULL",
+                        ctx.correlation_id)
+                    # None, never 0.0: a turn that made no priced call and a
+                    # turn whose cost we could not read are different facts,
+                    # and zero asserts the first.
+                    _cost_c = (round(float(_usd) * 100.0, 4)
+                               if _usd is not None else None)
         except Exception as ce:
-            logger.warning("[promise] cost sum failed cid=%s: %s",
+            # LOUD. The last two failures were silent, which is why this took
+            # three attempts instead of one.
+            logger.warning("[promise] cost sum FAILED cid=%s: %r",
                            (ctx.correlation_id or "")[:8], ce)
 
         _q_score = qc_dict.get("automated_score")
