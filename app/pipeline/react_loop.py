@@ -1513,7 +1513,24 @@ def _v2_react_feedback(ctx, round_index) -> dict | None:
     served = [_cid(c) for c in _v2_kept_order(ctx, round_index - 1)]
     served = [c for c in served if c]
     kept_set = set(kept)
-    not_useful = [c for c in served if c not in kept_set]
+    # 🔴 NO `kept` MEANS WE CANNOT DERIVE `not_useful`. Measured live, first
+    # real turn through this wire, cid 29a1977c:
+    #
+    #     [v2.feedback] round=2 -> rag: kept=0 not_useful=11 gaps=3
+    #
+    # react returned no ordinals, so served-minus-kept became ALL ELEVEN
+    # served chunks -- and the consumer HARD-EXCLUDES on this field. One
+    # missing self-report would have permanently removed every passage the
+    # turn was shown.
+    #
+    # "react kept nothing" and "react did not say what it kept" are different
+    # facts and this subtraction cannot tell them apart. The dangerous one is
+    # reachable by silence, which is the defect class this repo has hit all
+    # night, so the empty case must be the safe one: derive nothing.
+    #
+    # Gaps still travel -- they are react's own words and do not depend on the
+    # ordinals landing.
+    not_useful = ([c for c in served if c not in kept_set] if kept_set else [])
 
     gaps = [g.text for g in (getattr(resp, "gaps", ()) or ())
             if getattr(g, "text", "")

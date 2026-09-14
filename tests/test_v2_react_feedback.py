@@ -88,3 +88,27 @@ def test_the_wire_is_v2_only_and_corpus_only():
                and any(isinstance(c, ast.Constant) and c.value == "rag"
                        for c in ast.walk(n.test))]
     assert guarded, "the feedback wire is not gated on v2 AND on a corpus tool"
+
+
+def test_no_kept_means_NO_not_useful_is_derived():
+    """🔴 CAUGHT ON THE FIRST REAL TURN THROUGH THE LIVE WIRE.
+
+        [v2.feedback] cid=29a1977c round=2 -> rag: kept=0 not_useful=11 gaps=3
+
+    react returned no ordinals, so served-minus-kept became ALL ELEVEN served
+    chunks -- and the consumer hard-excludes on this field. One missing
+    self-report would have permanently removed every passage the turn saw.
+
+    "kept nothing" and "did not say what it kept" are different facts and the
+    subtraction cannot distinguish them. The dangerous reading must not be the
+    one reachable by silence.
+    """
+    fb = RL._v2_react_feedback(_ctx(served=("a", "b", "c"), kept=(), gaps=("g",)), 2)
+    assert fb is not None, "gaps should still travel"
+    assert "not_useful_chunk_ids" not in fb, fb
+    assert fb["gaps"] == ["g"]
+
+
+def test_kept_present_still_derives_normally():
+    fb = RL._v2_react_feedback(_ctx(served=("a", "b", "c"), kept=("b",)), 2)
+    assert sorted(fb["not_useful_chunk_ids"]) == ["a", "c"]
