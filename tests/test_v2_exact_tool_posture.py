@@ -135,8 +135,33 @@ def test_summarise_steps_aside_so_communicate_fits():
     assert "role_confirm" in ids and "role_communicate" in ids
 
 
-def test_an_open_gap_still_blocks_communicate_WITHOUT_the_signal():
-    """The relaxation is scoped to the exact-tool posture. In the ordinary
-    corpus-sweep case an open gap still means the answer is not ready."""
-    ids = roles_for(_exact(exact_tool=False, gaps=(("S1", "g"),)))
-    assert "role_communicate" not in ids
+def test_communicate_needs_EVIDENCE_not_the_exact_tool_signal():
+    """REWRITTEN 2026-09-14. This asserted that without the exact-tool signal
+    an open gap still blocked communicate -- proving the relaxation was scoped.
+    That premise is gone: gaps no longer block communicate in EITHER case,
+    because open gaps are something to communicate about (Ananth: raise
+    MAX_ROLES to 4; FINAL = SUMMARIZE + COMMUNICATE).
+
+    So the scoping question is obsolete, but the real boundary is not: what
+    communicate needs is something to SAY. A round with no evidence and no
+    finalising signal still must not write the answer the user reads.
+    """
+    # open gap, no exact-tool signal -- communicates anyway, on its evidence
+    assert "role_communicate" in roles_for(
+        _exact(exact_tool=False, gaps=(("S1", "g"),)))
+    # and the exact-tool signal is not what did it
+    assert "role_communicate" in roles_for(
+        _exact(exact_tool=True, gaps=(("S1", "g"),)))
+
+
+def test_a_round_with_nothing_to_say_does_not_communicate():
+    """The boundary that survives: evidence or finalising. Neither means there
+    is no answer to write, and a COMMUNICATE instruction there would ask react
+    to address the person from nothing."""
+    import dataclasses
+
+    from app.pipeline.v2.blocks import Facts, frame_sections
+
+    bare = dataclasses.replace(Facts(), question="q", answer="")
+    roles = [n for n in frame_sections(bare)[1] if n.startswith("role_")]
+    assert "role_communicate" not in roles, roles

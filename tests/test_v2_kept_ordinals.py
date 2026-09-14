@@ -312,3 +312,64 @@ def test_kept_is_named_in_the_consequence_line_when_it_is_asked_for():
     the same way -- measured 1 of 6 rounds."""
     assert "facts[] and kept[]" in _frame(15)
     assert "facts[] and kept[]" not in _frame(0)
+
+
+# ── the communicate gate must not be retyped ────────────────────────────────
+
+def test_role_communicate_calls_the_helper_and_does_not_retype_it():
+    """🔴 THE DOCSTRING WARNED AND IT HAPPENED ANYWAY.
+
+    _communicating() says: "A function rather than a condition either seat
+    retypes... two copies of this expression would drift the first time the
+    posture changed." role_communicate.when carried its own inline copy.
+
+    So when I widened _communicating (open gaps are something to COMMUNICATE,
+    not a reason to withhold), the block kept the old `not f.gaps` clause.
+    I verified the HELPER returned True and reported the fix as landed;
+    communicate stayed at 3 of 61 rounds. Testing the helper, not the path.
+    """
+    import ast
+    import inspect
+
+    import app.pipeline.v2.blocks as B
+
+    tree = ast.parse(inspect.getsource(B))
+    gate = None
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Block"):
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant) \
+                and node.args[0].value == "role_communicate":
+            for kw in node.keywords:
+                if kw.arg == "when":
+                    gate = kw.value
+    assert gate is not None, "role_communicate has no `when`"
+
+    src = ast.unparse(gate)
+    assert "_communicating" in src, (
+        f"role_communicate retypes its condition instead of calling "
+        f"_communicating(): {src}"
+    )
+    # The specific clause that drifted. Its return means the helper was
+    # widened and the block was not.
+    assert "gaps" not in src, (
+        f"the gate inspects gaps directly again — that is the copy that "
+        f"drifted: {src}"
+    )
+
+
+def test_communicate_fires_alongside_plan_when_gaps_are_open():
+    """FINAL = SUMMARIZE + COMMUNICATE. Open gaps shape WHAT is communicated;
+    they must not decide WHETHER."""
+    import dataclasses
+
+    from app.pipeline.v2.blocks import Facts, frame_sections
+
+    f = dataclasses.replace(
+        Facts(), question="Compare A and B",
+        preloaded=(("rag", True, "15 passage(s)"),),
+        gaps=("A open", "B open"), answer="")
+    roles = [n for n in frame_sections(f)[1] if n.startswith("role_")]
+    assert "role_communicate" in roles, roles
+    assert "role_summarise" in roles, roles

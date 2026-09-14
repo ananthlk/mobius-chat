@@ -41,7 +41,7 @@ def test_never_more_than_three_roles():
               targeted_gap="a gap", preloaded=(("rag", True, "15 passages"),),
               suggest=("web_scrape",), useful=("doc p1",), discarded=("other.pdf",))
     _, rendered, _ = assemble(f)
-    assert len(_roles(rendered)) <= MAX_ROLES == 3
+    assert len(_roles(rendered)) <= MAX_ROLES == 4
 
 
 def test_round_one_judges_and_summarises_but_does_not_plan():
@@ -141,26 +141,40 @@ def test_final_round_is_summarise_plus_communicate():
     assert _roles(rendered) == ["role_summarise", "role_communicate"]
 
 
-def test_a_round_still_choosing_tools_does_not_communicate():
-    """COMMUNICATE is the answer the user reads. A round whose job is to pick
-    the next tool has not finished looking, and an answer written there reads
-    as final while the gap is still open."""
+def test_a_round_still_choosing_tools_ALSO_communicates_now():
+    """CHANGED DELIBERATELY 2026-09-14 (Ananth: raise MAX_ROLES to 4).
+
+    This used to assert communicate stayed OUT while a gap was open. That gate
+    is what made the extended answer never exist: communicate fired on 3 of 61
+    live rounds, answer_shape is gated on it, and react fell back to a
+    bullets-only format rule -- v2 shipped 0.00 sections/answer against v1's
+    0.73.
+
+    Ananth: "FINAL = SUMMARIZE + COMMUNICATE". Open gaps shape WHAT is
+    communicated; the role text tells react to name what is still open. They
+    no longer decide WHETHER.
+    """
     f = Facts(question=Q, preloaded=(("rag", True, "6 passages"),),
-              gaps=(("S1", "UHC not covered"),), suggest=("web_scrape",))
-    assert "role_communicate" not in _roles(assemble(f)[1])
+              gaps=("still open",))
+    roles = _roles(assemble(f)[1])
+    assert "role_communicate" in roles, roles
+    assert "role_plan" in roles, "a round with an open gap still plans"
 
 
-def test_plan_and_communicate_are_mutually_exclusive_by_construction():
-    """This, not a truncation, is what keeps any round at or under the cap.
-    A cap enforced by slicing would silently drop whichever role sorted last."""
-    for f in (Facts(question=Q, preloaded=(("rag", True, "x"),),
-                    gaps=(("S1", "g"),), suggest=("web_scrape",)),
-              Facts(question=Q, useful=("d p1",)),
-              Facts(question=Q, preloaded=(("rag", True, "x"),)),
-              Facts(question=Q, gaps=(("S1", "g"),), useful=("d p1",))):
-        r = _roles(assemble(f)[1])
-        assert not ("role_plan" in r and "role_communicate" in r), r
-        assert len(r) <= MAX_ROLES, r
+def test_plan_and_communicate_can_now_coexist_and_the_cap_still_binds():
+    """The exclusion that kept the drafting side at three is deliberately gone.
+
+    It was "plan needs a tool to suggest; communicate needs nothing left to
+    suggest" -- removed with the gate change, so four drafting roles are
+    reachable and MAX_ROLES went 3 -> 4 to match. The cap is still enforced by
+    the `when` conditions and the assertion in assemble(), never by slicing: a
+    cap enforced by truncation drops whichever role sorted last, and a missing
+    instruction is invisible in the output it fails to produce.
+    """
+    f = Facts(question=Q, preloaded=(("rag", True, "x"),), gaps=("g",))
+    roles = _roles(assemble(f)[1])
+    assert {"role_plan", "role_communicate"} <= set(roles), roles
+    assert len(roles) <= MAX_ROLES == 4
 
 
 def test_communicate_needs_evidence_like_summarise():
@@ -349,7 +363,11 @@ def test_a_finalising_round_communicates_and_does_not_plan():
               gaps=(("S1", "g"),), suggest=("rag",))
     normal = _roles(assemble(Facts(**kw))[1])
     final = _roles(assemble(Facts(**kw, finalising=True))[1])
-    assert "role_plan" in normal and "role_communicate" not in normal
+    # UPDATED 2026-09-14: communicate now fires on a normal round too. The
+    # defect this test was written for was the opposite -- communicate in the
+    # NOT-SENT list while react declared complete -- and it is now impossible
+    # in both directions, which is strictly stronger than what it asserted.
+    assert "role_plan" in normal and "role_communicate" in normal
     assert "role_communicate" in final
     # Planning the next tool while writing the final answer is the two-jobs
     # contradiction this stack exists to prevent.

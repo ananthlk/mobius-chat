@@ -498,42 +498,25 @@ def _dynamic_enrichment_enabled() -> bool:
 
 
 
-def _sections_from_v2_facts(card: dict, ctx) -> dict:
-    """Render v2's grounded facts as one cited bullets section.
+# _sections_from_v2_facts REMOVED 2026-09-14. The Deterministic UX seat took
+# it into app/responder/v2_adapter.py::add_fact_sections, which is where it
+# belonged -- and made it correct in a way mine was not.
+#
+# My trigger was `not sections`. That is FOUR states, and two of them are the
+# formatter refusing ON PURPOSE:
+#
+#     abstain.no_match       no structure in the draft   -> facts ADD
+#     abstain.prose_list     the answer is paragraphs    -> facts ADD
+#     abstain.raw_excerpt    a verbatim retrieved chunk  -> REFUSAL
+#     abstain.thin_evidence  nothing grounds the answer  -> REFUSAL
+#
+# Filling a refusal undoes it. On thin_evidence it does so in the worst
+# direction available: a bullet list carrying document and page, sitting beside
+# an answer nothing grounds, is the most confident-looking thing on the screen
+# -- which is the could-not-check state the v2 contract exists to stop
+# rendering as a pass. Their gate reads the abstain REASON, not its absence.
 
-    ONLY grounded facts. A fact with no document is exactly the ungrounded
-    claim the whole v2 contract exists to keep out of an answer, and promoting
-    one into a section would give it MORE prominence than the prose did.
 
-    Deduplicated on the fact text, because the same fact re-stated across
-    rounds is one thing learned, not two.
-    """
-    facts = getattr(getattr(ctx, "_v2_last_contract", None), "facts", ()) or ()
-    seen: set[str] = set()
-    bullets: list[str] = []
-    for f in facts:
-        if not getattr(f, "grounded", False):
-            continue
-        text = (getattr(f, "fact", "") or "").strip()
-        key = " ".join(text.lower().split())
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        doc = (getattr(f, "document", "") or "").strip()
-        pg = getattr(f, "page", None)
-        cite = f" [{doc}" + (f" p{pg}]" if pg else "]") if doc else ""
-        bullets.append(f"{text}{cite}")
-    if len(bullets) < 2:
-        # One bullet is not a list. Below two, the prose says it better and a
-        # section would be structure for its own sake.
-        return card
-    card.setdefault("sections", []).append({
-        "intent": "evidence",
-        "label": "What the documents say",
-        "format": "bullets",
-        "bullets": bullets[:8],
-    })
-    return card
 
 def _appeals_hint_pseudo_sources(tool_section_hints: list[dict] | None) -> list[dict]:
     """Appeals tools (appeals_find_carc/appeals_lookup_rules) return sources=[] --

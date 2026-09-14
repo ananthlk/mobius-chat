@@ -481,9 +481,18 @@ REGISTRY: tuple[Block, ...] = (
           # When a tool that declares it covers this question has answered, an
           # open gap is not a reason to withhold the answer: it is a reason to
           # say what is still open ALONGSIDE it. plan still renders for that.
-          when=lambda f: _drafting(f) and (
-              f.finalising or (bool(f.preloaded or f.useful)
-                               and (not bool(f.gaps) or f.exact_tool))),
+          # 🔴 CALLS THE HELPER. It used to retype the condition inline, and
+          # the two copies drifted the moment I widened _communicating() --
+          # I fixed the helper, verified _communicating(f) was True, and
+          # concluded the gate was open. It was not: THIS is the gate, and it
+          # still held the old `not f.gaps` clause. Communicate stayed at 3 of
+          # 61 rounds and I reported the fix as landed.
+          #
+          # _communicating's own docstring warned about this in advance -- "two
+          # copies of this expression would drift the first time the posture
+          # changed" -- and a second copy existed the whole time, in the block
+          # the docstring was written for.
+          when=lambda f: _drafting(f) and _communicating(f),
           render=lambda f: "[YOUR ROLE — COMMUNICATE] This is the answer the "
                            "user reads. Answer every part they asked, in the "
                            "order they asked it, naming each one. Cite the "
@@ -703,14 +712,32 @@ REGISTRY: tuple[Block, ...] = (
 #
 #   _drafting(f)           splits {judge, plan, summarise, communicate}
 #                          from {critic, next_steps}. Nothing spans it.
-#   plan needs a tool to
-#   suggest; communicate    keeps the drafting side at three.
-#   needs nothing left to
-#   suggest
 #
 # A cap enforced by SLICING would silently drop whichever role sorted last, and
 # a missing instruction is invisible in the output it fails to produce.
-MAX_ROLES = 3
+#
+# 🔴 RAISED 3 -> 4, 2026-09-14, AS THE COMPLETION OF A GATE CHANGE.
+#
+# The second exclusion this comment used to name -- "plan needs a tool to
+# suggest; communicate needs nothing left to suggest" -- is what kept the
+# drafting side at three. I removed it: _communicating no longer requires
+# `not f.gaps`, because open gaps are something to COMMUNICATE, not a reason
+# to withhold the answer. So plan and communicate can now both be live in one
+# round, and four drafting roles are reachable by construction.
+#
+# Leaving the cap at 3 after that made the change a no-op, measured: across 61
+# live rounds communicate fired 3 times, losing every slot to judge(1),
+# plan(2), summarise(3) on rank. And because `answer_shape` is gated on
+# communicate, react fell back to a bullets-only format rule -- v2 shipped
+# 0.00 sections per answer against v1's 0.73.
+#
+# Ananth: "FINAL = SUMMARIZE + COMMUNICATE". They are a PAIR. A cap that makes
+# them compete for one slot cannot express that, whatever the gates say.
+#
+# The cap still binds -- six roles exist, the assertion below still fires, and
+# the two-sided split still means no round is asked to draft and review the
+# same text at once.
+MAX_ROLES = 4
 
 
 def assemble(f: Facts) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
