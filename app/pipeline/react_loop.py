@@ -2525,6 +2525,12 @@ def _execute_tool(
                 "terminal_action": telemetry.get("terminal_action"),
                 "module_trace": telemetry.get("module_trace"),
                 "latency_ms": telemetry.get("latency_ms"),
+                # rag's OWN verdict on whether it ran. Dropped here until
+                # 2026-09-14, which is why a timeout was indistinguishable
+                # from an empty corpus in every downstream reader of this
+                # history -- including the reframe decision and the model's
+                # own view of it in react/prompts.py.
+                "status": telemetry.get("status"),
             })
 
         _workers = 1 + len(upload_candidates)
@@ -2652,6 +2658,46 @@ def _execute_tool(
         _hit_fact_store = any(
             s.get("filler_strategy") == "fact_store" for s in (corpus_sources or [])
         )
+
+        # 🔴 SELF-REPORTED FAILURE, BEFORE ANY INFERENCE ABOUT THE CORPUS.
+        #
+        # Placed here deliberately: every branch below -- clarify, relax,
+        # reframe, the google_search fallback -- reasons FROM the returned
+        # evidence. When rag says it could not run there is no evidence to
+        # reason from, so an earlier return is the only correct position.
+        # (Putting it after the clarify block would have made it dead code
+        # on exactly the turns it exists for.)
+        #
+        # Returned as a typed error_envelope rather than a signal so
+        # _execute_tool_with_retry's existing gate fires: `timeout` is
+        # already in its recoverable set, so this needs no new retry policy
+        # and no second retry layer. Without the envelope the most common
+        # recoverable failure in the system was invisible to the one
+        # mechanism built to recover from it.
+        if _status in _RAG_COULD_NOT_RUN_STATUSES and not corpus_sources:
+            from mobius_contracts.envelopes import ErrorEnvelope as _EE
+            _msg = (f"Retrieval did not complete (rag status={_status}) — "
+                    f"the corpus was NOT searched. This is our failure, not "
+                    f"an absence of material.")
+            emit(f"  ↓ rag could not run (status={_status}) — not a corpus miss")
+            _env = _EE(
+                error_code="timeout" if _status == "timeout" else "provider_error",
+                user_facing_message=_msg,
+                internal_detail=f"contract.status={_status} chunks=0",
+                tool="search_corpus",
+                round=_rn,
+            )
+            return {
+                "tool": "search_corpus",
+                "success": False,
+                "result": _msg,
+                "error": _env.model_dump(),
+                # NOT no_sources. That signal is what made a timeout read as
+                # an empty corpus in the first place.
+                "signal": "could_not_run",
+                "sources": [],
+                "rag_status": _status,
+            }
 
         # clarify_questions terminal signal (2026-08-08, Chat Master directive):
         # Retriever's routing_keys.clarify_questions is populated when its own
@@ -5239,6 +5285,21 @@ def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) ->
 # Phase 0.13: cap on auto-retry sleep so a stale retry_after_seconds from a
 # provider can't stall the whole turn. 30s is tight enough to preserve UX and
 # wide enough to cover typical rate-limit windows.
+# 🔴 A TOOL SAYING "I COULD NOT RUN" IS NOT THE CORPUS SAYING "I HOLD NOTHING".
+#
+# rag returns HTTP 200 with contract.status in this set and chunks=[] when it
+# could not complete -- measured 2026-09-14: 8 concurrent calls, all 120.4s,
+# all status="timeout", all empty. corpus_search collapses that to
+# signal="no_sources", which is byte-identical to a genuine empty corpus, so
+# react reported "not mentioned in anything returned" about material it never
+# looked at and concluded EXHAUSTED_ATTEMPTS.
+#
+# Same class as the NARROWED BY BUDGET line below: absence that is OURS, not
+# the corpus's. Named to match the Tool Manifest executor's `could_not_run`,
+# which already refuses to call a self-reported failure `empty` -- one
+# distinction, one name, two modules.
+_RAG_COULD_NOT_RUN_STATUSES = frozenset({"timeout", "error", "failed", "cancelled"})
+
 _MAX_AUTO_RETRY_SLEEP_S = 30
 
 
