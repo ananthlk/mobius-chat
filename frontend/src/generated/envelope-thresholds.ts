@@ -13,6 +13,7 @@ export const PAIRS_MAX_ITEMS = 6;
 export const BULLETS_MIN_ITEMS = 3;
 export const BULLETS_MAX_AVG_WORDS = 25;
 export const LABELLED_VALUE_MAX_WORDS = 40;
+export const BULLETS_MAX_VISIBLE = 4;
 export const STEPS_MIN_ITEMS = 2;
 export const CHART_MIN_POINTS = 3;
 export const MAX_RICH_BLOCKS_PER_TURN = 2;

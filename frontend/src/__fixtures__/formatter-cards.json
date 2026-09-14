@@ -1,0 +1,305 @@
+[
+  {
+    "question": "what is the timely filing deadline for sunshine health",
+    "note": "A/B v1 arm \u2014 bold-led labels",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Timely filing deadlines for Sunshine Health vary by claim type and provider participation status.",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Details",
+          "format": "table",
+          "data": {
+            "headers": [
+              "Item",
+              "Detail"
+            ],
+            "rows": [
+              [
+                "Initial claims",
+                "must be filed within 180 days for participating providers and 365 days for non-participating providers, calculated from the date of service."
+              ],
+              [
+                "Reconsiderations or claim disputes",
+                "must be submitted within 90 days for participating providers and 180 days for non-participating providers, from the explanation-of-payment date."
+              ],
+              [
+                "Coordination of benefits (COB) claims",
+                "have a 90-day filing limit from the primary payer's explanation of payment."
+              ],
+              [
+                "Medicare claims crossing over to Medicaid",
+                "must be filed within the greater of 36 months from the date of service or 12 months from Medicare's adjudication date."
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "rules": [
+      "shape.table.pairs"
+    ]
+  },
+  {
+    "question": "what is the timely filing deadline for sunshine health",
+    "note": "A/B v2 arm \u2014 same content, no labels",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Sunshine Health's timely filing deadlines vary by claim type and provider status.",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Key Points",
+          "format": "bullets",
+          "bullets": [
+            "Initial claims must be filed within 180 days for participating providers and 365 days for non-participating providers, calculated from the date of service.",
+            "Reconsiderations or claim disputes for participating providers are due within 90 days, and for non-participating providers within 180 days.",
+            "Coordination of benefits claims must be filed within 90 days from the primary payer's explanation of payment date.",
+            "Medicare claims crossing over to Medicaid have a filing limit that is the greater of 36 months from the date of service or 12 months from Medicare's adjudication date."
+          ]
+        }
+      ]
+    },
+    "rules": [
+      "shape.bullets"
+    ]
+  },
+  {
+    "question": "Can you tell me more about Molina's care management for behavioral health?",
+    "note": "cid 9c825ca5 \u2014 labelled bullets, 31 words each",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Of course, Genius! I'm happy to give you more detail on Molina's care management program.\n\nNext step: To refer a member, contact Molina by phone at (855) 322-4076, by fax at (866) 440-9791, or by email at MFLCaseManagement@MolinaHealthcare.com.",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Details",
+          "format": "table",
+          "data": {
+            "headers": [
+              "Item",
+              "Detail"
+            ],
+            "rows": [
+              [
+                "Dedicated Team",
+                "The Care Management team includes licensed nurses and clinicians with behavioral health experience to support members with mental health and substance use disorder needs. [1]"
+              ],
+              [
+                "Integrated Care Management (ICM)",
+                "For members with high-risk psychiatric, medical, or psychosocial needs, there is a specialized ICM program. [1, 20]"
+              ],
+              [
+                "Provider Collaboration",
+                "Molina emphasizes partnership between Primary Care Providers and behavioral health specialists. [1]"
+              ],
+              [
+                "Provider Resources",
+                "Molina offers an online Behavioral Health Tool Kit for screening, assessment and diagnosis. [21]"
+              ],
+              [
+                "Member Support",
+                "Members have access to a 24/7 behavioral health crisis line staffed by clinicians. [3]"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "rules": [
+      "shape.table.pairs"
+    ]
+  },
+  {
+    "question": "What is the care management philosophy for Molina, Sunshine and United Healthcare?",
+    "note": "Three-payer comparison \u2014 bold-led but 50-word values",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Hey Genius, I've got the care management philosophies for you! Here's how each plan approaches it:",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Details",
+          "format": "table",
+          "data": {
+            "headers": [
+              "Item",
+              "Detail"
+            ],
+            "rows": [
+              [
+                "Molina Healthcare",
+                "focuses on a comprehensive Integrated Care Management (ICM) program built on a Member advocacy philosophy. Their goal is to coordinate all the care, services, and resources a member needs throughout their healthcare journey, aiming for the best possible outcomes [molina_fl_provider_manual_2026.pdf p111, p103]."
+              ],
+              [
+                "Sunshine Health",
+                "uses an interdisciplinary approach for its case management program. They bring together input from physical and behavioral health care managers, social workers, pharmacists, members, caregivers, and treating providers to address both medical and behavioral health needs [Sunshine Provider Manual p52]."
+              ],
+              [
+                "UnitedHealthcare Community Plan",
+                "operates with a Care Model program that aims to empower members, care providers, and the community to improve care coordination and outcomes [FL-Care-Provider-Manual p5]."
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "rules": [
+      "shape.table.pairs"
+    ]
+  },
+  {
+    "question": "Walk me through the Sunshine Health appeal process",
+    "note": "Long multi-shape \u2014 table + steps + checklist + contacts",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Sunshine Health's appeal process runs in three levels, and the clock on each starts from a different event.\n\nNote that the Level 2 clock starts from the determination letter date, not the date you received it.\n\nYou will need the following on hand:",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Details",
+          "format": "table",
+          "data": {
+            "headers": [
+              "Level",
+              "Deadline",
+              "Clock starts"
+            ],
+            "rows": [
+              [
+                "Level 1",
+                "90 days",
+                "Denial date on the EOP"
+              ],
+              [
+                "Level 2",
+                "60 days",
+                "Level 1 determination letter"
+              ],
+              [
+                "Fair hearing",
+                "120 days",
+                "Final internal determination"
+              ]
+            ]
+          }
+        },
+        {
+          "intent": "process",
+          "label": "Steps",
+          "format": "steps",
+          "data": {
+            "items": [
+              {
+                "label": "Pull the original claim and the EOP showing the denial reason."
+              },
+              {
+                "label": "Complete the Provider Dispute Resolution Request form in full."
+              },
+              {
+                "label": "Submit through the provider portal and keep the confirmation number."
+              }
+            ]
+          }
+        },
+        {
+          "intent": "process",
+          "label": "Key Points",
+          "format": "bullets",
+          "bullets": [
+            "The original claim number",
+            "The denial CARC and RARC codes",
+            "Medical records for the dates in dispute"
+          ]
+        },
+        {
+          "intent": "process",
+          "label": "Key Facts",
+          "format": "bullets",
+          "bullets": [
+            "Provider services: 1-844-477-8313",
+            "Appeals fax: 1-866-534-5978",
+            "Payer ID: 68069"
+          ]
+        }
+      ]
+    },
+    "rules": [
+      "shape.table",
+      "shape.steps",
+      "shape.bullets",
+      "shape.stats"
+    ]
+  },
+  {
+    "question": "Tell me about COB claim filing for Sunshine Health",
+    "note": "cid 65ed12e2 \u2014 real pipe table with <br> cells",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "",
+      "sections": [
+        {
+          "intent": "process",
+          "label": "Details",
+          "format": "table",
+          "data": {
+            "headers": [
+              "Topic",
+              "Requirement",
+              "Deadline"
+            ],
+            "rows": [
+              [
+                "Filing COB Claims",
+                "Submit after the primary payer's EOP. Ensure all COB data is correct.",
+                "Within 90 days from the primary EOP"
+              ],
+              [
+                "Electronic Claims",
+                "Institutional (837I): COB data must be in loop 2300.; Professional (837P): loop 2320.",
+                "Same window"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "rules": [
+      "shape.table"
+    ]
+  },
+  {
+    "question": "What does the provider manual say about filing?",
+    "note": "Thin-evidence hedge \u2014 a verbatim retrieved excerpt",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "[1] Sunshine Provider Manual [authority=authoritative]\nInitial filing: **180 days**\nResubmission: **90 days**\nCopay: **$25**",
+      "sections": [],
+      "presentation": {
+        "abstained": true,
+        "rule_id": "abstain.raw_excerpt",
+        "why": "verbatim retrieved excerpt; structuring it would overstate confidence",
+        "note": "Shown as text, not as a card \u2014 this is quoted source material, not a checked summary."
+      }
+    },
+    "rules": [
+      "shape.stats"
+    ]
+  },
+  {
+    "question": "Does a patient need prior auth for outpatient therapy?",
+    "note": "Genuinely unstructured policy narrative \u2014 the control",
+    "card": {
+      "mode": "FACTUAL",
+      "direct_answer": "Whether a prior authorization is required for outpatient behavioral health services depends on the specific service, the place of service, and whether the member is enrolled in the Medicaid or the Marketplace product. For routine outpatient therapy delivered in an office setting, the first twenty visits per calendar year generally do not require authorization for Medicaid members, though this threshold is applied per provider rather than per member, which means a member who switches providers mid-year may trigger a new count.",
+      "sections": [],
+      "presentation": {
+        "abstained": true,
+        "rule_id": "abstain.no_match",
+        "why": "no confident structure; prose is the honest rendering"
+      }
+    },
+    "rules": []
+  }
+]

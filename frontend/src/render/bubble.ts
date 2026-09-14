@@ -10,13 +10,14 @@ import type {
 } from "../answer-card";
 import { MAX_SECTIONS } from "../answer-card";
 import { TAB_ORDER, type TabKey } from "../card-render-model";
-import { STATS_MAX_ITEMS } from "../generated/envelope-thresholds";
+import { BULLETS_MAX_VISIBLE, STATS_MAX_ITEMS } from "../generated/envelope-thresholds";
 import {
   simpleMarkdownToHtml, renderConfidenceBadge, renderQcAuditBadge,
   type QcAuditInfo, type FollowupLineNormalized,
 } from "../ui-helpers";
 
-const MAX_BULLETS_PER_SECTION = 4;
+// Shared with the classifier via mobius-contracts; see envelope-thresholds.
+const MAX_BULLETS_PER_SECTION = BULLETS_MAX_VISIBLE;
 
 // Task #10 — output_intent is the enricher's deliverable classification (the REAL backend enum
 // in app/stages/integrate.py: read/report/email/sms/emr/appeal/payor_report). It is an INTERNAL

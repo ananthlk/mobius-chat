@@ -54,5 +54,15 @@ def test_no_threshold_literals_in_the_classifier():
     assert offenders == [], f"hardcoded thresholds in classifier: {offenders}"
 
 
+def test_the_frontend_bullet_cap_uses_the_constant():
+    """Found by the cross-boundary render test: MAX_BULLETS_PER_SECTION was a
+    private const in bubble.ts, so the classifier could emit a five-item list
+    into a renderer that draws four and hides the fifth behind a button. Same
+    class as the stats cap — a literal on one side, a comment on the other."""
+    source = (REPO / "frontend" / "src" / "render" / "bubble.ts").read_text()
+    assert "BULLETS_MAX_VISIBLE" in source
+    assert "MAX_BULLETS_PER_SECTION = 4" not in source
+
+
 def test_generated_file_is_marked_generated():
     assert "DO NOT EDIT" in GENERATED.read_text()
