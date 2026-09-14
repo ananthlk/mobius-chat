@@ -344,3 +344,88 @@ class TestPagesPerPart:
     def test_absent_v2_yields_nothing(self):
         from app.responder.v2_adapter import pages_per_part
         assert pages_per_part(None) == {}
+
+
+class TestFactsMayFillAnEmptyCard:
+    """Governor's fallback, moved into the formatter's lane and gated by
+    construction rather than by the caller remembering.
+
+    Their reasoning was right and is why this exists at all: classify_envelope
+    refuses to infer structure out of PROSE, because guessing at structure is
+    how a renderer invents emphasis the author never meant. A fact is not
+    prose — it arrived typed, carrying its own document and page. Rendering it
+    presents structure we were given.
+
+    What their version could not express is WHICH empty card. "Zero sections"
+    is four states, and two of them are deliberate refusals.
+    """
+
+    class _Fact:
+        def __init__(self, fact, document="", page=None, grounded=True):
+            self.fact, self.document, self.page, self.grounded = fact, document, page, grounded
+
+    FACTS = [
+        _Fact("Molina runs a comprehensive ICM program", "molina_fl.pdf", 111),
+        _Fact("Sunshine uses an interdisciplinary approach", "sunshine.pdf", 52),
+        _Fact("Molina runs a comprehensive ICM program", "molina_fl.pdf", 111),  # dup
+        _Fact("UnitedHealthcare has a Care Model", grounded=False),              # ungrounded
+    ]
+
+    def _card(self, rule_id=None):
+        card = {"direct_answer": "Some prose.", "sections": []}
+        if rule_id:
+            card["presentation"] = {"rule_id": rule_id, "why": "x"}
+        return card
+
+    def test_no_structure_in_the_draft_is_filled(self):
+        from app.responder.v2_adapter import add_fact_sections
+        out = add_fact_sections(self._card("abstain.no_match"), self.FACTS)
+        assert out["sections"][0]["label"] == "What the documents say"
+
+    def test_a_paragraph_list_is_filled(self):
+        from app.responder.v2_adapter import add_fact_sections
+        assert add_fact_sections(self._card("abstain.prose_list"), self.FACTS)["sections"]
+
+    def test_a_RAW_EXCERPT_refusal_is_honoured(self):
+        """The hedge exists to stop an unvetted excerpt looking like something
+        we checked. A cited bullet list is exactly that."""
+        from app.responder.v2_adapter import add_fact_sections
+        assert add_fact_sections(self._card("abstain.raw_excerpt"), self.FACTS)["sections"] == []
+
+    def test_a_THIN_EVIDENCE_refusal_is_honoured(self):
+        """The worst direction: a bullet list carrying document and page, next
+        to an answer nothing grounds, is the most confident-looking thing on
+        the screen."""
+        from app.responder.v2_adapter import add_fact_sections
+        assert add_fact_sections(self._card("abstain.thin_evidence"), self.FACTS)["sections"] == []
+
+    def test_a_card_that_already_has_sections_is_untouched(self):
+        from app.responder.v2_adapter import add_fact_sections
+        card = {"sections": [{"format": "table", "label": "Details"}]}
+        assert add_fact_sections(card, self.FACTS)["sections"] == card["sections"]
+
+    def test_only_grounded_facts_are_rendered(self):
+        """A fact with no document is the ungrounded claim the contract exists
+        to keep out. Promoting it would give it MORE prominence than the prose
+        did."""
+        from app.responder.v2_adapter import add_fact_sections
+        bullets = add_fact_sections(self._card(), self.FACTS)["sections"][0]["bullets"]
+        assert not any("Care Model" in b for b in bullets)
+
+    def test_facts_are_deduplicated_and_cited(self):
+        from app.responder.v2_adapter import add_fact_sections
+        bullets = add_fact_sections(self._card(), self.FACTS)["sections"][0]["bullets"]
+        assert len(bullets) == 2
+        assert "[molina_fl.pdf p111]" in bullets[0]
+
+    def test_one_fact_is_not_a_list(self):
+        from app.responder.v2_adapter import add_fact_sections
+        one = [self._Fact("Only this", "d.pdf", 1)]
+        assert add_fact_sections(self._card(), one)["sections"] == []
+
+    def test_the_abstain_note_is_removed_once_the_card_is_filled(self):
+        """A note explaining why the card has no sections contradicts a card
+        that now has one."""
+        from app.responder.v2_adapter import add_fact_sections
+        out = add_fact_sections(self._card("abstain.no_match"), self.FACTS)
+        assert "presentation" not in out

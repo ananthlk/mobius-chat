@@ -1081,8 +1081,15 @@ def run_integrate(
         # Only when the formatter produced nothing. A draft that DID carry
         # clean structure keeps it; this never overrides the formatter.
         try:
-            if not (_det_card.get("sections") or []):
-                _det_card = _sections_from_v2_facts(_det_card, ctx)
+            # Gated on the abstain REASON, not on "zero sections" -- see
+            # v2_adapter.may_render_facts. Two of the four ways a card ends up
+            # empty are deliberate refusals, and filling those with cited
+            # facts undoes the hedge.
+            from app.responder.v2_adapter import add_fact_sections
+
+            _det_card = add_fact_sections(
+                _det_card,
+                getattr(getattr(ctx, "_v2_last_contract", None), "facts", ()) or ())
         except Exception as _sf_e:   # pragma: no cover — never lose the answer
             logger.warning("[integrate] v2 fact-sections failed (%r) — card "
                            "ships with prose only", _sf_e)

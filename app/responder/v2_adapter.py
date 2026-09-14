@@ -351,3 +351,102 @@ def facts_payload(facts: Any) -> ContentPayload | None:
     if not items:
         return None
     return ContentPayload(items=tuple(items), explicit_list=True, contiguous=True)
+
+
+# --------------------------------------------------------------------------
+# Facts as a section -- the ONE case where evidence may become a card
+# --------------------------------------------------------------------------
+
+#: Abstains that are a DELIBERATE REFUSAL, not an absence of structure.
+#:
+#: This is the distinction the whole thing turns on. "The formatter produced
+#: no sections" is four different states, and two of them mean the formatter
+#: declined ON PURPOSE:
+#:
+#:   abstain.no_match     there was no structure in the draft   -> facts ADD
+#:   abstain.prose_list   the answer arrived as paragraphs      -> facts ADD
+#:   abstain.raw_excerpt  the draft is a verbatim chunk         -> REFUSAL
+#:   abstain.thin_evidence nothing grounds the answer           -> REFUSAL
+#:
+#: Rendering cited facts on a refusal UNDOES it -- and on thin_evidence it
+#: does so in the worst possible direction, because a bullet list carrying
+#: document and page next to an answer nothing grounds is the most
+#: confident-looking thing on the screen. Triggering on "zero sections" alone
+#: cannot tell these apart.
+REFUSAL_RULE_IDS: frozenset[str] = frozenset(
+    {"abstain.raw_excerpt", "abstain.thin_evidence"}
+)
+
+#: One bullet is not a list. Below two, the prose says it better and a section
+#: would be structure for its own sake.
+_MIN_FACT_BULLETS = 2
+
+
+def may_render_facts(card: dict[str, Any]) -> bool:
+    """Is this a card that facts are allowed to fill?
+
+    Gated by construction rather than by the caller remembering: only a card
+    with no sections AND no refusal on it qualifies. A card with an unknown
+    or missing presentation block is treated as a non-refusal, because that
+    is what it was before the abstain reasons existed.
+    """
+    if card.get("sections"):
+        return False
+    rule_id = (card.get("presentation") or {}).get("rule_id")
+    return rule_id not in REFUSAL_RULE_IDS
+
+
+def fact_bullets(facts: Any) -> list[str]:
+    """Grounded facts as cited bullet text, deduplicated.
+
+    ONLY grounded facts. A fact with no document is exactly the ungrounded
+    claim the v2 contract exists to keep out of an answer, and promoting one
+    into a section would give it MORE prominence than the prose did.
+
+    Deduplicated on normalised text, because the same fact restated across
+    rounds is one thing learned, not two.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in facts or ():
+        if not getattr(f, "grounded", False):
+            continue
+        text = (getattr(f, "fact", "") or "").strip()
+        key = " ".join(text.lower().split())
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        doc = (getattr(f, "document", "") or "").strip()
+        page = getattr(f, "page", None)
+        cite = (f" [{doc} p{page}]" if page else f" [{doc}]") if doc else ""
+        out.append(f"{text}{cite}")
+    return out
+
+
+def add_fact_sections(card: dict[str, Any], facts: Any) -> dict[str, Any]:
+    """Fill an empty card from v2's grounded facts, when that is honest.
+
+    WHY THIS IS NOT THE THING classify_envelope REFUSES TO DO. The classifier
+    declines to infer structure out of prose, because guessing at structure is
+    how a renderer invents emphasis the author never meant. A fact is not
+    prose: it arrived as a typed statement carrying its own document and page.
+    Rendering it is presenting structure we were GIVEN.
+
+    The card is mutated and returned, matching the caller's existing shape.
+    """
+    if not may_render_facts(card):
+        return card
+    bullets = fact_bullets(facts)
+    if len(bullets) < _MIN_FACT_BULLETS:
+        return card
+    card.setdefault("sections", []).append({
+        "intent": "references",
+        "label": "What the documents say",
+        "format": "bullets",
+        "bullets": bullets,
+        "visibility": "primary",
+    })
+    # The card is no longer an abstain, so the note explaining why it had no
+    # sections would now contradict what is on screen.
+    card.pop("presentation", None)
+    return card
