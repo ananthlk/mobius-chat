@@ -1586,10 +1586,40 @@ def _v2_kept_order(ctx, round_index=None) -> list:
     # unprovable is treated as stale.
     # THIS round's own numbered passages, if a corpus call rendered any.
     # Preload's list is only the address space for the round preload ran on.
+    #
+    # 🔴 TWO LISTS ON ONE ROUND IS NOT A TIE TO BREAK. Measured immediately
+    # after shipping the per-round capture, cid bb357f21:
+    #
+    #     [v2.rendered] round=1 tool=rag numbered=15
+    #     [v2.kept]     round=1 ...      of 11 numbered
+    #
+    # Preload renders 11 (fair_share trims); a mid-turn rag call on the SAME
+    # round renders 15 (its own _format_context over all chunks). Both are
+    # correct address spaces for the payload that produced them, and react saw
+    # one of them -- we cannot tell which from here.
+    #
+    # Preferring either one resolves react's index against a list it may not
+    # have been reading, and every index would still be IN RANGE: real
+    # chunk_ids react never selected, handed to a consumer that hard-excludes.
+    # That is the exact misattribution the round-scoping fix removed this
+    # morning, and my own precedence rule put it back.
+    #
+    # So when both exist for a round, resolve NOTHING. A narrower true signal
+    # beats a broader one that cannot be trusted -- the same call as the stale
+    # payload above, for the same reason.
     if round_index is not None:
         _by_round = getattr(ctx, "_v2_rendered_by_round", None)
-        if isinstance(_by_round, dict) and _by_round.get(round_index):
-            return list(_by_round[round_index])
+        _mid = (_by_round or {}).get(round_index) if isinstance(_by_round, dict) else None
+        _pre_round = getattr(ctx, "_v2_preload_round", None)
+        if _mid and _pre_round == round_index:
+            logger.info(
+                "[v2.kept] cid=%s round=%s AMBIGUOUS: preload and a mid-turn "
+                "call both numbered passages this round -- cannot tell which "
+                "list react read, so no ordinals are resolved",
+                (getattr(ctx, "correlation_id", "") or "")[:8], round_index)
+            return []
+        if _mid:
+            return list(_mid)
     _pr = getattr(ctx, "_v2_preload_round", None)
     if round_index is not None and _pr != round_index:
         return []

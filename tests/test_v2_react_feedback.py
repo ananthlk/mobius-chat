@@ -148,3 +148,26 @@ def test_the_capture_is_inside_run_once_not_at_the_call_sites():
             assert calls, "_run_once does not capture the render order"
             return
     raise AssertionError("_run_once not found")
+
+
+def test_two_lists_on_one_round_resolve_to_NOTHING():
+    """🔴 CAUGHT MINUTES AFTER SHIPPING THE PER-ROUND CAPTURE, cid bb357f21:
+
+        [v2.rendered] round=1 tool=rag numbered=15
+        [v2.kept]     round=1 ...      of 11 numbered
+
+    Preload renders 11 (fair_share trims); a mid-turn rag call on the SAME
+    round renders 15. Both are valid address spaces for their own payload and
+    react read ONE of them. Preferring either resolves react's index against a
+    list it may not have seen -- every index still in range, producing real
+    chunk_ids react never selected, for a consumer that hard-excludes.
+    """
+    ctx = _ctx(served=("p1", "p2"), preload_round=1)
+    ctx._v2_rendered_by_round = {1: [_chunk("m1"), _chunk("m2"), _chunk("m3")]}
+    assert RL._v2_kept_order(ctx, 1) == [], "ambiguous round resolved anyway"
+
+
+def test_a_mid_turn_list_on_a_NON_preload_round_is_unambiguous():
+    ctx = _ctx(served=("p1",), preload_round=1)
+    ctx._v2_rendered_by_round = {4: [_chunk("m1"), _chunk("m2")]}
+    assert [c["chunk_id"] for c in RL._v2_kept_order(ctx, 4)] == ["m1", "m2"]
