@@ -1584,6 +1584,12 @@ def _v2_kept_order(ctx, round_index=None) -> list:
     # The round the numbered payload was actually rendered for. Set where
     # preload runs; absent means we cannot prove which round it belongs to, and
     # unprovable is treated as stale.
+    # THIS round's own numbered passages, if a corpus call rendered any.
+    # Preload's list is only the address space for the round preload ran on.
+    if round_index is not None:
+        _by_round = getattr(ctx, "_v2_rendered_by_round", None)
+        if isinstance(_by_round, dict) and _by_round.get(round_index):
+            return list(_by_round[round_index])
     _pr = getattr(ctx, "_v2_preload_round", None)
     if round_index is not None and _pr != round_index:
         return []
@@ -5216,13 +5222,56 @@ def _execute_tool_with_retry(
                            "(%r) — the call goes out without it",
                            (getattr(ctx, "correlation_id", "") or "")[:8], _fb_e)
 
-    def _run_once() -> dict:
+    def _capture_rendered(result: dict) -> None:
+        """Stash THIS round's numbered passages as its address space.
+
+        🔴 THE ORDINALS ALREADY EXIST MID-TURN AND WE WERE NOT KEEPING THEM.
+        corpus_search returns text=_format_context(chunks), which numbers
+        [1]..[N], and builds `sources` with the SAME `enumerate(chunks, 1)`.
+        So sources[i-1] IS the passage react reads as [i] -- a valid address
+        space, produced on every corpus call, discarded on every one.
+
+        Measured, cid 29a1977c: the numbered list existed only for round 1
+        (preload's), while react's evidence grew 22,996 -> 210,700 chars by
+        round 7. So `kept` was asked for over 23K of scoping material and
+        never over the 210K react actually reasons from. kept=[] was not react
+        failing to report -- it was react having nothing worth citing yet.
+
+        Per round, because an index means nothing without the list it indexes:
+        the same defect that resolved round 4's ordinals against round 1's
+        passages and produced real chunk_ids react never selected.
+        """
         try:
-            return _execute_tool(tool, inputs, ctx, tool_emitter, open_gaps=open_gaps)
+            srcs = (result or {}).get("sources") or []
+            if not srcs:
+                return
+            store = getattr(ctx, "_v2_rendered_by_round", None)
+            if not isinstance(store, dict):
+                store = {}
+                ctx._v2_rendered_by_round = store   # type: ignore[attr-defined]
+            store[round_num] = list(srcs)
+            logger.info("[v2.rendered] cid=%s round=%s tool=%s numbered=%d",
+                        (getattr(ctx, "correlation_id", "") or "")[:8],
+                        round_num, tool, len(srcs))
+        except Exception as _cr_e:   # pragma: no cover — never lose a turn
+            logger.warning("[v2.rendered] cid=%s could not capture the render "
+                           "order (%r) — kept will be unavailable this round",
+                           (getattr(ctx, "correlation_id", "") or "")[:8], _cr_e)
+
+    def _run_once() -> dict:
+        # CAPTURE HERE, not at the call sites. _run_once is called twice (the
+        # attempt and the retry) and a third path added later would silently
+        # skip the capture -- which is precisely how this feature died four
+        # times already: correct code attached to a path that was not taken.
+        try:
+            out = _execute_tool(tool, inputs, ctx, tool_emitter,
+                                open_gaps=open_gaps)
         except Exception as exc:
-            r = tool_result_from_exception(exc, tool=tool, round=round_num)
-            emit_fn(f"  ⊘ {r['result']}")
-            return r
+            out = tool_result_from_exception(exc, tool=tool, round=round_num)
+            emit_fn(f"  ⊘ {out['result']}")
+            return out
+        _capture_rendered(out)
+        return out
 
     result = _run_once()
 

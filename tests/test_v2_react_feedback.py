@@ -112,3 +112,39 @@ def test_no_kept_means_NO_not_useful_is_derived():
 def test_kept_present_still_derives_normally():
     fb = RL._v2_react_feedback(_ctx(served=("a", "b", "c"), kept=("b",)), 2)
     assert sorted(fb["not_useful_chunk_ids"]) == ["a", "c"]
+
+
+# ── the address space is PER ROUND, and mid-turn rounds have one ────────────
+
+def test_a_rounds_own_rendered_list_wins_over_preloads():
+    """Measured, cid 29a1977c: the numbered list existed only for round 1
+    (preload's), while react's evidence grew 22,996 -> 210,700 chars by round
+    7. `kept` was asked over 23K of scoping material and never over the 210K
+    react reasons from. kept=[] was react having nothing worth citing yet."""
+    ctx = _ctx(served=("p1", "p2"), preload_round=1)
+    ctx._v2_rendered_by_round = {4: [_chunk("m1"), _chunk("m2"), _chunk("m3")]}
+    got = [c["chunk_id"] for c in RL._v2_kept_order(ctx, 4)]
+    assert got == ["m1", "m2", "m3"], got
+    # round 1 still resolves against preload's list
+    assert [c["chunk_id"] for c in RL._v2_kept_order(ctx, 1)] == ["p1", "p2"]
+    # a round that rendered nothing still resolves to nothing, not to a
+    # neighbour's list -- an index means nothing without the list it indexes
+    assert RL._v2_kept_order(ctx, 5) == []
+
+
+def test_the_capture_is_inside_run_once_not_at_the_call_sites():
+    """_run_once is called twice (attempt + retry). Capturing at the call
+    sites means a third path added later silently skips it -- which is how
+    this feature died four times: correct code on a path not taken."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(RL))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_once":
+            calls = [n for n in ast.walk(node)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                     and n.func.id == "_capture_rendered"]
+            assert calls, "_run_once does not capture the render order"
+            return
+    raise AssertionError("_run_once not found")
