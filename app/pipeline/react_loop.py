@@ -5298,7 +5298,29 @@ def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) ->
 # the corpus's. Named to match the Tool Manifest executor's `could_not_run`,
 # which already refuses to call a self-reported failure `empty` -- one
 # distinction, one name, two modules.
-_RAG_COULD_NOT_RUN_STATUSES = frozenset({"timeout", "error", "failed", "cancelled"})
+#
+# 🔴 THESE ARE RAG'S OWN VALUES, NOT NAMES THAT SOUND RIGHT.
+#
+# The first version of this set was {timeout, error, failed, cancelled}.
+# Three of those four do not exist: rag's status is a CLOSED enum, verified
+# in mobius-rag contract.py `_derive_status` --
+#     {no_retrieval, filled_no_synthesis, empty, partial, ok, timeout}
+# so `error`/`failed`/`cancelled` could never have matched anything and the
+# guard was three-quarters decoration. A guard matching another system's
+# string is not a guard until you have read that system's string.
+#
+# Why each of the other four is EXCLUDED, deliberately:
+#   ok / partial  -- real results. Treating "partial" as failure silently
+#                    discarded good chunks once already (fixed 2026-08-06).
+#   empty         -- rag looked and found nothing. That IS a corpus answer.
+#   no_retrieval  -- a real terminal outcome (CLARIFY/DECLINE posture that
+#                    Gate already decided), NOT a failure. It also has its
+#                    own branch below; swallowing it here would have made
+#                    that branch dead code.
+# filled_no_synthesis is included: retrieval ran, synthesis did not finish,
+# so there is no basis to tell the reader anything about the corpus. That
+# one is chat's call, not rag's -- Retriever flagged it rather than assumed.
+_RAG_COULD_NOT_RUN_STATUSES = frozenset({"timeout", "filled_no_synthesis"})
 
 _MAX_AUTO_RETRY_SLEEP_S = 30
 

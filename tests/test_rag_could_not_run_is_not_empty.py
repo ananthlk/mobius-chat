@@ -15,16 +15,52 @@ import textwrap
 from app.pipeline import react_loop
 
 
-def test_could_not_run_statuses_cover_rags_self_reported_failures():
-    s = react_loop._RAG_COULD_NOT_RUN_STATUSES
-    # These are the values mobius-rag actually returns in contract.status.
-    for bad in ("timeout", "error", "failed", "cancelled"):
-        assert bad in s, f"{bad} must be treated as could-not-run"
-    # And the successful/partial ones must NOT be in it: treating "partial" as
-    # a failure silently discarded good chunks once already (corpus_search.py
-    # line ~843, fixed 2026-08-06). Do not re-make that bug here.
-    for good in ("ok", "partial", "no_retrieval"):
-        assert good not in s, f"{good} must NOT be treated as could-not-run"
+def test_could_not_run_set_is_drawn_from_rags_real_enum():
+    """rag's status is a CLOSED enum, verified in mobius-rag contract.py
+    `_derive_status`: {no_retrieval, filled_no_synthesis, empty, partial, ok,
+    timeout}.
+
+    The first version of this set was {timeout, error, failed, cancelled} --
+    three values rag never emits. It would have passed a test that only
+    checked "is timeout in the set", so this test pins the WHOLE partition:
+    every member must be a real rag status, and every real status must be
+    consciously on one side or the other.
+    """
+    rag_enum = {"no_retrieval", "filled_no_synthesis", "empty",
+                "partial", "ok", "timeout"}
+    s = set(react_loop._RAG_COULD_NOT_RUN_STATUSES)
+
+    unknown = s - rag_enum
+    assert not unknown, (
+        f"{unknown} are not values mobius-rag ever sets -- a guard matching "
+        f"a string the other system never emits is not a guard"
+    )
+
+    # could-not-run: no basis to say anything about the corpus.
+    assert "timeout" in s
+    assert "filled_no_synthesis" in s
+
+    # NOT could-not-run, each for its own reason:
+    #   ok/partial -- real results ("partial" as failure discarded good
+    #                 chunks once already, fixed 2026-08-06)
+    #   empty      -- rag looked and found nothing; that IS a corpus answer
+    #   no_retrieval -- a real terminal CLARIFY/DECLINE outcome, and it has
+    #                 its own branch that this guard sits above
+    for real_outcome in ("ok", "partial", "empty", "no_retrieval"):
+        assert real_outcome not in s, (
+            f"{real_outcome} is a real rag outcome, not a failure"
+        )
+
+
+def test_no_retrieval_still_reaches_its_own_clarify_branch():
+    """The guard sits ABOVE the clarify branch. If no_retrieval were ever
+    added to the could-not-run set, clarify would become dead code -- the
+    exact ordering defect this file's other test guards in the opposite
+    direction."""
+    assert "no_retrieval" not in react_loop._RAG_COULD_NOT_RUN_STATUSES
+    src = inspect.getsource(react_loop._execute_tool)
+    assert '_status == "no_retrieval"' in src, \
+        "the clarify branch that reads no_retrieval is gone"
 
 
 def _branch_src():
