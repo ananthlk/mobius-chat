@@ -520,8 +520,45 @@ def shared_step(resp, usage=None, elapsed_s=None, round_index=None) -> Step:
                  "input_tokens": intok, "output_tokens": outtok,
                  "shape_seen": resp.shape_seen, "facts": len(resp.facts),
                  "ungrounded": ungrounded, "gaps": len(resp.gaps),
+                 # 🔴 THE SENTENCES, NOT ONLY THE COUNT.
+                 #
+                 # `gaps` stays an int -- existing consumers read it that way
+                 # and renaming it would be a second author of the same field.
+                 # These are additive.
+                 #
+                 # Retriever needed react's stated need and could only see
+                 # "gaps=5", so they reconstructed a worse version of it from
+                 # tag diffs -- which surfaced an incontinence-supplies policy
+                 # and a swimming-lesson reimbursement doc, both correctly
+                 # tagged and both irrelevant. react had already written:
+                 #
+                 #   "Whether Sunshine Health has a general reimbursement
+                 #    policy for care management OUTSIDE OF TCM."
+                 #   "Whether Aetna reimburses providers for THEIR OWN care
+                 #    management activities."
+                 #
+                 # No tag code can express provider-delivered-not-member-
+                 # reimbursed. That sentence can, and we were rendering it to
+                 # a display string and dropping the structure.
+                 #
+                 # TEXT ONLY, NEVER A CODE. Retriever resolves these through
+                 # Gate's existing lexicon matcher, which can only return codes
+                 # that exist -- so nothing downstream ever accepts an
+                 # identifier FROM react, and a hallucinated code has no path
+                 # in. A sentence that resolves to nothing is an honest lexicon
+                 # coverage gap, not an invented answer.
+                 "gaps_open": [g.text for g in resp.gaps
+                               if (g.status or "open") == "open" and g.text],
+                 "gaps_all": [{"text": g.text, "status": g.status}
+                              for g in resp.gaps if g.text],
+                 # What react said it wanted next, and why. Never emitted
+                 # before in any form.
+                 "tool_request": resp.tool_request or "",
+                 "tool_reason": resp.tool_reason or "",
                  "is_complete": resp.is_complete,
+                 "complete_why": resp.complete_why or "",
                  "next_round_worth_it": resp.next_round_worth_it,
+                 "next_round_why": resp.next_round_why or "",
                  "problems": list(resp.problems)})
 
 
@@ -540,8 +577,45 @@ def reply_step(resp, elapsed_s=None) -> Step:
     return Step("react", head, tuple(llm_reply(resp, elapsed_s)),
                 {"shape_seen": resp.shape_seen, "facts": len(resp.facts),
                  "ungrounded": ungrounded, "gaps": len(resp.gaps),
+                 # 🔴 THE SENTENCES, NOT ONLY THE COUNT.
+                 #
+                 # `gaps` stays an int -- existing consumers read it that way
+                 # and renaming it would be a second author of the same field.
+                 # These are additive.
+                 #
+                 # Retriever needed react's stated need and could only see
+                 # "gaps=5", so they reconstructed a worse version of it from
+                 # tag diffs -- which surfaced an incontinence-supplies policy
+                 # and a swimming-lesson reimbursement doc, both correctly
+                 # tagged and both irrelevant. react had already written:
+                 #
+                 #   "Whether Sunshine Health has a general reimbursement
+                 #    policy for care management OUTSIDE OF TCM."
+                 #   "Whether Aetna reimburses providers for THEIR OWN care
+                 #    management activities."
+                 #
+                 # No tag code can express provider-delivered-not-member-
+                 # reimbursed. That sentence can, and we were rendering it to
+                 # a display string and dropping the structure.
+                 #
+                 # TEXT ONLY, NEVER A CODE. Retriever resolves these through
+                 # Gate's existing lexicon matcher, which can only return codes
+                 # that exist -- so nothing downstream ever accepts an
+                 # identifier FROM react, and a hallucinated code has no path
+                 # in. A sentence that resolves to nothing is an honest lexicon
+                 # coverage gap, not an invented answer.
+                 "gaps_open": [g.text for g in resp.gaps
+                               if (g.status or "open") == "open" and g.text],
+                 "gaps_all": [{"text": g.text, "status": g.status}
+                              for g in resp.gaps if g.text],
+                 # What react said it wanted next, and why. Never emitted
+                 # before in any form.
+                 "tool_request": resp.tool_request or "",
+                 "tool_reason": resp.tool_reason or "",
                  "is_complete": resp.is_complete,
+                 "complete_why": resp.complete_why or "",
                  "next_round_worth_it": resp.next_round_worth_it,
+                 "next_round_why": resp.next_round_why or "",
                  "problems": list(resp.problems)})
 
 
