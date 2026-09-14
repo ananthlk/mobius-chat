@@ -189,32 +189,22 @@ class Attestation:
 
 
 
-def _delivered_cost_c(correlation_id: str) -> float | None:
-    """What this turn actually cost, in CENTS, from llm_calls.
+# _delivered_cost_c REMOVED FROM CLOSE. I summed llm_calls here and claimed
+# in the comment that "they are all present by the outermost finally". They
+# are not. Measured cid 3b4d896d:
+#
+#     llm_calls   first 03:42:28   last 03:44:22
+#     attestation written          03:43:36
+#
+# The post-run adjudicator makes its OWN priced call (gemini-2.5-pro, ~29s)
+# after publish, so closing here can only ever see a partial bill. A cost that
+# is silently short is worse than a null one: it reads as a turn that was
+# cheaper than it was.
+#
+# Cost is now written where quality is, after everything has landed. See
+# post_run_adjudication.
 
-    Cents, not dollars: promised_cost_c is cents (fast 16, normal 45,
-    thinking 81) and a delivered figure in different units than the promise it
-    is compared against is worse than no figure -- it reads as a 100x saving.
 
-    None, never 0.0, when there is nothing to read. A turn that made no
-    priced call and a turn whose cost we could not determine are different
-    facts, and zero asserts the first.
-    """
-    if not correlation_id:
-        return None
-    try:
-        from app.db_client import db_execute
-        res = db_execute(
-            "SELECT SUM(cost_usd) AS usd FROM llm_calls "
-            "WHERE correlation_id = :cid AND cost_usd IS NOT NULL",
-            "chat", params={"cid": correlation_id})
-        rows = (res or {}).get("rows") or []
-        usd = rows[0].get("usd") if rows else None
-        return round(float(usd) * 100.0, 4) if usd is not None else None
-    except Exception as e:   # pragma: no cover -- never fail a turn to price it
-        logger.warning("[promise] cost lookup failed cid=%s: %s",
-                       correlation_id[:8], e)
-        return None
 
 def close_promise(
     p: Promise | None,
@@ -266,10 +256,8 @@ def close_promise(
     # the turn, so they are all present by the outermost finally. Quality is
     # NOT: the post-run adjudicator scores the answer after this runs, so it
     # updates the row itself (see post_run_adjudication).
-    delivered_cost = _delivered_cost_c(correlation_id)
     return Attestation(
         correlation_id=correlation_id,
-        delivered_cost_c=delivered_cost,
         promise_version=(p.version if p is not None else None),
         tier=(p.tier if p is not None else None),
         posted_at=posted,

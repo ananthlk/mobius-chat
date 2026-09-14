@@ -323,18 +323,55 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     # is a different failure and inventing a row here would hide it.
     try:
         from app.db_client import db_execute
+        from app.storage.turns import _rows_as_dicts
+
+        # COST IS SUMMED HERE, NOT AT CLOSE. This runs after publish and after
+        # this module's own priced call, so it is the first moment the bill is
+        # complete. Measured cid 3b4d896d: llm_calls ran 03:42:28 -> 03:44:22
+        # while the attestation closed at 03:43:36 -- summing there saw a
+        # partial bill, and a cost that is silently short reads as a turn that
+        # was cheaper than it was.
+        #
+        # CENTS, because promised_cost_c is cents (fast 16, normal 45,
+        # thinking 81). A delivered figure in dollars against a promise in
+        # cents reads as a 100x saving.
+        _cost_c = None
+        try:
+            _cr = db_execute(
+                "SELECT SUM(cost_usd) AS usd FROM llm_calls "
+                "WHERE correlation_id = :cid AND cost_usd IS NOT NULL",
+                "chat", params={"cid": ctx.correlation_id})
+            _crows = _rows_as_dicts(_cr)
+            _usd = _crows[0].get("usd") if _crows else None
+            # None, never 0.0: a turn that made no priced call and a turn whose
+            # cost we could not read are different facts, and zero asserts the
+            # first.
+            _cost_c = round(float(_usd) * 100.0, 4) if _usd is not None else None
+        except Exception as ce:
+            logger.warning("[promise] cost sum failed cid=%s: %s",
+                           (ctx.correlation_id or "")[:8], ce)
+
         _q_score = qc_dict.get("automated_score")
-        if _q_score is not None:
+        # One UPDATE for both terms. Scoped to the still-unattested columns so
+        # a re-run cannot overwrite what was already recorded.
+        if _q_score is not None or _cost_c is not None:
             _res = db_execute(
-                "UPDATE turn_attestations SET delivered_quality = :q "
-                "WHERE correlation_id = :cid AND delivered_quality IS NULL",
-                "chat", params={"q": str(_q_score), "cid": ctx.correlation_id})
+                "UPDATE turn_attestations SET "
+                "  delivered_quality = COALESCE(delivered_quality, :q), "
+                "  delivered_cost_c  = COALESCE(delivered_cost_c,  :c) "
+                "WHERE correlation_id = :cid",
+                "chat", params={"q": (str(_q_score) if _q_score is not None
+                                      else None),
+                                "c": _cost_c, "cid": ctx.correlation_id})
             if (_res or {}).get("error"):
-                logger.warning("[promise] delivered_quality update failed "
+                logger.warning("[promise] attestation terms update failed "
                                "cid=%s: %s", (ctx.correlation_id or "")[:8],
                                _res.get("error"))
+            else:
+                logger.info("[promise] attested cid=%s quality=%s cost_c=%s",
+                            (ctx.correlation_id or "")[:8], _q_score, _cost_c)
     except Exception as e:   # pragma: no cover — never fail adjudication for it
-        logger.warning("[promise] delivered_quality update raised cid=%s: %s",
+        logger.warning("[promise] attestation terms update raised cid=%s: %s",
                        (ctx.correlation_id or "")[:8], e)
     try:
         qc_for_client = fetch_turn_qc_audit(ctx.correlation_id) or qc_dict

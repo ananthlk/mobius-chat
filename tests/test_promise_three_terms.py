@@ -14,69 +14,53 @@ import types
 import app.pipeline.react.promise as P
 
 
-def test_cost_is_summed_in_CENTS_not_dollars(monkeypatch):
-    """promised_cost_c is cents (fast 16, normal 45, thinking 81). A delivered
-    figure in dollars against a promise in cents reads as a 100x saving --
-    worse than no figure at all."""
-    monkeypatch.setattr(P, "db_execute", None, raising=False)
-    monkeypatch.setattr("app.db_client.db_execute",
-                        lambda *a, **k: {"rows": [{"usd": 0.0304}]})
-    assert P._delivered_cost_c("cid-1") == 3.04
-
-
-def test_no_priced_call_is_None_not_zero():
-    """A turn that made no priced call and a turn whose cost we could not
-    determine are different facts. Zero asserts the first."""
-    import app.db_client as C
-    orig = C.db_execute
-    try:
-        C.db_execute = lambda *a, **k: {"rows": [{"usd": None}]}
-        assert P._delivered_cost_c("cid-1") is None
-    finally:
-        C.db_execute = orig
-
-
-def test_a_failed_lookup_never_fails_the_turn():
-    import app.db_client as C
-    orig = C.db_execute
-    try:
-        def _boom(*a, **k):
-            raise RuntimeError("db down")
-        C.db_execute = _boom
-        assert P._delivered_cost_c("cid-1") is None
-    finally:
-        C.db_execute = orig
-
-
-def test_close_promise_attaches_the_cost(monkeypatch):
+def test_close_promise_does_NOT_guess_the_cost():
+    """🔴 MY FIRST VERSION SUMMED COST AT CLOSE and the comment claimed the
+    llm_calls rows were "all present by the outermost finally". Measured cid
+    3b4d896d: calls ran 03:42:28 -> 03:44:22, the attestation closed 03:43:36.
+    The adjudicator makes its OWN priced call after publish, so closing there
+    sees a partial bill -- and a silently short cost reads as a cheaper turn."""
     from datetime import UTC, datetime
-    monkeypatch.setattr(P, "_delivered_cost_c", lambda cid: 4.5)
     a = P.close_promise(P.open_promise("copilot", datetime.now(UTC)),
                         correlation_id="cid-1", outcome="completed",
                         now=datetime.now(UTC))
-    assert a.delivered_cost_c == 4.5
-    assert a.promised_cost_c is not None, "nothing to compare it against"
+    assert a.delivered_cost_c is None, (
+        "cost is being computed at close, where the bill is not complete"
+    )
+    assert a.promised_cost_c is not None, "the promise side must still be set"
 
 
-def test_quality_is_written_by_the_adjudicator_not_at_close():
-    """Ordering: the adjudicator runs AFTER publish, so at close the score does
-    not exist. An attestation written without it is correct; one that never
-    gains it is the defect. Guards that the UPDATE is wired and scoped."""
+def test_both_terms_are_written_after_adjudication():
+    """Cost AND quality land in one UPDATE, in the only place both exist."""
     import ast
     import inspect
 
     import app.services.post_run_adjudication as A
 
-    src = inspect.getsource(A)
-    tree = ast.parse(src)
+    tree = ast.parse(inspect.getsource(A))
     consts = {n.value for n in ast.walk(tree)
               if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    sql = [c for c in consts if "turn_attestations" in c]
-    assert sql, "the adjudicator never touches turn_attestations"
-    stmt = " ".join(sql)
-    assert "delivered_quality" in stmt
+    upd = " ".join(c for c in consts if "turn_attestations" in c)
+    assert upd, "the adjudicator never touches turn_attestations"
+    assert "delivered_quality" in upd and "delivered_cost_c" in upd
     # UPDATE, not INSERT: close_promise owns the row. Creating one here would
-    # hide a missing attestation instead of surfacing it.
-    assert "UPDATE" in stmt and "INSERT" not in stmt
-    # Scoped so a re-run cannot overwrite a score already attested.
-    assert "IS NULL" in stmt
+    # hide a missing attestation rather than surface it.
+    assert "UPDATE" in upd and "INSERT" not in upd
+    # COALESCE so a re-run cannot overwrite an already-attested term.
+    assert "COALESCE" in upd
+
+    sums = " ".join(c for c in consts if "llm_calls" in c)
+    assert "SUM(cost_usd)" in sums, "cost is not summed from llm_calls"
+
+
+def test_the_row_reader_is_the_shared_helper():
+    """🔴 I wrote res.get("rows") and it silently returned nothing -- the
+    codebase reads SELECTs through _rows_as_dicts. A wrong reader does not
+    raise; it yields None, which looks exactly like 'no priced calls'."""
+    import inspect
+
+    import app.services.post_run_adjudication as A
+
+    src = inspect.getsource(A)
+    assert "_rows_as_dicts" in src
+    assert '.get("rows")' not in src, "hand-rolled row read is back"
