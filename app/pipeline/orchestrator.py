@@ -2067,6 +2067,56 @@ def _publish_failed(
             "This response was blocked by a content safety rule. "
             "Try rephrasing or asking a more specific question."
         )
+
+    # 🔴 DO NOT THROW AWAY AN ANSWER WE ALREADY HAVE.
+    #
+    # Measured live, cid b7722476, "Which HCPCS codes does Florida Medicaid use
+    # for behavioral health targeted case management?":
+    #
+    #   [v2.contract] round=5 shape=mixed facts=2 not_useful=0
+    #   Published failed response: 429 Resource exhausted
+    #
+    # Five rounds, two CITED facts and a running answer in memory -- and the
+    # user waited 62 seconds to be told "The model is temporarily busy". A
+    # transient provider error on ONE round cost every round before it.
+    #
+    # The turn genuinely failed, so status stays "failed": the attestation, the
+    # retry logic and the analytics should all keep seeing a failure, and
+    # dressing one up as success is how a reliability number stops meaning
+    # anything. What changes is only what the PERSON reads -- the FE renders
+    # `message` on this status (frontend/src/app.ts:11081), so partial evidence
+    # reaches them instead of an apology.
+    #
+    # v2 ONLY. v1 is the control arm and must not change behaviour here.
+    try:
+        if (getattr(ctx, "orchestrator_version", None) == "v2"
+                and not _is_content_filtered):
+            _lc = getattr(ctx, "_v2_last_contract", None)
+            _partial = (getattr(_lc, "running_answer", "") or "").strip()
+            _pfacts = [f for f in (getattr(_lc, "facts", ()) or ())
+                       if getattr(f, "grounded", False)]
+            # A running answer with no grounded fact behind it is a draft, not
+            # a partial answer -- serving it would be the ungrounded-claim
+            # failure this pipeline spends its whole time preventing.
+            if _partial and _pfacts:
+                _cites = "; ".join(
+                    f"{f.document}" + (f" p{f.page}" if f.page else "")
+                    for f in _pfacts[:4])
+                _user_message = (
+                    f"{_partial}\n\n_I could not finish checking this — "
+                    f"{_env.user_facing_message if _env is not None else 'the model was unavailable'} "
+                    f"The above is what I had confirmed from {len(_pfacts)} "
+                    f"cited source(s) ({_cites}). Ask again and I will pick up "
+                    "from a full search._")
+                logger.info(
+                    "[v2.partial] cid=%s served %d cited fact(s) and a running "
+                    "answer instead of a bare failure (%s)",
+                    correlation_id[:8], len(_pfacts),
+                    (_env.category if _env is not None else "unknown"))
+    except Exception as _pe:   # pragma: no cover — never double-fail
+        logger.warning("[v2.partial] cid=%s could not build a partial answer: "
+                       "%r -- falling back to the plain failure message",
+                       correlation_id[:8], _pe)
     response_payload = {
         "status": "failed",
         "message": _user_message,
