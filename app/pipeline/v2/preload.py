@@ -862,6 +862,22 @@ def execute(pl: PreloadPlan, runner, question: str,
                 "payload": res.get("payload") or "",
                 "sources": res.get("sources") or [],
                 "asked": res.get("asked") or question,
+                # 🔴 THE COMMENT TWENTY LINES ABOVE WARNED ME AND I DID IT
+                # ANYWAY. `rendered` is the order the passages were NUMBERED
+                # in -- the address space react echoes indices into. The runner
+                # returned it, this rebuild dropped it, _v2_kept_order() came
+                # back empty, numbered_passages was 0, and react was never
+                # asked which passages it kept.
+                #
+                # Measured live, cid 4a342605: [v2.toolreg] tool=rag
+                # numbered=15, and not one [v2.kept] line. Fifteen passages
+                # numbered for a model that was never asked about them.
+                #
+                # This is the THIRD place the same feature died tonight: the
+                # wrong runner, then a log that only fired on success, now a
+                # field-by-field rebuild. Each was silent, and each looked
+                # correct from where I was standing.
+                "rendered": res.get("rendered") or [],
             })
         except Exception as e:
             # A preload tool that raises must not take the turn with it: the

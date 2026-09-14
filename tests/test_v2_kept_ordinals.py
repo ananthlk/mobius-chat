@@ -207,3 +207,53 @@ def test_kept_order_reads_rendered_from_every_preloaded_entry():
         ]
     assert [c["chunk_id"] for c in RL._v2_kept_order(_C())] == ["a", "b"]
     assert RL._v2_kept_order(type("X", (), {"_v2_preloaded": []})()) == []
+
+
+# ── the whole chain, because it broke in three separate places ──────────────
+#
+# runner -> preload.execute() -> ctx._v2_preloaded -> _v2_kept_order() ->
+# numbered_passages -> the ask.
+#
+# Tonight this feature died THREE times, each silently: instrumented on the
+# non-default runner; a log that only fired on success; and execute()
+# rebuilding its result dict field-by-field and dropping `rendered`. Every
+# unit on the path passed each time. Only the chain shows it.
+
+def test_execute_carries_rendered_from_the_runner_to_the_caller():
+    """execute() rebuilds its dict field-by-field -- a new field is dropped
+    unless explicitly carried. It has already lost a 141k payload this way."""
+    from app.pipeline.v2 import preload as P
+
+    marker = [{"chunk_id": "c1"}, {"chunk_id": "c2"}]
+
+    def runner(tool, inputs):
+        return {"ok": True, "summary": "s", "payload": "[1] [D p1]\ntext",
+                "sources": [{"chunk_id": "c1"}], "asked": "q",
+                "rendered": marker}
+
+    plan = P.plan(["rag"], inputs={"rag": {"query": "q"}})
+    out = P.execute(plan, runner, question="q")
+    rag = [r for r in out if r.get("tool") == "rag"]
+    assert rag, f"rag did not execute: {[r.get('tool') for r in out]}"
+    assert rag[0].get("rendered") == marker, (
+        "execute() dropped `rendered`; _v2_kept_order() will be empty and "
+        "react is never asked which passages it kept"
+    )
+
+
+def test_the_full_chain_produces_a_nonzero_numbered_count():
+    """End to end: a runner returning `rendered` must make numbered_passages
+    non-zero at the frame. Each half passed alone while the chain was broken."""
+    import app.pipeline.react_loop as RL
+    from app.pipeline.v2 import preload as P
+
+    def runner(tool, inputs):
+        return {"ok": True, "summary": "s", "payload": "p",
+                "sources": [], "asked": "q",
+                "rendered": [{"chunk_id": f"c{i}"} for i in range(3)]}
+
+    plan = P.plan(["rag"], inputs={"rag": {"query": "q"}})
+    ctx = type("C", (), {"_v2_preloaded": P.execute(plan, runner, question="q")})()
+    assert len(RL._v2_kept_order(ctx)) == 3, (
+        "the chain runner->execute->ctx->_v2_kept_order lost the render order"
+    )
