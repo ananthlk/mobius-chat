@@ -34,6 +34,26 @@ def _inline_md(text: str) -> str:
     return _MD_BOLD.sub(r"<strong>\1</strong>", html.escape(str(text)))
 
 
+def section_has_content(sec: dict) -> bool:
+    """bubble.ts's _sectionHasContent. A section that fails this is dropped
+    ENTIRELY -- renderOneSection returns null, so there is no label and no
+    empty body, just nothing.
+
+    This is the silent-drop the whole envelope contract is about: a section
+    whose `format` does not match where its data actually lives disappears,
+    and nothing upstream is told.
+    """
+    fmt = sec.get("format") or "bullets"
+    if fmt in ("appeals_playbook", "appeals_rules"):
+        return True
+    d = sec.get("data") or {}
+    if fmt == "table":
+        return isinstance(d.get("rows"), list) and len(d["rows"]) > 0
+    if fmt in ("stats", "steps", "bars", "conditions"):
+        return isinstance(d.get("items"), list) and len(d["items"]) > 0
+    return isinstance(sec.get("bullets"), list) and len(sec["bullets"]) > 0
+
+
 def _body(sec: dict) -> str:
     fmt = sec.get("format") or "bullets"
     data = sec.get("data") or {}
@@ -82,8 +102,17 @@ def _body(sec: dict) -> str:
             for i in data["items"])
         return f'<div class="ac-fmt-conditions">{rows}</div>'
 
-    lis = "".join(f"<li>{_inline_md(b)}</li>" for b in (sec.get("bullets") or []))
-    return f"<ul>{lis}</ul>"
+    # bubble.ts draws bullets as div.answer-card-bullet, NOT <ul><li>, and
+    # caps them at BULLETS_MAX_VISIBLE with a "Show N more" button. The first
+    # version of this harness drew <ul> and was wrong about it -- caught by
+    # running the same cards through the real renderer under vitest.
+    items = sec.get("bullets") or []
+    visible = "".join(
+        f'<div class="answer-card-bullet">{_inline_md(b)}</div>' for b in items[:4])
+    hidden = len(items) - 4
+    more = (f'<button class="answer-card-more" type="button">Show {hidden} more</button>'
+            if hidden > 0 else "")
+    return visible + more
 
 
 def render_card(question: str, draft: str, note: str = "") -> str:
@@ -95,7 +124,7 @@ def render_card(question: str, draft: str, note: str = "") -> str:
         f'<div class="answer-card-section">'
         f'<div class="answer-card-section-label">{html.escape(s.get("label",""))}</div>'
         f"{_body(s)}</div>"
-        for s in card["sections"])
+        for s in card["sections"] if section_has_content(s))
 
     pres = card.get("presentation")
     pres_html = ""
