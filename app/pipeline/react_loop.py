@@ -1490,6 +1490,45 @@ V2_RAG_CALL_CEILING = int(os.environ.get("MOBIUS_V2_RAG_CALL_CEILING", "99")
                           .strip() or 99)
 
 
+def _v2_expected_tool_cost_s(ctx) -> float | None:
+    """What the NEXT rag call will probably cost, from THIS turn's own calls.
+
+    v2 only. v1 gets None and is therefore bit-identical, which the A/B needs.
+
+    Measured 2026-09-14: a single rag call is 25-94s served serially, and rag
+    runs min=max=1 so concurrent callers queue. That spread is the whole reason
+    this is read from the turn's own history rather than set as a constant -- a
+    turn whose calls have been cheap should get another one, and a turn whose
+    calls have been expensive should not, and only the turn knows which it is.
+
+    MAX, not mean: the governor is deciding whether a call FITS, and the cost of
+    being wrong is asymmetric. Under-predict and the promise is missed (the
+    defect this exists for); over-predict and one round consolidates slightly
+    early with the evidence it already has. Returns None when nothing has been
+    measured yet, which reads as "no basis to predict" -- never as "free".
+    """
+    if getattr(ctx, "orchestrator_version", "v1") != "v2":
+        return None
+    rounds = getattr(ctx, "_rag_call_rounds", None)
+    if not isinstance(rounds, list) or not rounds:
+        return None
+    costs = []
+    for r in rounds:
+        ms = (r or {}).get("latency_ms")
+        try:
+            ms = float(ms)
+        except (TypeError, ValueError):
+            continue
+        # A call that could not run says nothing about what a working call
+        # costs -- it says what the CEILING costs. Including it would predict
+        # every future call at the timeout and stop the loop permanently.
+        if (r or {}).get("status") in _RAG_COULD_NOT_RUN_STATUSES:
+            continue
+        if ms > 0:
+            costs.append(ms / 1000.0)
+    return max(costs) if costs else None
+
+
 def _rag_ceiling_for(ctx) -> int:
     """The effective ceiling for THIS turn's arm."""
     if getattr(ctx, "orchestrator_version", "v1") == "v2":
@@ -6217,6 +6256,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 groundedness_passed=None, elapsed_s=_pp_elapsed_s,
                 base_rounds_remaining=max_it - iteration,
                 extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
+                # v2 only; None on v1 keeps its path bit-identical.
+                expected_tool_cost_s=_v2_expected_tool_cost_s(ctx),
             )
             _pp_pre_directive, _pp_pre_reason = evaluate(_pp_contract, _pp_pre_state)
             logger.info(

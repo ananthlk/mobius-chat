@@ -132,6 +132,22 @@ class RoundState:
     base_rounds_remaining: int  # contract.max_rounds - rounds used so far (not counting extensions)
     extension_rounds_available: int  # contract.max_extension_rounds - extensions granted so far
 
+    # 🔴 WHAT THE NEXT ACTION WILL COST, NOT WHAT THE LAST ONES DID.
+    #
+    # Every other field here is retrospective. The promise was missed anyway,
+    # because "elapsed < soft_target" authorises a round WITHOUT asking whether
+    # the work that round is about to do fits in what remains. Measured
+    # 2026-09-14: one rag call costs 25-94s served serially, so a round that
+    # starts at t=80s against a 95s target has already missed -- the governor
+    # said "keep gathering evidence" and was correct about every number it had.
+    #
+    # Seconds, estimated from THIS turn's own observed tool latency (not a
+    # constant, not another turn's). None means "no basis to predict" -- round
+    # one, or a caller that does not measure -- and MUST behave exactly as
+    # before, because v1 never populates it and the A/B comparison has to stay
+    # honest. The gate is the data, not an arm check.
+    expected_tool_cost_s: float | None = None
+
 
 @traced("governor")
 def evaluate(contract: ProductPromiseContract, state: RoundState) -> tuple[Directive, str]:
@@ -207,6 +223,20 @@ def _evaluate(contract: ProductPromiseContract, state: RoundState) -> tuple[Dire
         and (state.self_reported_confidence not in ("high",) or state.critic_verdict == "flagged")
     ):
         return "extend", "confidence bar not yet met and round budget exhausted — extending"
+
+    # Admission control on the NEXT call, not the last one. Placed immediately
+    # before "search" so it can only ever turn a would-be search into a
+    # consolidate -- it can never authorise work, extend a budget, or override
+    # any earlier branch. When expected_tool_cost_s is None (v1, or round one
+    # with nothing measured yet) this is a no-op and the old line is returned.
+    if state.expected_tool_cost_s is not None and (
+        state.elapsed_s + state.expected_tool_cost_s >= contract.soft_target_s
+    ):
+        return "consolidate", (
+            "another tool call would not fit the promise "
+            f"({state.elapsed_s:.0f}s spent + ~{state.expected_tool_cost_s:.0f}s "
+            f"expected vs {contract.soft_target_s:g}s) — synthesize from what you have"
+        )
 
     return "search", "confidence bar not met — keep gathering evidence"
 
