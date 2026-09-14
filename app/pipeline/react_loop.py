@@ -1464,6 +1464,72 @@ def _arms_dropped(res) -> int:
 
 
 
+
+def _v2_react_feedback(ctx, round_index) -> dict | None:
+    """What react did with LAST round's evidence, for the next rag call.
+
+    Ananth, 2026-09-14: "you just need to pass feedback and the selected facts
+    and rejected facts.. do not solve just for this uqery". I had asked
+    Retriever for a `react_gap_sentences` field -- a field shaped around the
+    one question in front of me, which works for that question and quietly
+    fails the next twenty. This is the general signal: what react USED, what
+    it did not, and what is still missing.
+
+    🔴 IDS AND TEXT ONLY. Retriever's call and their reason is the decisive
+    one: a chunk's TAGS are exactly what a retag changes out from under it.
+    Measured while we designed this -- billing_codes.general went 6 -> 26 in
+    the pool and coverage 74% -> 95% between two probes an hour apart. Caching
+    tags at serve time and handing them back means they read a snapshot of a
+    corpus that has moved. They issued the id; they hold the live row.
+
+    not_useful IS DERIVED, NOT REPORTED. react is asked for `kept` only --
+    one side that has to be reliable instead of two -- and "served minus
+    cited" is the complement. It is also the STRONGER signal: react's own
+    rejection list is a self-report that omits whatever it forgot to mention,
+    while served-minus-cited is complete.
+
+    THE CAVEAT THE CONSUMER MUST PRICE IN, and it is why this is not a hard
+    exclusion on our side: served-minus-cited is not "react judged this
+    useless". A passage react USED without listing lands in not_useful. That
+    is the self-report gap, and its rate is unmeasured.
+
+    None (never {}) when there is nothing to say -- round 1 has no prior
+    round, and "nothing to report" and "no feedback channel" are different
+    facts.
+    """
+    resp = getattr(ctx, "_v2_last_contract", None)
+    if resp is None:
+        return None
+
+    def _cid(c):
+        return (c.get("chunk_id") if isinstance(c, dict)
+                else getattr(c, "chunk_id", None))
+
+    kept = [_cid(c) for c in (getattr(ctx, "_v2_kept_chunks", None) or [])]
+    kept = [c for c in kept if c]
+    # The list react was actually shown, in the order it was numbered. Passing
+    # the round makes this return [] for any round the payload is not for --
+    # a stale list would make every derived id wrong, silently.
+    served = [_cid(c) for c in _v2_kept_order(ctx, round_index - 1)]
+    served = [c for c in served if c]
+    kept_set = set(kept)
+    not_useful = [c for c in served if c not in kept_set]
+
+    gaps = [g.text for g in (getattr(resp, "gaps", ()) or ())
+            if getattr(g, "text", "")
+            and (getattr(g, "status", "open") or "open") == "open"]
+
+    if not (kept or not_useful or gaps):
+        return None
+    out = {"round": round_index}
+    if kept:
+        out["kept_chunk_ids"] = kept
+    if not_useful:
+        out["not_useful_chunk_ids"] = not_useful
+    if gaps:
+        out["gaps"] = gaps
+    return out
+
 def _v2_kept_order(ctx, round_index=None) -> list:
     """The passages react was shown THIS ROUND, in the order they were numbered.
 
@@ -5100,6 +5166,38 @@ def _execute_tool_with_retry(
     - Raised exceptions are classified via ``tool_result_from_exception``.
     """
     from app.communication.error_emit import tool_result_from_exception
+
+    # 🔴 REACT'S FEEDBACK RIDES THE NEXT CORPUS CALL.
+    #
+    # ONE injection point, because every mid-turn corpus call comes through
+    # here and this is the only place that holds tool, inputs, ctx and the
+    # round together. Building it at each call site would be the fourth-copy
+    # problem this fleet has already stopped me making twice tonight.
+    #
+    # v2 ONLY: v1 is the control arm and its request body must not move, or
+    # the A/B stops measuring the orchestrator and starts measuring this.
+    #
+    # Fail-soft and LOUD. A feedback payload is an improvement to a retrieval,
+    # never a precondition for it -- losing the turn to build it would be
+    # strictly worse than the retrieval it was meant to sharpen.
+    if (tool in ("rag", "corpus_search", "search_corpus")
+            and getattr(ctx, "orchestrator_version", "v1") == "v2"
+            and isinstance(inputs, dict)):
+        try:
+            _fb = _v2_react_feedback(ctx, round_num)
+            if _fb:
+                inputs = {**inputs, "react_feedback": _fb}
+                logger.info(
+                    "[v2.feedback] cid=%s round=%s -> rag: kept=%d "
+                    "not_useful=%d gaps=%d",
+                    (getattr(ctx, "correlation_id", "") or "")[:8], round_num,
+                    len(_fb.get("kept_chunk_ids") or []),
+                    len(_fb.get("not_useful_chunk_ids") or []),
+                    len(_fb.get("gaps") or []))
+        except Exception as _fb_e:   # pragma: no cover
+            logger.warning("[v2.feedback] cid=%s could not build feedback "
+                           "(%r) — the call goes out without it",
+                           (getattr(ctx, "correlation_id", "") or "")[:8], _fb_e)
 
     def _run_once() -> dict:
         try:

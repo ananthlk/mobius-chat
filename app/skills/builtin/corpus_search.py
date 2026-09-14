@@ -172,6 +172,7 @@ def _post_skill(
     call_number: int | None = None,
     max_arms: int | None = None,
     speculative: bool | None = None,
+    react_feedback: dict | None = None,
 ) -> dict[str, Any]:
     """POST to rag's production /api/retriever/answer endpoint (Phase 1
     cutover, 2026-08-06 — see module docstring).
@@ -237,6 +238,23 @@ def _post_skill(
     # existing caller keeps its exact meaning.
     if speculative:
         body["speculative"] = True
+    # 🔴 REACT'S FEEDBACK ON THE LAST ROUND'S EVIDENCE — ids and text only.
+    #
+    # Retriever's call, and their reason is the one that matters: a chunk's
+    # TAGS are exactly what a retag changes out from under it. Measured while
+    # we were designing this -- billing_codes.general went 6 -> 26 in the pool
+    # and tag coverage 74% -> 95% between two probes an hour apart. If we
+    # cached tags at serve time and handed them back, they would be reading a
+    # snapshot of a corpus that had moved, with no way to know.
+    #
+    # So: chunk ids THEY issued, and react's gap sentences. No code, no tag,
+    # no classification ever leaves this process -- they resolve against their
+    # own live state, the same property that makes the ordinal scheme safe.
+    #
+    # Omitted when empty, never sent as {}: round 1 has no prior feedback, and
+    # "nothing to report" and "no feedback channel" are different facts.
+    if react_feedback:
+        body["react_feedback"] = react_feedback
     if citable_required:
         body["citable_required"] = True
     # call_number (2026-08-08, Chat Master directive, Retriever-confirmed
@@ -650,6 +668,9 @@ def _run(call: SkillCall) -> SkillEnvelope:
             # None and its body is unchanged.
             max_arms=(inputs.get("max_arms")
                       if isinstance(inputs, dict) else None),
+            react_feedback=(inputs.get("react_feedback")
+                            if isinstance(inputs.get("react_feedback"), dict)
+                            else None),
             speculative=(bool(inputs.get("speculative"))
                          if isinstance(inputs, dict) else None),
             token_budget_for_retrieval=token_budget_for_retrieval,
