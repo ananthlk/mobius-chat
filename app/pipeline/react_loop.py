@@ -5488,7 +5488,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # this, _v2_kept_order cannot tell a fresh list from a stale
                 # one, and a stale one resolves every index to the wrong
                 # passage -- silently, because they are all in range.
-                ctx._v2_preload_round = rn
+                #
+                # 🔴 THE CONSTANT 1 IS NOT LAZINESS. I wrote `rn` here and it
+                # is not in scope: preload runs ONCE, BEFORE the round loop,
+                # so the loop variable does not exist yet. The fail-soft caught
+                # the UnboundLocalError, logged "[v2.preload] failed", and
+                # every v2 turn ran with NO preloaded evidence while the trace
+                # still said "Looking this up before I answer". Ananth spotted
+                # it from the trace: "this feels like the tools were never
+                # called and loaded". They were not.
+                #
+                # THIRD TIME IN THIS BLOCK. The comment twenty lines below
+                # records the same error with _pp_time_mod, and the "kept"
+                # work hit it again earlier tonight. In a 6,900-line function,
+                # "is this name in scope here?" is not answerable by reading
+                # nearby code -- and the only safe answer at this point in the
+                # function is a literal.
+                ctx._v2_preload_round = 1
                 ctx._v2_preloaded = _v2pre.execute(
                     _plan,
                     # Tool Manifest executes by default now; the flag is the
