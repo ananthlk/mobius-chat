@@ -305,6 +305,37 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         logger.debug("post_run adjudication_scores insert skipped: %s", e)
 
     update_turn_qc_audit(ctx.correlation_id, qc_dict)
+
+    # 🔴 THE PROMISE'S THIRD TERM, WHICH HAS NEVER HAD A WRITER.
+    #
+    # Measured 2026-09-14: 741 turn_attestations rows, ZERO with
+    # delivered_quality -- while this adjudicator had scored essentially every
+    # one of those turns and written the score to chat_turns.qc_audit. The
+    # producer ran, the consumer column stayed NULL, and "did we keep the
+    # quality promise?" was unanswerable the whole time.
+    #
+    # It happens HERE and not in close_promise because of ordering: this runs
+    # AFTER the turn is published, so at close time the score does not exist
+    # yet. An attestation written without it is correct; one that never gains
+    # it is the defect.
+    #
+    # UPDATE, not insert: close_promise owns the row. If it is missing, that
+    # is a different failure and inventing a row here would hide it.
+    try:
+        from app.db_client import db_execute
+        _q_score = qc_dict.get("automated_score")
+        if _q_score is not None:
+            _res = db_execute(
+                "UPDATE turn_attestations SET delivered_quality = :q "
+                "WHERE correlation_id = :cid AND delivered_quality IS NULL",
+                "chat", params={"q": str(_q_score), "cid": ctx.correlation_id})
+            if (_res or {}).get("error"):
+                logger.warning("[promise] delivered_quality update failed "
+                               "cid=%s: %s", (ctx.correlation_id or "")[:8],
+                               _res.get("error"))
+    except Exception as e:   # pragma: no cover — never fail adjudication for it
+        logger.warning("[promise] delivered_quality update raised cid=%s: %s",
+                       (ctx.correlation_id or "")[:8], e)
     try:
         qc_for_client = fetch_turn_qc_audit(ctx.correlation_id) or qc_dict
     except Exception:

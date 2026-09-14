@@ -188,6 +188,34 @@ class Attestation:
     notes: str | None = None
 
 
+
+def _delivered_cost_c(correlation_id: str) -> float | None:
+    """What this turn actually cost, in CENTS, from llm_calls.
+
+    Cents, not dollars: promised_cost_c is cents (fast 16, normal 45,
+    thinking 81) and a delivered figure in different units than the promise it
+    is compared against is worse than no figure -- it reads as a 100x saving.
+
+    None, never 0.0, when there is nothing to read. A turn that made no
+    priced call and a turn whose cost we could not determine are different
+    facts, and zero asserts the first.
+    """
+    if not correlation_id:
+        return None
+    try:
+        from app.db_client import db_execute
+        res = db_execute(
+            "SELECT SUM(cost_usd) AS usd FROM llm_calls "
+            "WHERE correlation_id = :cid AND cost_usd IS NOT NULL",
+            "chat", params={"cid": correlation_id})
+        rows = (res or {}).get("rows") or []
+        usd = rows[0].get("usd") if rows else None
+        return round(float(usd) * 100.0, 4) if usd is not None else None
+    except Exception as e:   # pragma: no cover -- never fail a turn to price it
+        logger.warning("[promise] cost lookup failed cid=%s: %s",
+                       correlation_id[:8], e)
+        return None
+
 def close_promise(
     p: Promise | None,
     *,
@@ -221,8 +249,27 @@ def close_promise(
         notes = "no promise on payload (enqueued before promise existed)"
     if p is not None and p.unpromised_reason:
         notes = p.unpromised_reason if notes is None else f"{notes}; {p.unpromised_reason}"
+    # 🔴 THE PROMISE HAS THREE TERMS AND WE HAVE ONLY EVER ATTESTED ONE.
+    #
+    # Measured 2026-09-14: 741 attestation rows, 657 with delivered_latency_s,
+    # ZERO with delivered_cost_c, ZERO with delivered_quality. The columns
+    # carry the comment "step 3 -- NULL in step 1"; step 3 never happened, and
+    # nothing failed, because a NULL in a column nobody reads looks exactly
+    # like a column that is not due yet.
+    #
+    # Meanwhile llm_calls held 681 rows with cost_usd ($6.38 over six hours)
+    # for the same turns. The data existed the whole time and never reached
+    # the thing that grades the promise -- so "did we keep it?" could only
+    # ever be answered on latency, which is one third of what we promised.
+    #
+    # Cost is summed HERE because llm_calls rows are written per call, during
+    # the turn, so they are all present by the outermost finally. Quality is
+    # NOT: the post-run adjudicator scores the answer after this runs, so it
+    # updates the row itself (see post_run_adjudication).
+    delivered_cost = _delivered_cost_c(correlation_id)
     return Attestation(
         correlation_id=correlation_id,
+        delivered_cost_c=delivered_cost,
         promise_version=(p.version if p is not None else None),
         tier=(p.tier if p is not None else None),
         posted_at=posted,
