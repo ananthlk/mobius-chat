@@ -363,11 +363,17 @@ def test_a_finalising_round_communicates_and_does_not_plan():
               gaps=(("S1", "g"),), suggest=("rag",))
     normal = _roles(assemble(Facts(**kw))[1])
     final = _roles(assemble(Facts(**kw, finalising=True))[1])
-    # UPDATED 2026-09-14: communicate now fires on a normal round too. The
-    # defect this test was written for was the opposite -- communicate in the
-    # NOT-SENT list while react declared complete -- and it is now impossible
-    # in both directions, which is strictly stronger than what it asserted.
-    assert "role_plan" in normal and "role_communicate" in normal
+    # RESTORED 2026-09-14, after my own correction was itself wrong.
+    #
+    # I widened communicate to fire whenever there was anything to say, and
+    # updated this line to match. Measured over the next paired run: rounds=1
+    # went 3-of-15 -> 13-of-19 and quality fell 0.950 -> 0.862 in every tier.
+    # react wrote the FINAL answer in round 1 and stopped.
+    #
+    # This fixture has gaps AND a tool left to suggest, which is exactly the
+    # "keep drafting" case. The original assertion was right for this input;
+    # what was wrong was the gate treating an UNCLOSEABLE gap the same way.
+    assert "role_plan" in normal and "role_communicate" not in normal
     assert "role_communicate" in final
     # Planning the next tool while writing the final answer is the two-jobs
     # contradiction this stack exists to prevent.

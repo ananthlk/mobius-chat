@@ -359,17 +359,50 @@ def test_role_communicate_calls_the_helper_and_does_not_retype_it():
     )
 
 
-def test_communicate_fires_alongside_plan_when_gaps_are_open():
-    """FINAL = SUMMARIZE + COMMUNICATE. Open gaps shape WHAT is communicated;
-    they must not decide WHETHER."""
+def _roles(**kw):
     import dataclasses
 
     from app.pipeline.v2.blocks import Facts, frame_sections
+    f = dataclasses.replace(Facts(), question="q", answer="", **kw)
+    return [n for n in frame_sections(f)[1] if n.startswith("role_")]
 
-    f = dataclasses.replace(
-        Facts(), question="Compare A and B",
-        preloaded=(("rag", True, "15 passage(s)"),),
-        gaps=("A open", "B open"), answer="")
-    roles = [n for n in frame_sections(f)[1] if n.startswith("role_")]
+
+_PRELOADED = (("rag", True, "15 passage(s)"),)
+
+
+def test_an_open_gap_with_a_tool_left_to_try_keeps_drafting():
+    """🔴 THE QUALITY REGRESSION THIS GUARDS.
+
+    I made communicate unconditional on having anything to say. Measured
+    across two paired 15-question runs:
+
+        rounds=1 turns    3 of 15 -> 13 of 19
+        quality of those    0.940 -> 0.859
+        v2 overall          0.950 -> 0.862   (every tier dropped)
+
+    react wrote the FINAL answer in round 1 and stopped. Faster and cheaper
+    and less thorough -- it answered instead of finishing.
+    """
+    roles = _roles(preloaded=_PRELOADED, gaps=(("g", "open"),), suggest=("rag",))
+    assert "role_communicate" not in roles, roles
+    assert "role_plan" in roles, "a gap with a tool left is a round that plans"
+
+
+def test_an_open_gap_with_NOTHING_left_to_try_communicates():
+    """The half of the original exclusion that was right: "communicate needs
+    nothing left to suggest". A gap nothing can close must not block the
+    answer forever -- which is why `not f.gaps` was the wrong test."""
+    roles = _roles(preloaded=_PRELOADED, gaps=(("g", "open"),))
     assert "role_communicate" in roles, roles
     assert "role_summarise" in roles, roles
+
+
+def test_no_gaps_communicates():
+    assert "role_communicate" in _roles(preloaded=_PRELOADED)
+
+
+def test_finalising_communicates_whatever_is_left_to_try():
+    """Budget exhausted is not a reason to withhold the answer."""
+    roles = _roles(preloaded=_PRELOADED, gaps=(("g", "x"),),
+                   suggest=("rag",), finalising=True)
+    assert "role_communicate" in roles, roles

@@ -230,7 +230,34 @@ def _communicating(f: Facts) -> bool:
     # So it now matches summarise: drafting, with something to say. `gaps`
     # still shapes WHAT is communicated -- the role text tells react to name
     # what is still open -- it just no longer decides WHETHER.
-    return f.finalising or bool(f.preloaded or f.useful)
+    return f.finalising or (
+        bool(f.preloaded or f.useful)
+        # NOTHING LEFT TO TRY, not "no gaps left".
+        #
+        # 🔴 I HAD THIS AS UNCONDITIONAL AND IT COST QUALITY. Measured across
+        # two paired 15-question runs:
+        #
+        #     rounds=1 turns    3 of 15 -> 13 of 19
+        #     quality of those    0.940 -> 0.859
+        #     v2 overall          0.950 -> 0.862   (every tier dropped)
+        #
+        # Making communicate fire the moment there was anything to say meant
+        # react wrote the FINAL answer in round 1 and stopped -- faster (p50
+        # 30.3s -> 22.0s) and cheaper (7.77c -> 4.23c) and less thorough. It
+        # answered instead of finishing.
+        #
+        # The original exclusion this file documented was right and I removed
+        # the wrong half of it: "plan needs a tool to suggest; communicate
+        # needs nothing left to suggest". `not f.gaps` was the wrong test --
+        # a gap nothing can close would block the answer forever. `not
+        # f.suggest` is the right one: it asks whether there is anything left
+        # to TRY, which is the actual question.
+        #
+        # So: an open gap with a tool still to run keeps drafting. An open gap
+        # with nothing left to run gets communicated, and the role text tells
+        # react to name what stayed open.
+        and (not f.gaps or not f.suggest or f.exact_tool)
+    )
 
 
 #: Kill switch. This block is a SUGGESTION -- a turn is strictly better off
