@@ -891,3 +891,87 @@ class TestLabelledBullets:
         card = deterministic_format(draft)
         assert card["sections"] == []
         assert card["presentation"]["rule_id"] == "abstain.prose_list"
+
+
+class TestBoldLedLabels:
+    """react's format rules ask for bold on entity names, so an answer whose
+    items each lead with a bold span is labelling itself without punctuation.
+
+    Measured on an A/B of one question (2026-09-13, "what is the timely filing
+    deadline for sunshine health"): the v1 arm led 4 of 4 bullets with a bold
+    label, the v2 arm led 0 of 4. Same question, same facts, and only one arm
+    was shaped so anything downstream could tabulate it.
+    """
+
+    V1_ARM = (
+        "- **Initial claims** must be filed within 180 days for participating providers "
+        "and 365 days for non-participating providers, from the date of service.\n"
+        "- **Reconsiderations or claim disputes** must be submitted within 90 days for "
+        "participating and 180 days for non-participating providers.\n"
+        "- **Coordination of benefits (COB) claims** have a 90-day filing limit from the "
+        "primary payer's explanation of payment.\n"
+        "- **Medicare claims crossing over to Medicaid** must be filed within the greater "
+        "of 36 months or 12 months from adjudication.\n"
+    )
+    V2_ARM = (
+        "- Initial claims must be filed within 180 days for participating providers and "
+        "365 days for non-participating providers.\n"
+        "- Reconsiderations or claim disputes for participating providers are due within "
+        "90 days, non-participating within 180 days.\n"
+        "- Coordination of benefits claims must be filed within 90 days from the primary "
+        "payer's EOP date.\n"
+        "- Medicare claims crossing to Medicaid have a limit of the greater of 36 months "
+        "or 12 months.\n"
+    )
+
+    def test_a_bold_led_run_becomes_a_table(self):
+        card = deterministic_format(self.V1_ARM)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+        assert card["sections"][0]["data"]["rows"][0][0] == "Initial claims"
+
+    def test_the_unmarked_arm_stays_bullets(self):
+        """Not a failure of this rule -- a statement about the ANSWER. The v2
+        arm did not label itself, so there is nothing to put in a key column
+        without guessing where the subject ends."""
+        card = deterministic_format(self.V2_ARM)
+        assert [s["format"] for s in card["sections"]] == ["bullets"]
+
+    def test_a_bold_VALUE_is_not_a_label(self):
+        """react bolds durations and money too. Promoting those inverts the
+        table: the answer lands in the key column and the subject in the
+        value column."""
+        draft = (
+            "- **180 days** is the limit for initial claims from participating providers.\n"
+            "- **90 days** is the limit for reconsiderations from participating providers.\n"
+            "- **365 days** is the limit for non-participating initial claims.\n"
+        )
+        assert deterministic_format(draft)["sections"][0]["format"] == "bullets"
+
+    def test_a_long_bold_span_is_not_a_label(self):
+        """A row header is a short noun phrase. Six words is where it stops
+        being one."""
+        draft = "\n".join(
+            "- **" + " ".join(["word"] * 8) + "** and then the rest of the sentence here"
+            for _ in range(3)
+        )
+        assert deterministic_format(draft)["sections"][0]["format"] == "bullets"
+
+    def test_paragraph_values_still_abstain(self):
+        """A table of paragraphs is not an improvement on a list of them. The
+        three-payer answer is bold-led AND has 50-word values -- it needs a
+        real table from upstream, and the abstain is what says so."""
+        draft = "\n".join(
+            "- **Payer " + str(i) + "** " + " ".join(["word"] * 50) for i in range(3))
+        card = deterministic_format(draft)
+        assert card["sections"] == []
+        assert card["presentation"]["rule_id"] == "abstain.prose_list"
+
+    def test_a_run_must_use_ONE_pattern_throughout(self):
+        """Half labelled by punctuation and half by markup is a list that has
+        not decided what it is."""
+        draft = (
+            "- **Initial claims** must be filed within 180 days of service\n"
+            "- Reconsiderations: 90 days from the explanation of payment\n"
+            "- **COB claims** have a 90-day limit from the primary EOP\n"
+        )
+        assert deterministic_format(draft)["sections"][0]["format"] == "bullets"

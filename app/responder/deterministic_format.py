@@ -49,7 +49,10 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
-from mobius_contracts.taxonomies.envelope_thresholds import BULLETS_MIN_ITEMS
+from mobius_contracts.taxonomies.envelope_thresholds import (
+    BULLETS_MIN_ITEMS,
+    LABELLED_VALUE_MAX_WORDS,
+)
 
 from app.responder.envelope_classifier import (
     MULTI_SECTION_ENABLED,
@@ -179,25 +182,70 @@ _BULLET_LINE_RE = re.compile(r"^[-*]\s+(.+)$")
 # row header carrying ** is markup leaking into data.
 _LABELLED_BULLET_RE = re.compile(r"^\*{0,2}([A-Za-z][\w\s/()&\-]{1,40})\*{0,2}:\s+(.+)$")
 
+# And a bullet that opens with a BOLD span and no colon. react's format rules
+# ask for bold on entity names, so an answer whose items each lead with one is
+# labelling itself without punctuation:
+#
+#     **Initial claims** must be filed within 180 days for participating...
+#
+# Measured on an A/B of the same question (2026-09-13): the v1 arm led 4 of 4
+# bullets with a bold label, the v2 arm led 0 of 4. Same question, same facts,
+# and only one arm was shaped so anything downstream could tabulate it.
+_LEAD_BOLD_BULLET_RE = re.compile(r"^\*\*(.+?)\*\*\s+(.+)$")
+
+#: Bold spans that are a VALUE, not a label. react bolds money, durations and
+#: percentages too, so "**180 days** is the limit for initial claims" leads
+#: with bold and is not a labelled item -- promoting it puts the ANSWER in the
+#: key column and the subject in the value column, exactly inverted.
+_VALUE_LIKE = (_MONEY_RE, _PERCENT_RE, _DURATION_RE)
+
+
+def _is_label_like(candidate: str) -> bool:
+    """A row header is a short noun phrase that is not itself a value."""
+    text = candidate.strip()
+    if not text or len(text.split()) > 6:
+        return False
+    return not any(p.search(text) for p in _VALUE_LIKE)
+
 
 def _as_labelled_pairs(items: list[str]) -> list[tuple[str, str]] | None:
-    """A bullet run where EVERY item is "Label: value" is a definition list,
-    not a bullet list.
+    """A bullet run where EVERY item is "Label: value" -- or every item leads
+    with a bold label -- is a definition list, not a bullet list.
 
     Every item, not most: one labelled line among unlabelled ones is a
-    sentence with a colon, and promoting the run on that basis would put
-    prose in a table cell and half the rows would have empty labels. All or
-    nothing is the only threshold that cannot half-fire.
+    sentence with a colon, and promoting the run on that basis would put prose
+    in a cell and leave half the rows with empty labels. All or nothing is the
+    only threshold that cannot half-fire.
+
+    Both patterns are tried, but a run must match ONE of them throughout.
+    Mixing them accepts a list half-labelled by punctuation and half by
+    markup, which is a list that has not decided what it is.
     """
     if len(items) < BULLETS_MIN_ITEMS:
         return None
-    pairs: list[tuple[str, str]] = []
-    for item in items:
-        m = _LABELLED_BULLET_RE.match(item.strip())
-        if not m:
+
+    for pattern in (_LABELLED_BULLET_RE, _LEAD_BOLD_BULLET_RE):
+        pairs: list[tuple[str, str]] = []
+        for item in items:
+            m = pattern.match(item.strip())
+            if not m:
+                pairs = []
+                break
+            label, value = m.group(1).strip(), m.group(2).strip()
+            if not _is_label_like(label):
+                pairs = []
+                break
+            pairs.append((label, value))
+        if not pairs:
+            continue
+        # A table of paragraphs is not an improvement on a list of them. Past
+        # the cap, abstaining is the more useful answer: it says the ANSWER
+        # should have been shaped differently, and that signal is worth more
+        # than a badly proportioned table.
+        if sum(len(v.split()) for _, v in pairs) / len(pairs) > LABELLED_VALUE_MAX_WORDS:
             return None
-        pairs.append((m.group(1).strip(), m.group(2).strip()))
-    return pairs
+        return pairs
+    return None
 
 
 def _extract_bullets(text: str) -> list[str]:
