@@ -571,6 +571,136 @@ def _item_dict(item: Item) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# NO LLM FORMATTER, EVER -- every answer's envelope is decided here
+# --------------------------------------------------------------------------
+
+def payload_from_section(section: dict[str, Any]) -> ContentPayload:
+    """An existing section's CONTENT, with its format thrown away.
+
+    Ananth, 2026-09-14: "no llm formatter ever -- it is always, every answer
+    goes through you, no exceptions."
+
+    The distinction that makes that implementable: a model may still WRITE the
+    content of a section -- the rows, the items, the bullets -- but it does not
+    get to say what shape that content renders as. So this reads the data and
+    discards `format`, and the ladder decides again from the content alone.
+
+    Nothing is lost and nothing is invented: every field here already existed
+    in the section the caller handed over.
+    """
+    data = section.get("data") or {}
+    bullets = section.get("bullets") or []
+
+    table = None
+    headers, rows = data.get("headers"), data.get("rows")
+    if isinstance(headers, list) and isinstance(rows, list) and headers and rows:
+        table = TableData(
+            headers=tuple(str(h) for h in headers),
+            rows=tuple(tuple(str(c) for c in row) for row in rows if isinstance(row, (list, tuple))),
+        )
+
+    items: list[Item] = []
+    for raw in data.get("items") or []:
+        if isinstance(raw, dict):
+            weight = raw.get("weight")
+            items.append(Item(
+                label=str(raw.get("label") or ""),
+                value=str(raw.get("value") or ""),
+                note=str(raw.get("note") or ""),
+                weight=float(weight) if isinstance(weight, (int, float)) else None,
+                condition=str(raw.get("condition") or ""),
+                result=str(raw.get("result") or ""),
+            ))
+        elif isinstance(raw, str) and raw.strip():
+            items.append(Item(label=raw.strip()))
+
+    for b in bullets:
+        if isinstance(b, str) and b.strip():
+            items.append(Item(label=b.strip()))
+
+    pairs = tuple(
+        (i.label, i.value) for i in items if i.label and i.value and not i.condition
+    )
+
+    # ORDERING IS CONTENT, NOT PRESENTATION -- so it is read, not discarded.
+    #
+    # The line this module draws is between what the content IS and how it
+    # LOOKS. `weight` and `condition` are read off the data for exactly that
+    # reason, and "these items are a sequence" is the same kind of fact: only
+    # the author knows whether order carries meaning, and writing them as
+    # steps is how they said so.
+    #
+    # Without this, re-classifying a `steps` section turned it into bullets --
+    # the items became a plain list, shape.bullets fired first, and the
+    # sequence was silently thrown away. Caught by the integration test's
+    # idempotence assertion on the long multi-shape card.
+    was_ordered = str(section.get("format") or "") == "steps"
+
+    return ContentPayload(
+        table=table,
+        pairs=pairs,
+        items=tuple(items),
+        explicit_list=bool(items) and not pairs and not was_ordered,
+        ordered=was_ordered,
+        contiguous=True,
+    )
+
+
+#: Formats owned by the tool that produced them. The frontend renders their
+#: data blob directly, and no predicate over that blob could re-derive the
+#: shape -- so these pass through untouched. Rule 2 in the ladder, and the
+#: only exception to "the classifier decides", because the decision was
+#: already made by something that knew more than a classifier can.
+TOOL_OWNED_FORMATS: frozenset[str] = frozenset({"appeals_rules", "appeals_playbook"})
+
+
+def reclassify_sections(
+    sections: list[dict[str, Any]],
+    intent: IntentSignals | None = None,
+    budget: RenderBudget | None = None,
+) -> tuple[list[dict[str, Any]], list[Verdict]]:
+    """Re-decide the envelope of every section, whoever wrote them.
+
+    This is the "no exceptions" half. The deterministic path never had an LLM
+    choosing formats; the LLM path did, and a turn that took five rounds got a
+    model's formatting opinion purely because of a round count.
+
+    Returns (sections, verdicts) so the caller can trace every decision. A
+    section whose content will not rebuild is DROPPED rather than passed
+    through with its original format -- content that cannot fill any envelope
+    was going to render blank, and a blank section is worse than none.
+    """
+    out: list[dict[str, Any]] = []
+    verdicts: list[Verdict] = []
+
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        fmt = str(section.get("format") or "")
+        label = section.get("label") or None
+
+        if fmt in TOOL_OWNED_FORMATS:
+            out.append(section)
+            verdicts.append(Verdict(fmt, "hint.typed", "tool-owned format, rendered as given"))
+            continue
+
+        payload = payload_from_section(section)
+        verdict = classify_envelope(payload, intent, budget)
+        verdicts.append(verdict)
+        rebuilt = build_section(
+            payload, verdict, label=label,
+            intent=str(section.get("intent") or "process"),
+        )
+        if rebuilt is None:
+            continue
+        if section.get("visibility"):
+            rebuilt["visibility"] = section["visibility"]
+        out.append(rebuilt)
+
+    return out, verdicts
+
+
+# --------------------------------------------------------------------------
 # R6 -- render budget
 # --------------------------------------------------------------------------
 

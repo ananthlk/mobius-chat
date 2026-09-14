@@ -214,3 +214,100 @@ def test_a_typed_tool_section_survives_the_deterministic_path():
                      tool_section_hints=hints))
     labels = [s.get("label") for s in card["sections"]]
     assert "Appeal rules" in labels
+
+
+class TestNoLlmFormatterOnV2Only:
+    """Ananth, 2026-09-14: "no llm formatter ever ... every answer goes
+    through you, no exceptions" — and then, scoping it: "this is only for v2,
+    not for v1."
+
+    The scope is the important half. v1 is the A/B's CONTROL arm and the one
+    currently producing more sections (0.7/answer against v2's 0.0).
+    Re-formatting it would change the control, destroying the comparison and
+    risking the arm that works better today.
+    """
+
+    LONG_DRAFT = "Sunshine Health requires initial claims within 180 days of service. " * 4
+
+    #: What an LLM integrator actually emits — its own format choices, which
+    #: are wrong in two different ways here.
+    LLM_SECTIONS = [
+        # Called bullets; is a label/value list.
+        {"format": "bullets", "label": "Rates", "data": {"items": [
+            {"label": "90834", "value": "$85.00"}, {"label": "90837", "value": "$120.00"}]}},
+        # Called stats with SIX items, into a renderer that draws four and
+        # hides the rest behind a button.
+        {"format": "stats", "label": "Levels", "data": {"items": [
+            {"label": f"Level {i}", "value": f"{i * 30} days"} for i in range(1, 7)]}},
+    ]
+
+    def _run_llm_path(self, **extra):
+        ctx = _ctx(self.LONG_DRAFT, **extra)
+        card = {"mode": "FACTUAL", "direct_answer": "An answer.",
+                "sections": [dict(s) for s in self.LLM_SECTIONS]}
+        with (
+            patch.dict(os.environ, {"MOBIUS_INTEGRATOR_MODE": "parallel",
+                                    "MOBIUS_DYNAMIC_ENRICHMENT_PCT": "0"}),
+            patch("app.stages.integrate.format_response_parallel") as parallel,
+            patch("app.stages.integrate.run_bc_background"),
+        ):
+            parallel.return_value = (json.dumps(card), [])
+            run_integrate(ctx)
+        return json.loads(ctx.response_payload["message"])
+
+    def test_v1_keeps_whatever_its_integrator_decided(self):
+        """No v2 markers on ctx — the control arm is untouched."""
+        published = self._run_llm_path()
+        assert [s["format"] for s in published["sections"]] == ["bullets", "stats"]
+
+    def test_v2_re_formats_what_the_model_called_bullets(self):
+        """Label/value pairs are a stats card, whatever the model named them."""
+        published = self._run_llm_path(
+            v2_integration={"coverage": [], "citations": [], "ran": {"assemble": "ok"}})
+        assert published["sections"][0]["format"] == "stats"
+
+    def test_v2_re_formats_a_stats_card_the_renderer_cannot_draw(self):
+        """Six tiles into a four-tile renderer silently hides two. The
+        classifier routes it to a table, where every row shows."""
+        published = self._run_llm_path(
+            v2_integration={"coverage": [], "citations": [], "ran": {"assemble": "ok"}})
+        assert published["sections"][1]["format"] == "table"
+        assert len(published["sections"][1]["data"]["rows"]) == 6
+
+    def test_the_content_survives_re_formatting(self):
+        published = self._run_llm_path(
+            v2_integration={"coverage": [], "citations": [], "ran": {"assemble": "ok"}})
+        blob = json.dumps(published)
+        for value in ("90834", "$85.00", "Level 6", "180 days"):
+            assert value in blob, value
+
+    def test_a_tool_owned_format_passes_through_untouched(self):
+        """appeals_* data is the frontend's blob; no predicate over it could
+        re-derive a shape the tool already knew."""
+        ctx = _ctx(self.LONG_DRAFT,
+                   v2_integration={"coverage": [], "citations": [], "ran": {"assemble": "ok"}})
+        card = {"mode": "FACTUAL", "direct_answer": "An answer.", "sections": [
+            {"format": "appeals_playbook", "label": "Appeal playbook",
+             "data": {"levels": [{"name": "Level 1"}]}}]}
+        with (
+            patch.dict(os.environ, {"MOBIUS_INTEGRATOR_MODE": "parallel",
+                                    "MOBIUS_DYNAMIC_ENRICHMENT_PCT": "0"}),
+            patch("app.stages.integrate.format_response_parallel") as parallel,
+            patch("app.stages.integrate.run_bc_background"),
+        ):
+            parallel.return_value = (json.dumps(card), [])
+            run_integrate(ctx)
+        published = json.loads(ctx.response_payload["message"])
+        assert published["sections"][0]["format"] == "appeals_playbook"
+        assert published["sections"][0]["data"]["levels"] == [{"name": "Level 1"}]
+
+    def test_re_formatting_is_idempotent_on_an_already_classified_card(self):
+        """The deterministic path's own card goes through this too. Same
+        content, same verdict — so a steps section stays steps rather than
+        collapsing into bullets, which is what ordering-as-content buys."""
+        long_draft = next(d for _q, d, n in CORPUS if n.startswith("Long multi-shape"))
+        ctx = _ctx(long_draft, v2_integration={"coverage": [], "citations": [],
+                                               "ran": {"assemble": "ok"}})
+        card = _run(ctx)
+        assert [s["format"] for s in card["sections"]] == \
+               ["table", "steps", "bullets", "bullets"]

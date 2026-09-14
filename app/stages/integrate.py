@@ -160,6 +160,20 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
 )
 
 
+def _v2_turn(ctx) -> bool:
+    """Did the v2 loop serve this turn?
+
+    Read from what the turn HOLDS, not from the env: a percentage rollout
+    means the flag is on while individual turns are still assigned to v1, so
+    the env would re-format the control arm. ctx.v2_integration is set by
+    react_loop when v2's integrator runs, and _v2_last_contract when react
+    answered under the v2 contract — either is proof this turn took the v2
+    path. Neither is present on a v1 turn.
+    """
+    return bool(getattr(ctx, "v2_integration", None)
+                or getattr(ctx, "_v2_last_contract", None))
+
+
 def _answer_card_json_for_client(
     mode: str,
     direct_answer: str,
@@ -1417,6 +1431,50 @@ def run_integrate(
                 lines = lines[:-1]
             raw = "\n".join(lines).strip()
         parsed = json.loads(raw)
+
+        # 🔴 NO LLM FORMATTER — ON v2 ONLY. Ananth, 2026-09-14: "no llm
+        # formatter ever ... every answer goes through you, no exceptions" and
+        # then, scoping it: "this is only for v2, not for v1."
+        #
+        # The scope is the important half. v1 is the A/B's CONTROL arm and the
+        # one currently producing more sections (0.7/answer against v2's 0.0).
+        # Re-formatting it would change the control, which destroys the
+        # comparison and risks regressing the arm that works better today.
+        # Whatever v1's integrator decides, v1 keeps.
+        #
+        # WITHIN v2 there are no exceptions, which is the change: formatting
+        # used to depend on which branch served the turn — the deterministic
+        # pass classified, the LLM path shipped whatever the model called its
+        # own sections, and a turn took the second one purely because of a
+        # round count (react_loop's `rounds_used > 3`). That is not a reason.
+        #
+        # The model may still WRITE a section's content. It does not decide
+        # what shape that content renders as. reclassify_sections reads the
+        # data, discards `format`, and lets the ladder decide from content —
+        # so nothing is lost and nothing is invented. Tool-owned formats
+        # (appeals_*) pass through: their blob is the frontend's, and no
+        # predicate over it could re-derive a shape the tool already knew.
+        if _v2_turn(ctx) and isinstance(parsed, dict) and parsed.get("sections"):
+            try:
+                from app.responder.envelope_classifier import reclassify_sections
+                from app.responder.v2_adapter import budget_from_v2
+
+                _before = [s.get("format") for s in parsed["sections"] if isinstance(s, dict)]
+                parsed["sections"], _verdicts = reclassify_sections(
+                    parsed["sections"],
+                    budget=budget_from_v2(getattr(ctx, "v2_integration", None)),
+                )
+                _after = [s.get("format") for s in parsed["sections"]]
+                if _before != _after:
+                    logger.info(
+                        "[envelope] v2 re-formatted sections cid=%s %s -> %s (%s)",
+                        (getattr(ctx, "correlation_id", "") or "")[:8], _before, _after,
+                        ", ".join(v.rule_id for v in _verdicts))
+            except Exception:
+                # Never lose an answer over its formatting. Sections as
+                # written beat no card.
+                logger.warning("[envelope] v2 reclassify failed — sections shipped "
+                               "as written", exc_info=True)
         if isinstance(parsed, dict):
             _ub = parsed.get("ui_blocks")
             if isinstance(_ub, list):
