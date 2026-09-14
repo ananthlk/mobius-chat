@@ -213,3 +213,51 @@ class TestTypeGuardsAtTheEntryPoints:
 
     def test_a_real_draft_is_untouched_by_the_guard(self):
         assert deterministic_format(MOLINA_FOLLOWUP)["sections"][0]["format"] == "table"
+
+
+class TestTheAnswerLineNeverShowsRawMarkup:
+    """Found by RENDERING, not by asserting.
+
+    A draft that is nothing but a pipe table has no prose to fall back to, so
+    the all-structure fallback handed the raw markdown to direct_answer — and
+    the card showed
+
+        | Topic | Requirement | Deadline |
+        | :--- | :--- | :--- |
+
+    above the same content as a real table, with a raw <br> in it that the
+    table renderer had already cleaned. Duplicated AND uglier than nothing.
+    Every unit test passed. It took putting the card on a screen (cid
+    65ed12e2, 2026-09-13) to see it.
+    """
+
+    PURE_TABLE = (
+        "| Topic | Requirement | Deadline |\n| :--- | :--- | :--- |\n"
+        "| Filing COB Claims | Submit after the primary payer's EOP. | Within 90 days |\n"
+        "| Electronic Claims | Institutional (837I): loop 2300.<br>Professional: 2320. | Same |\n"
+    )
+
+    def test_a_pure_table_draft_leaves_the_answer_line_empty(self):
+        card = deterministic_format(self.PURE_TABLE)
+        assert card["direct_answer"] == ""
+        assert [s["format"] for s in card["sections"]] == ["table"]
+
+    def test_the_table_itself_is_unaffected(self):
+        rows = deterministic_format(self.PURE_TABLE)["sections"][0]["data"]["rows"]
+        assert len(rows) == 2
+        assert "<br>" not in rows[1][1]
+
+    def test_a_readable_all_structure_draft_still_keeps_its_anchor(self):
+        """The fallback exists because direct_answer is the STREAMED anchor.
+        It is only the lesser evil when the draft READS as prose — which a
+        label/value block does and a pipe table does not."""
+        card = deterministic_format(
+            "Initial filing: 180 days\nResubmission: 90 days\nCopay: $25")
+        assert card["sections"]
+        assert "180 days" in card["direct_answer"]
+
+    def test_a_draft_with_prose_around_a_table_is_unchanged(self):
+        card = deterministic_format(
+            "Here are the deadlines.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nThat is all.")
+        assert "Here are the deadlines." in card["direct_answer"]
+        assert "| A |" not in card["direct_answer"]

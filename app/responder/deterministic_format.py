@@ -126,6 +126,7 @@ def _extract_label_value_pairs(text: str) -> list[tuple[str, str]]:
 
 
 _MD_TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
+_MD_TABLE_ANY_RE = re.compile(r"^\|.+\|$", re.MULTILINE)
 _MD_TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|$")
 _HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
@@ -657,7 +658,7 @@ def deterministic_format(
 
     card = {
         "mode": "FACTUAL",
-        "direct_answer": _direct_answer_for(bolded, prose, outcome.sections),
+        "direct_answer": _direct_answer_for(bolded, prose, outcome.sections, text),
         "sections": outcome.sections,
     }
     _attach_presentation(card, verdicts)
@@ -715,6 +716,7 @@ def _direct_answer_for(
     bolded: str,
     prose: str,
     sections: list[dict[str, Any]],
+    text: str = "",
 ) -> str:
     """What the answer line says once the cards have taken their content.
 
@@ -733,6 +735,24 @@ def _direct_answer_for(
     if not sections:
         return bolded
     remaining = (prose or "").strip()
-    if not remaining:
-        return bolded
-    return bold_key_facts(remaining)
+    if remaining:
+        return bold_key_facts(remaining)
+
+    # Nothing survived. The fallback below exists because direct_answer is the
+    # STREAMED anchor and a blank one leaves the user watching an empty bubble
+    # until the card lands -- but it is only the lesser evil when the draft
+    # READS as prose.
+    #
+    # A draft that is nothing but a pipe table does not. Rendered live
+    # (cid 65ed12e2): the answer line showed
+    #
+    #     | Topic | Requirement | Deadline |
+    #     | :--- | :--- | :--- |
+    #     | Filing COB Claims | Submit after the primary payer's EOP...
+    #
+    # above the same content as a real table, with a raw <br> in it that the
+    # table renderer had already cleaned. Duplicated AND uglier than nothing.
+    # Every unit test passed; it took putting the card on a screen to see it.
+    if _MD_TABLE_ANY_RE.search(text):
+        return ""
+    return bolded
