@@ -73,6 +73,19 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     "thread_summary",
     # Layer 2 appeals integration — action chips rendered below the answer.
     "suggested_actions",
+    # Why the card looks the way it does, when the formatter declined to build
+    # a section: {abstained, rule_id, why, note}. Added 2026-09-14 after an
+    # INTEGRATION test caught that it was being dropped here.
+    #
+    # The formatter had been emitting it for two days. Every unit test passed,
+    # the cross-boundary render test passed — because both feed the formatter's
+    # output straight to the renderer, and neither goes through this rebuild.
+    # Only driving run_integrate showed the published card carrying just
+    # {mode, direct_answer, sections, react_draft}.
+    #
+    # This allowlist IS the envelope contract, and nothing named it as one: a
+    # key the formatter adds and does not list here vanishes with no error.
+    "presentation",
     # Enricher fields (two-phase streaming): correction, takeaways, gaps.
     "correction",
     "takeaways",
