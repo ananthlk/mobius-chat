@@ -1465,6 +1465,37 @@ def _arms_dropped(res) -> int:
 
 
 
+
+# ── THE RAG CALL CEILING, v2 ────────────────────────────────────────────────
+#
+# Ananth, 2026-09-14: "we are passing the exhaust_rag field to react because we
+# have the 3 round limit, remove that limit for now because i think rag is
+# struggling as it thinks rag is doine and there is nothing more to share".
+#
+# The shared ceiling is 3 (6 for chat.thinking). react is TOLD it in
+# REACT_CRITICAL_RULES_TEXT rule 1b, and the loop hard-stops past it with a
+# terminal "budget exhausted" signal. Two things follow that Ananth is right
+# about: react stops asking well before the corpus is actually exhausted, and
+# the terminal signal reads to it as "there is nothing more to share" rather
+# than "you have spent your allowance".
+#
+# Effectively unlimited for v2, NOT literally unbounded: the turn is already
+# bounded by max_rounds and the Product Promise's time budget, so this removes
+# a second, tighter cap rather than removing all of them. A literal None would
+# mean a retrieval loop with no backstop at all if either of those regressed.
+#
+# v1 IS UNTOUCHED. It is the control arm, it is told 3, and it stops at 3 --
+# changing that would make the A/B measure this instead of the orchestrator.
+V2_RAG_CALL_CEILING = int(os.environ.get("MOBIUS_V2_RAG_CALL_CEILING", "99")
+                          .strip() or 99)
+
+
+def _rag_ceiling_for(ctx) -> int:
+    """The effective ceiling for THIS turn's arm."""
+    if getattr(ctx, "orchestrator_version", "v1") == "v2":
+        return V2_RAG_CALL_CEILING
+    return _rag_call_ceiling_for_mode(getattr(ctx, "chat_mode", None))
+
 def _v2_react_feedback(ctx, round_index) -> dict | None:
     """What react did with LAST round's evidence, for the next rag call.
 
@@ -2198,7 +2229,7 @@ def _execute_tool(
         # original 3 (2026-08-06 Chat Architecture ruling, still binding
         # there -- this doesn't reopen that ruling, just scopes an
         # exception to the one mode whose retrieval budget changed).
-        _rag_call_ceiling = _rag_call_ceiling_for_mode(getattr(ctx, "chat_mode", None))
+        _rag_call_ceiling = _rag_ceiling_for(ctx)
         # ── citable_required relax-then-reframe: 3-call bounded protocol ────
         # (2026-08-06, Chat Architecture spec, replacing the pre-cutover
         # mode="auto"→"d" escalation cascade.) That model assumed chat
@@ -5853,6 +5884,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         mode_label,
         getattr(ctx, "user_profile", None),
         allowed_tools=getattr(ctx, "allowed_tools", None),
+        # TELL REACT THE CEILING THAT ACTUALLY APPLIES TO IT. rule 1b renders
+        # {{ rag_call_ceiling }} as a hard limit; leaving it at 3 while the
+        # loop allows 99 would have react stop asking at a cap that no longer
+        # exists -- a prompt asserting a constraint the code does not enforce,
+        # which is the inverse of the defect class this repo keeps hitting.
+        rag_call_ceiling=_rag_ceiling_for(ctx),
     )
     _react_prompt_source_v2 = (os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition"
     # Set alongside `reasoning_system` whenever the v2 path resolves — passed

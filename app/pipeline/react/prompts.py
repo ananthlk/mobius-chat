@@ -536,6 +536,7 @@ def _react_reasoning_system(
     chat_mode: str,
     user_profile: dict | None = None,
     allowed_tools: list[str] | None = None,
+    rag_call_ceiling: int | None = None,
 ) -> str:
     """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', 'quick', or 'task'.
 
@@ -565,7 +566,12 @@ def _react_reasoning_system(
     _env = _react_jinja_env()
     mode_block = _env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(max_iterations=max_iterations)
     critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(
-        max_iterations=max_iterations, rag_call_ceiling=_rag_call_ceiling_for_mode(mode), mode=mode,
+        max_iterations=max_iterations,
+        # Caller-supplied when the arm's ceiling differs from the shared
+        # per-mode one (v2 lifts it). None keeps the v1 behaviour exactly.
+        rag_call_ceiling=(rag_call_ceiling if rag_call_ceiling is not None
+                          else _rag_call_ceiling_for_mode(mode)),
+        mode=mode,
     )
     _base_prompt_text = f"""
 {REACT_IDENTITY_TEXT}
