@@ -26,6 +26,7 @@ produced reaches the card so the surface can say so.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -171,17 +172,8 @@ def grounding_from_v2(v2_integration: dict[str, Any] | None) -> Grounding | None
     raw_unsupported = v2_integration.get("unsupported_claims")
     unsupported = raw_unsupported if isinstance(raw_unsupported, int) else 0
 
-    # The critic counts as having run only when it ran AND said something.
-    # An empty critique after ran=="ok" is an absent check, not a clean one
-    # (contract §2) -- and today it is the normal case, because the critic's
-    # prompt blocks are missing from the prompt DB.
     critique = v2_integration.get("critique")
-    critic_ran = bool(
-        isinstance(ran, dict)
-        and ran.get("critique") == "ok"
-        and isinstance(critique, list)
-        and critique
-    )
+    critic_ran = _critic_ran(ran, critique)
 
     return Grounding(
         checked=True,
@@ -192,6 +184,86 @@ def grounding_from_v2(v2_integration: dict[str, Any] | None) -> Grounding | None
         decisive_parts=decisive,
         critic_ran=critic_ran,
     )
+
+
+#: `ran` values that mean a section did NOT run. Everything else means it did.
+#:
+#: MATCHED BY MEANING, NOT BY EQUALITY WITH "ok". This gate used to read
+#: `ran.get("critique") == "ok"`, and when the critic became deterministic the
+#: value became "deterministic (verify_claims)" -- so the gate silently
+#: returned False on every turn, forever. It failed in the safe direction
+#: (`thin` simply never fires), which is worse than it sounds: a gate that can
+#: never fire is dead code that still LOOKS live, and nothing would have
+#: caught it because nothing asserts on a negative.
+#:
+#: A producer is free to change how it words "ok". It is not free to invent a
+#: new way of saying "did not run" -- so the closed set goes on the failure
+#: side, where a new value defaults to "it ran" rather than to silence.
+_RAN_NOT_OK: frozenset[str] = frozenset({"", "skipped", "failed", "none", "error"})
+
+
+def _ran_ok(value: Any) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() not in _RAN_NOT_OK
+
+
+def _critic_ran(ran: Any, critique: Any) -> bool:
+    """Did a critic actually check anything?
+
+    Two eras, and they disagree about what an empty critique means:
+
+    - LLM critic, `ran == "ok"` exactly: empty meant the prompt blocks were
+      missing from the prompt DB and it fell back. An ABSENT check, not a
+      clean one (contract §2), so empty still reads as not-run.
+    - Deterministic critic (verify_claims), any other wording: empty means it
+      compared every claim against its cited page and flagged nothing. That
+      is a real verdict and the thing this gate was always trying to find.
+
+    Distinguished by the `ran` wording itself rather than by guessing, because
+    the producer already says which one it is.
+    """
+    if not isinstance(ran, dict):
+        return False
+    value = ran.get("critique")
+    if not _ran_ok(value):
+        return False
+    if str(value).strip().lower() == "ok":
+        return bool(isinstance(critique, list) and critique)
+    return True
+
+
+def pages_per_part(v2_integration: dict[str, Any] | None) -> dict[str, int]:
+    """DISTINCT pages backing each part, from coverage[].evidence.
+
+    This is the `pages_per_entity` the answer-shape block wanted, and it was
+    already in the contract -- coverage[] carries per-part evidence locators,
+    so counting them needs nothing new from the producer. Asking for a field
+    that already exists under another name is its own kind of second author.
+
+    DISTINCT is the operative word: a live answer cited one payer twice and
+    both were p5, which reads as two sources until the numbers are compared.
+    """
+    coverage = (v2_integration or {}).get("coverage")
+    if not isinstance(coverage, list):
+        return {}
+    out: dict[str, int] = {}
+    for entry in coverage:
+        if not isinstance(entry, dict):
+            continue
+        part = str(entry.get("part") or "").strip()
+        if not part:
+            continue
+        pages: set[str] = set()
+        for locator in entry.get("evidence") or []:
+            found = _PAGE_RE.findall(str(locator))
+            # A locator with no page number is still one source.
+            pages.update(found or [str(locator)])
+        out[part] = len(pages)
+    return out
+
+
+_PAGE_RE = re.compile(r"\bp\.?\s*(\d+)\b", re.IGNORECASE)
 
 
 def budget_from_v2(

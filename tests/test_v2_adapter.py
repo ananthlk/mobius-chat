@@ -267,3 +267,80 @@ class TestCouldNotCheckIsNotCheckedFalse:
         card = deterministic_format(self.DRAFT, budget=budget_from_v2(self.V1_SHAPE_TURN))
         assert card["sections"] != []
         assert "presentation" not in card
+
+
+class TestRanValuesAreMatchedByMeaning:
+    """The producer changed how it words "ok" and the gate died silently.
+
+    `ran["critique"] == "ok"` became `"deterministic (verify_claims)"` when
+    Governor replaced the LLM critic. The equality test then returned False on
+    every turn, forever — and it failed in the SAFE direction (`thin` simply
+    never fires), which is worse than it sounds: a gate that can never fire is
+    dead code that still looks live, and nothing asserts on a negative.
+    """
+
+    BASE = {"coverage": [{"part": "X", "status": "unobservable", "evidence": []}],
+            "citations": []}
+
+    def _g(self, critique_ran, critique=()):
+        return grounding_from_v2({**self.BASE,
+                                  "ran": {"assemble": "ok", "critique": critique_ran},
+                                  "critique": list(critique)})
+
+    def test_the_new_deterministic_wording_counts_as_run(self):
+        assert self._g("deterministic (verify_claims)", [{"c": 1}]).critic_ran is True
+
+    def test_nothing_flagged_is_a_verdict_not_an_absence(self):
+        """The deterministic critic compared every claim against its cited
+        page and flagged none. Empty means clean here, unlike the LLM era."""
+        g = self._g("deterministic (verify_claims) — nothing flagged")
+        assert g.critic_ran is True
+        assert g.conclusive is True
+
+    def test_the_legacy_ok_still_needs_a_non_empty_critique(self):
+        """Under the LLM critic, empty after "ok" meant the prompt blocks were
+        missing and it fell back — an absent check, not a clean one."""
+        assert self._g("ok", []).critic_ran is False
+        assert self._g("ok", [{"c": 1}]).critic_ran is True
+
+    def test_a_wording_nobody_predicted_defaults_to_RAN(self):
+        """The closed set is on the FAILURE side. A producer is free to
+        reword "ok"; it is not free to invent a new way of saying "did not
+        run", so an unknown value means it ran rather than silence."""
+        assert self._g("verify_claims v3 ran clean").critic_ran is True
+
+    def test_skipped_and_failed_still_mean_not_run(self):
+        for value in ("skipped", "failed", "", None):
+            assert self._g(value).critic_ran is False, value
+
+
+class TestPagesPerPart:
+    """The field the answer-shape block wanted was already in the contract.
+    coverage[] carries per-part evidence locators, so counting them needs
+    nothing new from the producer."""
+
+    COV = {"ran": {"assemble": "ok"}, "coverage": [
+        {"part": "Molina", "evidence": ["molina_fl.pdf p111", "molina_fl.pdf p103"]},
+        {"part": "UnitedHealthcare", "evidence": ["FL-Care.pdf p5", "FL-Care.pdf p5"]},
+        {"part": "Sunshine", "evidence": []},
+    ]}
+
+    def test_distinct_pages_are_counted(self):
+        from app.responder.v2_adapter import pages_per_part
+        assert pages_per_part(self.COV) == {
+            "Molina": 2, "UnitedHealthcare": 1, "Sunshine": 0}
+
+    def test_the_same_page_cited_twice_is_one_page(self):
+        """A live answer cited one payer twice and both were p5, which reads
+        as two sources until the numbers are compared."""
+        from app.responder.v2_adapter import pages_per_part
+        assert pages_per_part(self.COV)["UnitedHealthcare"] == 1
+
+    def test_a_locator_with_no_page_still_counts_as_one_source(self):
+        from app.responder.v2_adapter import pages_per_part
+        assert pages_per_part({"ran": {"assemble": "ok"}, "coverage": [
+            {"part": "A", "evidence": ["some_manual.pdf"]}]}) == {"A": 1}
+
+    def test_absent_v2_yields_nothing(self):
+        from app.responder.v2_adapter import pages_per_part
+        assert pages_per_part(None) == {}
