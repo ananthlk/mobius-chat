@@ -6830,18 +6830,35 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # order -- see its docstring for why it must not be re-derived.
                 _v2_resp, ctx._v2_kept_chunks = _v2c.with_kept_chunks(
                     _v2_resp, _v2_kept_order(ctx))
-                if _v2_resp.kept_indices or _v2_resp.kept_unresolved:
+                # LOG WHENEVER WE ASKED, NOT ONLY WHEN WE GOT SOMETHING.
+                #
+                # This fired only when indices came back, so "react returned
+                # kept: []" and "react never returned the key" produced the
+                # same silence -- and they carry opposite advice. The first is
+                # a real answer (none of the passages earned a place); the
+                # second is a prompt that is not landing. Measured on cid
+                # eb309a95: numbered=1, no [v2.kept] line, and no way to tell
+                # which had happened.
+                _n_numbered = len(_v2_kept_order(ctx))
+                if _n_numbered or _v2_resp.kept_indices or _v2_resp.kept_unresolved:
                     # LOG BOTH SIDES. An index react named that does not exist
                     # means it is addressing a list it cannot see, which is a
                     # prompt defect and not noise -- and it is invisible if we
                     # only log what resolved.
+                    _asked_for_kept = bool(_n_numbered)
+                    _answered = bool(_v2_resp.kept_indices
+                                     or _v2_resp.kept_unresolved)
                     logger.info(
-                        "[v2.kept] cid=%s round=%s kept=%s of %s numbered "
-                        "-> %d chunk(s)%s",
+                        "[v2.kept] cid=%s round=%s asked=%s kept=%s of %s "
+                        "numbered -> %d chunk(s)%s%s",
                         (ctx.correlation_id or "")[:8], rn,
-                        list(_v2_resp.kept_indices),
-                        len(_v2_kept_order(ctx)),
+                        _asked_for_kept,
+                        list(_v2_resp.kept_indices), _n_numbered,
                         len(ctx._v2_kept_chunks or []),
+                        ("" if _answered else
+                         " -- react returned NO kept key: either none earned a "
+                         "place or the ask is not landing; these are different "
+                         "and this line cannot yet tell them apart"),
                         (f" -- UNRESOLVED {list(_v2_resp.kept_unresolved)}: "
                          "react named passages that were not in its list"
                          if _v2_resp.kept_unresolved else ""))
