@@ -2385,7 +2385,38 @@ def _execute_tool(
                             # (call_number 2, 3 on terminal_action=
                             # clarify_low_confidence) is a clean continuation,
                             # not a mid-sequence jump.
-                            "call_number": 1,
+                            #
+                            # 🔴 v2 SENDS THE TURN'S REAL CALL NUMBER.
+                            #
+                            # Ananth, 2026-09-14: "we need to pass the round
+                            # information to rag so that it uses the google
+                            # search and llm more effectively".
+                            #
+                            # That is exactly what call_number gates.
+                            # Retriever confirmed the mechanism live and from
+                            # their own code: portfolio.py's
+                            # _STRATEGY_MIN_TURN = {"d": 2, "c": 3} -- d is the
+                            # web/google arm, c is reverse-RAG. Per QUERY, not
+                            # per slot, and unconditional on slot confidence.
+                            # Their measured lift on a comparable fan-out:
+                            # lb95 0.474 -> 0.697 between call 1 and call 3.
+                            #
+                            # Hardcoding 1 meant every v2 corpus call asked at
+                            # the turn floor, so d and c only ever unlocked via
+                            # the low-confidence escalation below -- which
+                            # fires rarely. The strongest arms were reachable
+                            # and almost never reached.
+                            #
+                            # _rag_call_number is len(history)+1, so a turn's
+                            # second corpus call unlocks d and its third
+                            # unlocks c, without inventing an escalation
+                            # policy of our own: the round IS the signal.
+                            #
+                            # v1 keeps the literal 1. It is the control arm.
+                            "call_number": (
+                                _rag_call_number
+                                if getattr(ctx, "orchestrator_version",
+                                           "v1") == "v2" else 1),
                             # CALLER OVERRIDE WINS. compute_token_budget_for_
                             # retrieval(ctx) sizes retrieval to the whole
                             # context window, which is right for a round react
