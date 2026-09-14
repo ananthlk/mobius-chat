@@ -5512,10 +5512,38 @@ def _execute_tool_with_retry(
         wait_s = 3
     wait_s = max(1, min(_MAX_AUTO_RETRY_SLEEP_S, wait_s))
 
+    # 🔴 A RETRY IS A SPEND THE GOVERNOR NEVER SEES.
+    #
+    # The round loop asks the governor whether another round fits the promise.
+    # A retry happens INSIDE one round, so it spends the promise with nothing
+    # deciding whether it can afford to. Measured 2026-09-14: a rag timeout is
+    # 120s, so a timeout plus its retry is 240s against a 95s promise -- and
+    # this became reachable the same day, because cd85a5b correctly started
+    # classifying rag timeouts as recoverable. That change made correctness
+    # better and latency worse from one edit; this is the other half of it.
+    #
+    # Same rule as the governor's admission control, applied one level down:
+    # do not start work that cannot fit. v2 only -- v1 keeps its retry
+    # unconditioned so the A/B stays honest, and a missing clock or contract
+    # (governor off) means no basis to refuse, so the retry proceeds.
+    import time as _time
+    if getattr(ctx, "orchestrator_version", "v1") == "v2":
+        _soft = getattr(ctx, "react_soft_target_s", None)
+        _started = getattr(ctx, "react_turn_start_monotonic", None)
+        if _soft and _started is not None:
+            _spent = _time.monotonic() - _started
+            _likely = _v2_expected_tool_cost_s(ctx) or 0.0
+            if _spent + wait_s + _likely >= _soft:
+                emit_fn(
+                    f"  ↻ {tool} hit {err.get('error_code')} — NOT retrying: "
+                    f"{_spent:.0f}s spent + {wait_s}s wait + ~{_likely:.0f}s "
+                    f"expected exceeds the {_soft:g}s promise"
+                )
+                return result
+
     emit_fn(
         f"  ↻ {tool} hit {err.get('error_code')} — retrying in {wait_s}s…"
     )
-    import time as _time
     _time.sleep(wait_s)
     retry_result = _run_once()
     # Whether or not the retry succeeded, attach a marker so telemetry can
@@ -6115,6 +6143,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # actually passed a value for it. None when the governor is off
     # (no contract exists to read a ceiling from).
     ctx.react_hard_ceiling_s = _pp_contract.hard_ceiling_s if _pp_contract is not None else None
+    # Same reason as the ceiling above, for the retry admission guard in
+    # _execute_tool_with_retry: that function holds the tool and the round but
+    # not the contract, and a retry is the one place that spends the promise
+    # without the governor ever being consulted.
+    ctx.react_soft_target_s = _pp_contract.soft_target_s if _pp_contract is not None else None
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
