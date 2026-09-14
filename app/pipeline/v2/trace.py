@@ -547,18 +547,28 @@ def shared_step(resp, usage=None, elapsed_s=None, round_index=None) -> Step:
                  # identifier FROM react, and a hallucinated code has no path
                  # in. A sentence that resolves to nothing is an honest lexicon
                  # coverage gap, not an invented answer.
-                 "gaps_open": [g.text for g in resp.gaps
-                               if (g.status or "open") == "open" and g.text],
-                 "gaps_all": [{"text": g.text, "status": g.status}
-                              for g in resp.gaps if g.text],
+                 # getattr, NOT attribute access. A trace emit must not be
+                 # the thing that raises: callers pass partial response objects
+                 # (tests do, and so does any degraded path), and a KeyError
+                 # here would cost the whole step -- emit_step's except would
+                 # swallow it into a bare headline and the reader would lose
+                 # the detail with no idea why. Reading the SHAPE defensively
+                 # is the same rule this module applies to tool payloads.
+                 "gaps_open": [g.text for g in (getattr(resp, "gaps", ()) or ())
+                               if getattr(g, "text", "")
+                               and (getattr(g, "status", "open") or "open") == "open"],
+                 "gaps_all": [{"text": g.text,
+                               "status": getattr(g, "status", "")}
+                              for g in (getattr(resp, "gaps", ()) or ())
+                              if getattr(g, "text", "")],
                  # What react said it wanted next, and why. Never emitted
                  # before in any form.
-                 "tool_request": resp.tool_request or "",
-                 "tool_reason": resp.tool_reason or "",
+                 "tool_request": getattr(resp, "tool_request", "") or "",
+                 "tool_reason": getattr(resp, "tool_reason", "") or "",
                  "is_complete": resp.is_complete,
-                 "complete_why": resp.complete_why or "",
+                 "complete_why": getattr(resp, "complete_why", "") or "",
                  "next_round_worth_it": resp.next_round_worth_it,
-                 "next_round_why": resp.next_round_why or "",
+                 "next_round_why": getattr(resp, "next_round_why", "") or "",
                  "problems": list(resp.problems)})
 
 
@@ -604,18 +614,28 @@ def reply_step(resp, elapsed_s=None) -> Step:
                  # identifier FROM react, and a hallucinated code has no path
                  # in. A sentence that resolves to nothing is an honest lexicon
                  # coverage gap, not an invented answer.
-                 "gaps_open": [g.text for g in resp.gaps
-                               if (g.status or "open") == "open" and g.text],
-                 "gaps_all": [{"text": g.text, "status": g.status}
-                              for g in resp.gaps if g.text],
+                 # getattr, NOT attribute access. A trace emit must not be
+                 # the thing that raises: callers pass partial response objects
+                 # (tests do, and so does any degraded path), and a KeyError
+                 # here would cost the whole step -- emit_step's except would
+                 # swallow it into a bare headline and the reader would lose
+                 # the detail with no idea why. Reading the SHAPE defensively
+                 # is the same rule this module applies to tool payloads.
+                 "gaps_open": [g.text for g in (getattr(resp, "gaps", ()) or ())
+                               if getattr(g, "text", "")
+                               and (getattr(g, "status", "open") or "open") == "open"],
+                 "gaps_all": [{"text": g.text,
+                               "status": getattr(g, "status", "")}
+                              for g in (getattr(resp, "gaps", ()) or ())
+                              if getattr(g, "text", "")],
                  # What react said it wanted next, and why. Never emitted
                  # before in any form.
-                 "tool_request": resp.tool_request or "",
-                 "tool_reason": resp.tool_reason or "",
+                 "tool_request": getattr(resp, "tool_request", "") or "",
+                 "tool_reason": getattr(resp, "tool_reason", "") or "",
                  "is_complete": resp.is_complete,
-                 "complete_why": resp.complete_why or "",
+                 "complete_why": getattr(resp, "complete_why", "") or "",
                  "next_round_worth_it": resp.next_round_worth_it,
-                 "next_round_why": resp.next_round_why or "",
+                 "next_round_why": getattr(resp, "next_round_why", "") or "",
                  "problems": list(resp.problems)})
 
 
