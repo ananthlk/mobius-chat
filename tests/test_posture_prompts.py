@@ -129,3 +129,40 @@ def test_the_answer_prompt_never_names_a_FORMAT():
     t = COMMUNICATE.lower()
     for fmt in ("use a table", "use bullets", "bullet points", "heading"):
         assert fmt not in t, f"the prompt names a format ({fmt!r})"
+
+
+# ── the plan shape is declared once ─────────────────────────────────────────
+# Deep Research adopts plan_shape.FIELDS. The risk is not that the declaration
+# is wrong — it is that someone edits the PROMPT, the declaration goes stale,
+# and both still look fine. These assert the derivation, not the wording.
+
+def test_explore_carries_every_declared_field():
+    from app.pipeline.v2 import plan_shape
+    from app.pipeline.v2.posture_prompts import EXPLORE
+
+    for field in plan_shape.FIELDS:
+        assert field.name in EXPLORE, f"{field.name} declared but not in EXPLORE"
+        # every non-empty line of the declared text must survive rendering
+        for line in (ln.strip() for ln in field.text.split("\n")):
+            if line:
+                assert line in " ".join(EXPLORE.split()) or line in EXPLORE, (
+                    f"{field.name}: declared text not reaching the prompt: {line!r}"
+                )
+
+
+def test_plan_field_text_is_not_also_written_into_the_prompt_module():
+    """The failure this catches: a field's words pasted into posture_prompts.py
+    as a literal, so the prompt keeps rendering after the declaration changes.
+    Reads the SOURCE, not the rendered string."""
+    import inspect
+
+    from app.pipeline.v2 import plan_shape, posture_prompts
+
+    src = inspect.getsource(posture_prompts)
+    for field in plan_shape.FIELDS:
+        # the longest line is the most distinctive; a paste brings it along
+        longest = max((ln.strip() for ln in field.text.split("\n")), key=len)
+        assert longest not in src, (
+            f"{field.name}: plan text is literal in posture_prompts.py — "
+            "a second copy. Render it from plan_shape instead."
+        )

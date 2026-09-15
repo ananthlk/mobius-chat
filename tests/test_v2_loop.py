@@ -545,3 +545,43 @@ def test_the_wall_clock_is_checked_at_the_TOP_of_every_round():
         "the budget check runs after the model call"
     assert body.index("_budget_exhausted(elapsed") < body.index("_execute_tool_with_retry("), \
         "the budget check runs after the tool call"
+
+
+# ── the exit label must survive the exit ────────────────────────────────────
+
+def test_stopped_by_is_never_assigned_unguarded():
+    """THE DEFECT: `res.stopped_by = "max_rounds"` sat in the `else` of
+    `if pending:`, so every exit leaving no queued tool — which is every CLEAN
+    exit — was relabelled a budget exhaustion on its way out.
+    model_complete_no_gaps, unusable_rounds, model_error and every governor
+    branch all reached the trace as "max_rounds".
+
+    Reads the AST of the real function, NOT a re-implementation of the guard:
+    a test that restates the fix passes just as happily on the reverted code.
+
+    The property: the literal "max_rounds" is only ever assigned to
+    res.stopped_by underneath a test of res.stopped_by.
+    """
+    tree = ast.parse(_src())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react_v2")
+
+    def assigns_max_rounds(node):
+        return (isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Constant)
+                and node.value.value == "max_rounds")
+
+    guarded = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.If) and "stopped_by" in ast.dump(n.test):
+            for inner in ast.walk(n):
+                if assigns_max_rounds(inner):
+                    guarded.add(id(inner))
+
+    sites = [n for n in ast.walk(fn) if assigns_max_rounds(n)]
+    assert sites, "the fallback label is gone entirely — did the exit change?"
+    for site in sites:
+        assert id(site) in guarded, (
+            f'line {site.lineno}: stopped_by = "max_rounds" is assigned '
+            "without first testing whether a label is already set — it will "
+            "overwrite every clean exit reason")

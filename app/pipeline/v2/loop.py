@@ -67,9 +67,11 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from app.pipeline.v2 import announce as _announce
 from app.pipeline.v2 import executor as ex
 from app.pipeline.v2 import posture as P
 from app.pipeline.v2 import shadow as sh
+from app.pipeline.v2 import trace as _trace
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +156,23 @@ V2_BUDGET_FRACTION = 1.0
 # nothing stops one already running. This is the wall-clock backstop, checked
 # at the top of every round against the turn's own clock rather than against
 # the governor's arithmetic.
+def _outcome_word(res: dict) -> str:
+    """One of the five shared words for what a tool did.
+
+    Imported from mobius-contracts rather than spelled here: the vocabulary is
+    shared with the formatter, and a second copy drifts. NOTHING here may say
+    "not found" — WORLD_CLAIMS is empty, so no tool outcome licenses telling a
+    person a thing does not exist.
+    """
+    try:
+        from mobius_contracts.taxonomies import tool_outcome as _to
+    except Exception:
+        return "answered" if res.get("success") else "could_not_run"
+    if not res.get("success"):
+        return _to.COULD_NOT_RUN
+    return _to.ANSWERED if str(res.get("result") or "").strip() else _to.EMPTY
+
+
 def _budget_exhausted(elapsed_s: float, promise_s: float) -> tuple[bool, float]:
     """(exhausted, seconds left for v2). Never lets v2 hold the whole turn."""
     allowance = max(0.0, promise_s * V2_BUDGET_FRACTION)
@@ -208,6 +227,15 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         _finalize_response,
     )
 
+    def step(st) -> None:
+        """One structured step. Bare-string `emit` stays for the plain
+        emitter; this is what a client that renders detail actually gets."""
+        try:
+            _trace.emit_step(emitter, getattr(ctx, "correlation_id", "") or "",
+                             st, thread_id=getattr(ctx, "thread_id", None))
+        except Exception:      # a trace must never end a turn
+            logger.debug("[v2.loop] step emit failed", exc_info=True)
+
     def emit(msg: str) -> None:
         if emitter:
             try:
@@ -255,15 +283,32 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # never runs passes review.
         from toolreg.estimate import estimate as _tr_estimate
 
+        step(_announce.tools_running(_q))
         _off = _tr_estimate(
             _q,
             caller_mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
             correlation_id=getattr(ctx, "correlation_id", None),
         )
-        # rag is the floor: v1's block falls back to ["rag"] when estimate
-        # returns nothing, because a turn with no retrieval is worse than a
-        # turn with an unranked one. Ananth: "no we will always do rag".
-        _offer = [t.tool_key for t in (getattr(_off, "tools", None) or [])] or ["rag"]
+        # 🔴 RAG IS A FLOOR, NOT A FALLBACK.
+        #
+        # This read `[...] or ["rag"]`, which adds rag only when estimate
+        # returns NOTHING. Ananth's ruling is "no we will always do rag" —
+        # made after rag ranked 12th of 13 on a question only rag could
+        # answer, so ranking is exactly the thing it must not be subject to.
+        #
+        # Measured on the canonical question ("timely filing deadline for
+        # Sunshine Health", 2026-09-15): estimate returned TWELVE tools and
+        # not one of them retrieves from the corpus — no rag, no
+        # search_corpus. The list was non-empty, so the floor never fired, and
+        # preload ran appeals_get_playbook and payor_fact, BOTH of which were
+        # rejected for missing required arguments. The turn spent 8.3s of a
+        # 31s promise and reached round 1 with zero evidence.
+        #
+        # A non-empty list of tools that cannot retrieve is precisely the case
+        # the ruling exists for, and "or" could not see it.
+        _offer = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
+        if "rag" not in _offer:
+            _offer.insert(0, "rag")
         if _offer:
             _plan = _v2pre.plan(_offer)
             _preloaded = _v2pre.execute(
@@ -279,12 +324,18 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             ctx._v2_preload_round = 1
             ctx._v2_preloaded = _preloaded
             ctx._v2_suggest = getattr(_plan, "suggest", []) or []
-            emit(f"  preloaded {len(_preloaded or [])} tool(s)")
+            step(_announce.tools_selected(
+                offered=_offer,
+                chosen=[r.get("tool") for r in (_preloaded or [])
+                        if isinstance(r, dict) and r.get("tool")],
+                suggest=ctx._v2_suggest,
+                floor=not (getattr(_off, "tools", None) or []),
+            ))
     except Exception as _pre_e:   # pragma: no cover — never fail a turn on preload
         # Fail-soft, and SAY SO. react can reason without preload; it cannot
         # reason correctly about why its evidence is thin if nothing says the
         # step did not run.
-        emit(f"  preload unavailable: {type(_pre_e).__name__}")
+        emit(f"  preload unavailable: {type(_pre_e).__name__}: {_pre_e}")
 
     res = V2LoopResult()
     # 🔴 THE ROUND EXECUTES WHAT THE LAST ROUND ASKED FOR, AT ITS TOP.
@@ -353,6 +404,22 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                            affordable=P.spendable(state))
         inputs_record = P.explain(state, decision)
 
+        # 🔴 EVERY ROUND, NOT ONLY THE LAST.
+        #
+        # This step was emitted only on the branch that ENDS the turn, so the
+        # one decision this loop exists to make was invisible on every round
+        # that continued. A reader saw tools run and a model answer, with the
+        # posture that chose them never stated — which is the same opacity the
+        # loop was built to remove, wearing a trace.
+        step(_announce.posture(
+            round=rn, decision=decision, action=action,
+            spent_s=time.monotonic() - t0,
+            budget_s=sh.promise_seconds(ctx, None),
+            rounds_left=max_rounds - rn,
+            gaps_open=_open_gap_texts(state),
+            has_answer=bool(_best_running_answer(ctx)),
+            targeting=_gap_text(state, decision.gap_targeted)))
+
         logger.info(
             "[v2.loop] cid=%s round=%s branch=%s posture=%s -> %s gaps=%d "
             "remaining=%.1fs",
@@ -413,12 +480,16 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 res.exit_mode = (action.exit_mode or exit_mode).value \
                     if hasattr(action.exit_mode or exit_mode, "value") else str(exit_mode)
                 res.stopped_by = decision.branch
-                emit(f"  governor: {decision.posture.value} — {action.because[:90]}")
+                # The structured posture step above already carried this
+                # decision, with its clock, its gaps and its branch. A second
+                # bare-string copy of the same fact is how one decision starts
+                # reading as two.
                 break
 
         # ── 2. TOOLS — whatever the last round asked for, before reasoning ──
         for _t, _in in pending:
-            emit(f"  round {rn}: {_t}")
+            step(_announce.tool_call(round=rn, tool=_t, inputs=_in or {},
+                                     closing=(_open_gap_texts(state) or [None])[0]))
             try:
                 # KEYWORDS against the real signature, checked with
                 # inspect.signature rather than recalled: SIX required
@@ -433,6 +504,11 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             except Exception as exc:
                 logger.warning("[v2.loop] tool %s failed: %s", _t, exc)
                 _res = {"tool": _t, "success": False, "result": ""}
+            step(_announce.tool_result(
+                round=rn, tool=_t, ok=bool(_res.get("success")),
+                outcome=_outcome_word(_res),
+                sources=len(_res.get("sources") or []),
+                chars=len(str(_res.get("result") or ""))))
             tool_results.append(_res)
             last_tool = _t
             for _s in (_res.get("sources") or []):
@@ -453,8 +529,15 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 posture=decision.posture,
             )
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
+            _llm_t0 = time.monotonic()
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
                                  stage=f"react_{rn}")
+            _llm_s = time.monotonic() - _llm_t0
+            step(_announce.prompt_built(
+                round=rn, posture=decision.posture, source=prompt_source,
+                system_chars=len(system or ""), user_chars=len(user or ""),
+                evidence_tools=[r.get("tool") for r in tool_results
+                                if isinstance(r, dict) and r.get("tool")]))
             res.rounds[-1]["v2_prompt_source"] = prompt_source
             try:
                 ctx.v2_prompt_source = prompt_source
@@ -487,7 +570,11 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             # is the entire reason this loop exists. The governor gets the next
             # round to disagree, and on the three-payer question it would have.
             res.answer = answer
-            emit("  model proposes complete — governor reviewing…")
+            step(_announce.model_replied(
+                round=rn, proposes_complete=True, answer_chars=len(answer),
+                elapsed_s=_llm_s,
+                gaps_closed=(_enrichment_from(decision_json) or {}).get("gaps_closed") or (),
+                gaps_open=(_enrichment_from(decision_json) or {}).get("gaps_open") or ()))
             # Record the proposal and loop; the next iteration's select() sees
             # the updated gap state and decides whether to accept it.
             ctx.react_trace_rounds.append({
@@ -528,10 +615,16 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         else:
             pending.append((tool, decision_json.get("inputs") or {}))
 
+        _enr = _enrichment_from(decision_json) or {}
+        step(_announce.model_replied(
+            round=rn, tool=tool, tools=[t for t, _ in pending],
+            answer_chars=len(answer), elapsed_s=_llm_s,
+            gaps_closed=_enr.get("gaps_closed") or (),
+            gaps_open=_enr.get("gaps_open") or ()))
         ctx.react_trace_rounds.append({
             "round": rn, "tool": tool,
             "inputs": decision_json.get("inputs") or {},
-            "enrichment": _enrichment_from(decision_json),
+            "enrichment": _enr,
         })
 
     # 🔴 A REQUESTED TOOL THAT NEVER RAN IS INFORMATION, NOT NOTHING.
@@ -544,7 +637,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     # defect this fleet has spent the week removing in every other form.
     if pending:
         _dropped = ", ".join(t for t, _ in pending)
-        emit(f"  not run — turn ended before these could execute: {_dropped}")
+        step(_announce.dropped(tools=[t for t, _ in pending]))
         logger.info("[v2.loop] cid=%s pending tools dropped at exit: %s",
                     (getattr(ctx, "correlation_id", "") or "")[:8], _dropped)
         ctx.react_trace_rounds.append({
@@ -552,9 +645,25 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             "dropped_pending": [t for t, _ in pending],
         })
 
-    else:
-        # Loop exhausted its rounds without a governor decision to stop. This
-        # is a BUDGET exit and it is recorded as one -- not as a completion.
+    # 🔴 THE FALLBACK LABEL IS A FALLBACK, NOT AN OVERWRITE.
+    #
+    # This was the `else` of `if pending:` and it read
+    # `res.stopped_by = "max_rounds"` unconditionally. The comment says "loop
+    # exhausted its rounds without a governor decision to stop" -- that is a
+    # `while ... else`, which fires when the loop ends WITHOUT break. Written
+    # as an if/else on `pending` it fires on every exit that left no queued
+    # tool, which is every CLEAN exit: model_complete_no_gaps, unusable_rounds,
+    # model_error and every governor branch were all relabelled "max_rounds"
+    # on their way out.
+    #
+    # So the one field that says WHY a turn ended reported a budget exhaustion
+    # for turns that finished early with budget in hand -- and `exit_mode` was
+    # already guarded with `or`, which is what makes the bare assignment above
+    # it read as deliberate. Two lines, one guarded, one not.
+    #
+    # Dropped pending work and running out of rounds are also independent
+    # facts; nesting them made one hide the other.
+    if not res.stopped_by:
         res.stopped_by = "max_rounds"
         res.exit_mode = res.exit_mode or "budget"
 
@@ -570,6 +679,11 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         pass
 
     answer = res.answer or _best_running_answer(ctx) or ""
+
+    step(_announce.exited(
+        stopped_by=res.stopped_by or "unset", exit_mode=res.exit_mode,
+        rounds=len(res.rounds), spent_s=time.monotonic() - t0,
+        budget_s=sh.promise_seconds(ctx, None), answer_chars=len(answer)))
 
     # ── AN EMPTY ANSWER MUST NOT PUBLISH ────────────────────────────────────
     # My own rule, written into the framing hook this morning and NOT written
@@ -644,6 +758,27 @@ def _no_gaps_left(decision_json: dict) -> bool:
     if not isinstance(er, dict):
         return True
     return not [g for g in (er.get("gaps_open") or []) if isinstance(g, str)]
+
+
+def _gap_text(state: P.RoundState, gap_id) -> str:
+    """The targeted gap in the model's own words.
+
+    `decision.because` names the gap by id ("closing Sba95e6"). That is the
+    right thing to log and the wrong thing to show: a reader cannot tell a
+    well-aimed round from a badly-aimed one without the words.
+    """
+    if not gap_id:
+        return ""
+    # The ROOT gap is the question itself. It is excluded from
+    # _open_gap_texts, so resolving it by lookup returns "" and the headline
+    # falls back to "closing G0" — the id, leaked to a reader, on the FIRST
+    # round of every turn.
+    if gap_id == P.ROOT_GAP_ID:
+        return "the question as asked — nothing narrowed yet"
+    for g in state.open_gaps:
+        if g.gap_id == gap_id:
+            return g.text
+    return ""
 
 
 def _open_gap_texts(state: P.RoundState) -> list[str]:

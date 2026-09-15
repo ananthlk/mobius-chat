@@ -18,6 +18,7 @@ posture prompt says what the ROUND is for.
 
 from __future__ import annotations
 
+from app.pipeline.v2 import plan_shape as _plan
 from app.pipeline.v2.posture import Posture
 
 # ── FRAME ───────────────────────────────────────────────────────────────────
@@ -53,6 +54,9 @@ Say, briefly:
 """
 
 # ── EXPLORE ─────────────────────────────────────────────────────────────────
+# The plan fields are NOT written here. They are declared once in
+# plan_shape.py and rendered in — Deep Research asked for one place they
+# could adopt, and a prompt string is not one.
 # deep-research's plan fields, minus `stop_rule`. They were explicit that a
 # stop rule is a property of the TURN here and not of the plan: their executor
 # walks plans to exhaustion inside one round, ours has a governor deciding
@@ -64,31 +68,21 @@ You are closing ONE named gap this round. You are not re-asking the question.
 
 For each tool you name:
 
-  ask                what to send it. THIS IS A QUERY, NOT A QUESTION. Measured
-                     on our own corpus: a question naming the payer built a
-                     324-document pool and reached zero billing codes; the same
-                     question written as retrieval vocabulary built 1,814 and
-                     returned three codes with their rates.
-  holds_this_if      what would have to be TRUE for this tool to cover this
-                     subject. Do not plan a tool because it exists.
-  cheap_test         how to find that out cheaply, or null.
+{per_plan}
 
 If you name more than one tool:
 
-  independent_because  what makes this a DIFFERENT theory rather than a retry.
-                       Apply the test before you write the second one down: if
-                       the first returns nothing, does that tell you anything
-                       about whether the second will work? If it does, they are
-                       ONE plan with two steps — order them. If it does not,
-                       they are independent — name them together and they run
-                       in the same round.
+{across_plans}
 
 And one clause, which the governor reads when deciding whether to buy another
 round after this one:
 
-  would_establish    what this round settles if it works. Not what it might
-                     find — what it would let us stop asking.
-"""
+{per_round}
+""".format(
+    per_plan=_plan.render(_plan.PER_PLAN),
+    across_plans=_plan.render(_plan.ACROSS_PLANS),
+    per_round=_plan.render(_plan.PER_ROUND),
+)
 
 # ── NARROW ──────────────────────────────────────────────────────────────────
 # deep-research cautioned that "not worth buying" rests on knowing what a gap
