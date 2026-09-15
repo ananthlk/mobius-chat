@@ -104,6 +104,35 @@ the Tool Manifest migration; one is a constant that belongs in
 
 ---
 
+## 🔴 FIRST LIVE RUN ON THE GOVERNOR LOOP — 2026-09-15
+
+Four questions in dev, each pinned per-turn with `ab_loop: "v2"`.
+`MOBIUS_V2_OWN_LOOP` stays empty — no cutover; every other dev turn is
+untouched. Full transcript: `docs/v2-loop/first-live-run-2026-09-15.txt`.
+
+**It works.** 4/4 produced an answer, the traces are followable end to end, and
+the postures are visible per round. CARC 22 came back in 3 rounds / 21s of a
+31s promise with the right answer (90 days, portal/fax/mail, required docs).
+
+**Six defects the run exposed. None of them is the loop.**
+
+| # | defect | evidence |
+|---|---|---|
+| 1 | **`quick` MISSES its promise** | Molina, `quick`: `promised 13s · delivered 21.1s · MISSED`. The loop's own clock read 5s of 13s at its last decision, so the overrun is downstream of the loop — integrator + compose. |
+| 2 | **Every answer abstains as ungrounded while reporting sources** | all 4: `abstained: true, rule_id: abstain.thin_evidence, "no supporting sources; nothing in the sources grounds this answer"` — in the SAME payload as `sources=12`, `15`, `15`. Right answers, presented as unsupported. |
+| 3 | **The response reports `rounds=0`** | all 4, while the trace shows 2–3 rounds and the footer says `completed in 0 round(s)`. |
+| 4 | **`v2_exit_mode` / `v2_stopped_by` arrive as `None`** | all 4, though the loop's own exit step carries them (`model_complete_no_gaps`). Producer without a consumer, at the response boundary. |
+| 5 | **A comparison answered one side** | "Which has the longer appeal window — Aetna or Sunshine?" → only Aetna's 90 days. Never compared, and never said it could not. |
+| 6 | **The model names tools without naming a gap** | `to close: not stated by the model — it named a tool without a gap`, repeatedly. The posture prompt asks for the gap; `built by: v1_composition · composition 86` says the posture block is appended to v1's composition rather than driving it. |
+
+Two smaller ones: the system prompt is **76,606 chars** before evidence, and
+`v2.integrator.next_steps` resolves `fallback (missing)` — a prompt absent from
+the DB and silently substituted.
+
+**2, 3 and 4 are one shape**: the loop knows, and the thing that answers the
+caller does not. That is the defect class this fleet has spent the week
+removing, sitting on the seam I own. Mine to fix, next.
+
 ## Open, by seat
 
 ### Tool Manifest

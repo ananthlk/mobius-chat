@@ -1,0 +1,607 @@
+
+========================================================================
+cid=346ed623-39f8-4c2f-9373-150c23e69b51  mode=copilot
+Q: What is the timely filing deadline for Sunshine Health?
+
+· ◌ Thinking…
+· ✓ PHI check — no patient info detected
+· ↺ Personalization not applied (no_profile)
+
+◌ [tools] asking the manifest what to run…
+     from:        tools manifest (toolreg.estimate)
+     for:         What is the timely filing deadline for Sunshine Health?
+· ⊘ appeals_get_playbook · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor']; unknown argument(s) ['query'] — the callee declares ['carc', 'carc_group', 'payor
+· ⊘ payor_fact · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor', 'predicate']. The catalogue signature is 'payor_fact(payor, predicate)' — no reque
+· rag was suppressed — offered tools reach density 1.00 over ['d:claims.timely_filing', 'j:payor.sunshine_health', 'p:submission.submit'] — eve
+· …but the preloaded tools returned no evidence, so retrieving anyway
+· ✓ rag · via Tool Manifest (speculative) · 3443ms · 21 source(s)
+
+✓ [tools] 3 of 12 offered tools running
+     from:        tools manifest (toolreg.estimate)
+     offered:     12 tool(s)
+       • refuse
+       • appeals_get_playbook
+       • payor_fact
+       • appeals_lookup_rules
+       • document_upload_skill
+       • fetch_document
+       • ingest_url
+       • list_thread_document_uploads
+       • recall_evidence
+       • search_uploaded_document
+       • transform_previous_answer
+       • web_scrape
+     running:     3 now
+       • appeals_get_playbook
+       • payor_fact
+       • rag
+     held back:   offered, not run this round
+       • appeals_lookup_rules
+       • fetch_document
+       • list_thread_document_uploads
+· starting v2 (governor loop)…
+
+✓ [governor] round 1: explore — the question as asked — nothing narrowed yet
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing G0 (open 0 rounds, 0 levers spent)
+     branch:      gap_affordable
+     targeting:   the question as asked — nothing narrowed yet
+     clock:       7s of 31s promised
+     rounds left: 3
+     answer so far: none yet
+
+✓ [prompt] round 1: explore prompt (76,610 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    641 chars
+     tools in hand: none
+
+✓ [llm] round 1: model asks for rag
+     from:        llm manager
+     elapsed:     2.7s
+     answer:      none
+     asks next:   rag
+
+✓ [governor] round 2: explore — the question as asked — nothing narrowed yet
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing G0 (open 0 rounds, 0 levers spent)
+     branch:      gap_affordable
+     targeting:   the question as asked — nothing narrowed yet
+     clock:       10s of 31s promised
+     rounds left: 2
+     answer so far: none yet
+
+◌ [tools] round 2: rag
+     from:        v2 loop
+     tool:        rag
+       • query = timely filing deadline for Sunshine Health
+     to close:    not stated by the model — it named a tool without a gap
+· → rag via chat
+· Got it — searching for: timely filing deadline for Sunshine Health
+· Searching our authoritative materials…
+· ◌ corpus search: 43 chunks · 0ms
+· ✓ Found 43 relevant passages across 6 docs · top match 76%
+· Found 15 relevant passages.
+
+✓ [tools] round 2: rag — answered, 15 source(s)
+     from:        v2 loop
+     outcome:     answered
+     evidence:    47131 chars
+     sources:     15
+
+✓ [prompt] round 2: explore prompt (125,292 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    49,323 chars
+     tools in hand: search_corpus
+
+✓ [llm] round 2: model proposes complete
+     from:        llm manager
+     elapsed:     5.1s
+     answer:      656 chars
+     proposes:    complete — the governor still decides
+
+✓ [exit] turn ended after 2 round(s): model_complete_no_gaps
+     from:        v2 loop
+     stopped by:  model_complete_no_gaps
+     mode:        —
+     clock:       18s of 31s
+     answer:      656 chars
+
+✓ [integrator] ⚠ integrator: 1 part(s) unverified — What is the timely filing deadline for S
+     coverage:
+          unobservable   What is the timely filing deadline for Sunshine Health?
+     ⚠ no grounded facts to check the answer against — an empty fact list cannot make a claim unsupported, only unverifiable (see coverage, which reports those parts as unobservable)
+     ran: {'assemble': 'ok', 'critique': 'deterministic (verify_claims) — nothing flagged', 'next_steps': 'ok'} · prompts: {'v2.integrator.next_steps': 'fallback (missing)'}
+· → copilot · 3/3 round(s)
+· Gemini Flash · 1.74s
+· Composing answer…
+· (Integrator: turning reasoning + tool output into your answer card.)
+· ✓ Turn completed in 0 round(s), 24543ms · promised 31s · delivered 24.9s · kept
+
+────────────────────────────────────────────────────────────
+status=completed  wall=29.5s  rounds=0  sources=12
+exit=None  stopped_by=None
+
+ANSWER (2789 chars):
+{"mode": "FACTUAL", "direct_answer": "**Sunshine Health's** timely filing deadlines vary by claim type and provider participation status:**\n*   **Initial claims**: **180 days** from the date of service for participating providers; **365 days** for non-participating providers.\n*   **Reconsiderations/claim disputes**: **90 days** from the explanation-of-payment date for participating providers; **180 days** for non-participating providers.\n*   **Coordination of benefits (COB)**: **90 days** from the primary payer's Explanation of Payment (EOP) date.\n*   **Medicare crossover claims**: The greater of **36 months** from the date of service or **12 months** from Medicare's adjudication date.", "sections": [], "presentation": {"abstained": true, "rule_id": "abstain.thin_evidence", "why": "no supporting sources; a card would imply more certainty than we have", "note": "Shown as text, not as a card \u2014 nothing in the sources grounds this answer."}, "react_draft": "**Sunshine Health's** timely filing deadlines vary by claim type and provider participation status:**\n*   **Initial claims**: **180 days** from the date of service for participating providers; **365 days** for non-particip
+
+========================================================================
+cid=abc164d7-47a0-481b-9017-9de3ab72432d  mode=copilot
+Q: How do I appeal a CARC 22 denial for Sunshine Health?
+
+· ◌ Thinking…
+· ✓ PHI check — no patient info detected
+· ↺ Personalization not applied (no_profile)
+
+◌ [tools] asking the manifest what to run…
+     from:        tools manifest (toolreg.estimate)
+     for:         How do I appeal a CARC 22 denial for Sunshine Health?
+· ✓ rag · via Tool Manifest (speculative) · 3274ms · 14 source(s)
+· ⊘ appeals_get_playbook · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor']; unknown argument(s) ['query'] — the callee declares ['carc', 'carc_group', 'payor
+· ⊘ appeals_lookup_rules · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['carc']; unknown argument(s) ['query'] — the callee declares ['carc', 'inv_signals', 'payor
+
+✓ [tools] 3 of 13 offered tools running
+     from:        tools manifest (toolreg.estimate)
+     offered:     13 tool(s)
+       • refuse
+       • appeals_get_playbook
+       • appeals_lookup_rules
+       • appeals_validate_claim
+       • document_upload_skill
+       • fetch_document
+       • ingest_url
+       • list_thread_document_uploads
+       • recall_evidence
+       • search_uploaded_document
+       • transform_previous_answer
+       • web_scrape
+       • rag
+     running:     3 now
+       • rag
+       • appeals_get_playbook
+       • appeals_lookup_rules
+     held back:   offered, not run this round
+       • appeals_validate_claim
+       • fetch_document
+       • list_thread_document_uploads
+· starting v2 (governor loop)…
+
+✓ [governor] round 1: explore — the question as asked — nothing narrowed yet
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing G0 (open 0 rounds, 0 levers spent)
+     branch:      gap_affordable
+     targeting:   the question as asked — nothing narrowed yet
+     clock:       4s of 31s promised
+     rounds left: 3
+     answer so far: none yet
+
+✓ [prompt] round 1: explore prompt (76,606 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    637 chars
+     tools in hand: none
+
+✓ [llm] round 1: model asks for appeals_lookup_rules
+     from:        llm manager
+     elapsed:     2.1s
+     answer:      none
+     asks next:   appeals_lookup_rules
+
+✓ [governor] round 2: explore — the question as asked — nothing narrowed yet
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing G0 (open 0 rounds, 0 levers spent)
+     branch:      gap_affordable
+     targeting:   the question as asked — nothing narrowed yet
+     clock:       6s of 31s promised
+     rounds left: 2
+     answer so far: none yet
+
+◌ [tools] round 2: appeals_lookup_rules
+     from:        v2 loop
+     tool:        appeals_lookup_rules
+       • carc = 22
+       • payor = Sunshine Health
+     to close:    not stated by the model — it named a tool without a gap
+· → appeals_lookup_rules via tool-manifest
+· ✓ appeals_lookup_rules · via Tool Manifest · 748ms · 0 source(s)
+
+✓ [tools] round 2: appeals_lookup_rules — answered
+     from:        v2 loop
+     outcome:     answered
+     evidence:    4322 chars
+     sources:     0
+
+✓ [prompt] round 2: explore prompt (81,308 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    5,339 chars
+     tools in hand: appeals_lookup_rules
+
+✓ [llm] round 2: model asks for appeals_get_playbook
+     from:        llm manager
+     elapsed:     3.6s
+     answer:      none
+     asks next:   appeals_get_playbook
+     still open:  3
+       • how to submit the appeal
+       • deadlines for appeal
+       • required documents for appeal
+
+✓ [governor] round 3: explore — how to submit the appeal
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing S313343 (open 1 rounds, 1 levers spent)
+     branch:      gap_affordable
+     targeting:   how to submit the appeal
+     clock:       10s of 31s promised
+     rounds left: 1
+     answer so far: written
+     gaps open:   3
+       • how to submit the appeal
+       • deadlines for appeal
+       • required documents for appeal
+
+◌ [tools] round 3: appeals_get_playbook
+     from:        v2 loop
+     tool:        appeals_get_playbook
+       • payor = Sunshine Health
+       • carc = 22
+     to close:    how to submit the appeal
+· → appeals_get_playbook via tool-manifest
+· ✓ appeals_get_playbook · via Tool Manifest · 135ms · 0 source(s)
+
+✓ [tools] round 3: appeals_get_playbook — answered
+     from:        v2 loop
+     outcome:     answered
+     evidence:    2696 chars
+     sources:     0
+
+✓ [prompt] round 3: explore prompt (84,107 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    8,138 chars
+     tools in hand: appeals_lookup_rules, appeals_get_playbook
+
+✓ [llm] round 3: model proposes complete
+     from:        llm manager
+     elapsed:     4.8s
+     answer:      807 chars
+     proposes:    complete — the governor still decides
+
+✓ [exit] turn ended after 3 round(s): model_complete_no_gaps
+     from:        v2 loop
+     stopped by:  model_complete_no_gaps
+     mode:        —
+     clock:       15s of 31s
+     answer:      807 chars
+
+✓ [integrator] ⚠ integrator: 3 part(s) unverified — how to submit the appeal; deadlines for appeal
+     coverage:
+          unobservable   how to submit the appeal
+          unobservable   deadlines for appeal
+          unobservable   required documents for appeal
+     ⚠ no grounded facts to check the answer against — an empty fact list cannot make a claim unsupported, only unverifiable (see coverage, which reports those parts as unobservable)
+     ran: {'assemble': 'ok', 'critique': 'deterministic (verify_claims) — nothing flagged', 'next_steps': 'ok'} · prompts: {'v2.integrator.next_steps': 'fallback (missing)'}
+· → copilot · 5/5 round(s)
+· Gemini Flash · 1.05s
+· Composing answer…
+· (Integrator: turning reasoning + tool output into your answer card.)
+· ✓ Turn completed in 0 round(s), 20670ms · promised 31s · delivered 21.0s · kept
+
+────────────────────────────────────────────────────────────
+status=completed  wall=26.3s  rounds=0  sources=0
+exit=None  stopped_by=None
+
+ANSWER (4091 chars):
+{"mode": "FACTUAL", "direct_answer": "**To appeal a CARC 22 denial from Sunshine Health, you have **90 days** to submit your appeal.**\n*   Appeals can be submitted via the **Sunshine Health Secure Provider Portal**, fax to **1-833-504-0580**, or mail to **Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823**.\n*   Required documents include a **Claim Adjustment Request Form**, a written statement outlining your disagreement, and the **Explanation of Payment (EOP)/EOB**.\n*   Potential appeal arguments depend on the denial reason: either the member had no other credible health coverage, the TPL record is incorrect/stale, or the member did not have primary health insurance in addition to Sunshine Health.\n\u2192 Next step: Gather the required documents and prepare your appeal argument based on the specific reason for the CARC 22 denial.", "sections": [], "suggested_actions": [{"type": "external_link", "label": "Open Appeals Agent", "url": "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app", "icon": "\u2696\ufe0f"}], "presentation": {"abstained": true, "rule_id": "abstain.thin_evidence", "why": "no supporting sources; a card would imply more certainty than we have",
+
+========================================================================
+cid=6bb14741-0d46-4432-bcec-a15367b95dfc  mode=copilot
+Q: Which has the longer claims appeal window in Florida Medicaid — Aetna Better Health or Sunshine Health?
+
+· ◌ Thinking…
+· ✓ PHI check — no patient info detected
+· ↺ Personalization not applied (no_profile)
+
+◌ [tools] asking the manifest what to run…
+     from:        tools manifest (toolreg.estimate)
+     for:         Which has the longer claims appeal window in Florida Medicaid — Aetna Better He…
+· ✓ rag · via Tool Manifest (speculative) · 6301ms · 9 source(s)
+· ⊘ appeals_get_playbook · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor']; unknown argument(s) ['query'] — the callee declares ['carc', 'carc_group', 'payor
+· ⊘ payor_fact · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor', 'predicate']. The catalogue signature is 'payor_fact(payor, predicate)' — no reque
+
+✓ [tools] 3 of 13 offered tools running
+     from:        tools manifest (toolreg.estimate)
+     offered:     13 tool(s)
+       • refuse
+       • appeals_get_playbook
+       • payor_fact
+       • appeals_assemble_letter
+       • document_upload_skill
+       • fetch_document
+       • ingest_url
+       • list_thread_document_uploads
+       • recall_evidence
+       • search_uploaded_document
+       • transform_previous_answer
+       • web_scrape
+       • rag
+     running:     3 now
+       • rag
+       • appeals_get_playbook
+       • payor_fact
+     held back:   offered, not run this round
+       • appeals_assemble_letter
+       • fetch_document
+       • list_thread_document_uploads
+· starting v2 (governor loop)…
+
+✓ [governor] round 1: explore — the question as asked — nothing narrowed yet
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing G0 (open 0 rounds, 0 levers spent)
+     branch:      gap_affordable
+     targeting:   the question as asked — nothing narrowed yet
+     clock:       7s of 31s promised
+     rounds left: 3
+     answer so far: none yet
+
+✓ [prompt] round 1: explore prompt (76,727 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    758 chars
+     tools in hand: none
+
+✓ [llm] round 1: model asks for rag
+     from:        llm manager
+     elapsed:     1.9s
+     answer:      none
+     asks next:   rag
+     still open:  2
+       • Aetna Better Health claims appeal window
+       • Sunshine Health claims appeal window
+
+✓ [governor] round 2: explore — Aetna Better Health claims appeal window
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     closing Sd470e4 (open 1 rounds, 1 levers spent)
+     branch:      gap_affordable
+     targeting:   Aetna Better Health claims appeal window
+     clock:       9s of 31s promised
+     rounds left: 2
+     answer so far: none yet
+     gaps open:   2
+       • Aetna Better Health claims appeal window
+       • Sunshine Health claims appeal window
+
+◌ [tools] round 2: rag
+     from:        v2 loop
+     tool:        rag
+       • query = claims appeal window for Aetna Better Health Florida Medicaid
+     to close:    Aetna Better Health claims appeal window
+· → rag via chat
+· Got it — searching for: claims appeal window for Aetna Better Health Florida Medicaid
+· Searching our authoritative materials…
+· ◌ corpus search: 32 chunks · 0ms
+· ✓ Found 32 relevant passages across 3 docs · top match 77%
+· Found 15 relevant passages.
+
+✓ [tools] round 2: rag — answered, 15 source(s)
+     from:        v2 loop
+     outcome:     answered
+     evidence:    71472 chars
+     sources:     15
+
+✓ [prompt] round 2: explore prompt (149,750 chars)
+     from:        v2 prompt build
+     posture block: explore
+     built by:    v1_composition · composition 86 · posture block applied
+     system:      75,969 chars
+     evidence:    73,781 chars
+     tools in hand: search_corpus
+
+✓ [llm] round 2: model asks for rag
+     from:        llm manager
+     elapsed:     3.7s
+     answer:      none
+     asks next:   rag
+     still open:  1
+       • Sunshine Health claims appeal window
+
+✓ [governor] round 3: explore — Sunshine Health claims appeal window
+     from:        v2 governor (posture.select)
+     posture:     explore
+     because:     OVERRUN: closing S3632aa — converging with 1 gap(s) open and evidence returning; spending 10.4s from 10.4s of unreserved promise time
+     branch:      overrun_into_band
+     targeting:   Sunshine Health claims appeal window
+     clock:       20s of 31s promised
+     rounds left: 1
+     answer so far: written
+     gaps open:   1
+       • Sunshine Health claims appeal window
+     stopping:    OVERRUN: closing S3632aa — converging with 1 gap(s) open and evidence returning; spending 10.4s from 10.4s of unreserved promise time [posture explore wanted a…
+
+✓ [tools] 1 requested tool(s) never ran — the turn ended first
+     from:        v2 loop
+     why:         the governor did not fund another round; a tool already requested does not become affordable
+       • rag
+
+✓ [exit] turn ended after 3 round(s): overrun_into_band
+     from:        v2 loop
+     stopped by:  overrun_into_band
+     mode:        budget
+     clock:       20s of 31s
+     answer:      185 chars
+
+✓ [integrator] ⚠ integrator: 2 part(s) unverified — Aetna Better Health claims appeal window; Sunshine Health claims appeal window
+     coverage:
+          unobservable   Aetna Better Health claims appeal window
+          unobservable   Sunshine Health claims appeal window
+     → next: Find the claims appeal window for Sunshine Health in Florida Medicaid.
+     ⚠ no grounded facts to check the answer against — an empty fact list cannot make a claim unsupported, only unverifiable (see coverage, which reports those parts as unobservable)
+     ran: {'assemble': 'ok', 'critique': 'deterministic (verify_claims) — nothing flagged', 'next_steps': 'ok'} · prompts: {'v2.integrator.next_steps': 'fallback (missing)'}
+· → copilot · 4/4 round(s)
+· Gemini Flash · 1.99s
+· Composing answer…
+· (Integrator: turning reasoning + tool output into your answer card.)
+· ✓ Turn completed in 0 round(s), 24134ms · promised 31s · delivered 24.6s · kept
+
+────────────────────────────────────────────────────────────
+status=completed  wall=26.4s  rounds=0  sources=15
+exit=None  stopped_by=None
+
+ANSWER (1689 chars):
+{"mode": "FACTUAL", "direct_answer": "For **Aetna Better Health**, providers have **90 calendar days** from the time of a claim denial to file a provider claims dispute or submit additional information or documentation [7].", "sections": [], "suggested_actions": [{"type": "external_link", "label": "Open Appeals Agent", "url": "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app", "icon": "\u2696\ufe0f"}], "presentation": {"abstained": true, "rule_id": "abstain.thin_evidence", "why": "no supporting sources; a card would imply more certainty than we have", "note": "Shown as text, not as a card \u2014 nothing in the sources grounds this answer."}, "react_draft": "For **Aetna Better Health**, providers have **90 calendar days** from the time of a claim denial to file a provider claims dispute or submit additional information or documentation [7].", "reasoning_trace": [{"round": 1, "tool": "rag", "learned": "The user is asking to compare the claims appeal window for two specific payers. I need to use the `rag` tool to find the appeal window for each payer individually.", "gaps_open": ["Aetna Better Health claims appeal window", "Sunshine Health claims appeal window"]}, {"round": 2,
+
+========================================================================
+cid=36e721e4-954b-47c9-8e89-37be236f8131  mode=quick
+Q: What is Molina Healthcare's timely filing deadline for corrected claims?
+
+· ◌ Thinking…
+· ✓ PHI check — no patient info detected
+· ↺ Personalization not applied (no_profile)
+
+◌ [tools] asking the manifest what to run…
+     from:        tools manifest (toolreg.estimate)
+     for:         What is Molina Healthcare's timely filing deadline for corrected claims?
+· ✓ rag · via Tool Manifest (speculative) · 2993ms · 7 source(s)
+· ⊘ appeals_lookup_rules · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['carc']; unknown argument(s) ['query'] — the callee declares ['carc', 'inv_signals', 'payor
+· ⊘ appeals_get_playbook · Tool Manifest could not run it (could_not_run) — input rejected before calling: missing required ['payor']; unknown argument(s) ['query'] — the callee declares ['carc', 'carc_group', 'payor
+
+✓ [tools] 3 of 13 offered tools running
+     from:        tools manifest (toolreg.estimate)
+     offered:     13 tool(s)
+       • refuse
+       • appeals_lookup_rules
+       • appeals_get_playbook
+       • appeals_find_carc
+       • document_upload_skill
+       • fetch_document
+       • ingest_url
+       • list_thread_document_uploads
+       • recall_evidence
+       • search_uploaded_document
+       • transform_previous_answer
+       • web_scrape
+       • rag
+     running:     3 now
+       • rag
+       • appeals_lookup_rules
+       • appeals_get_playbook
+     held back:   offered, not run this round
+       • appeals_find_carc
+       • fetch_document
+       • list_thread_document_uploads
+· starting v2 (governor loop)…
+
+✓ [governor] round 1: narrow — gaps open but none worth buying: scope and name what is left
+     from:        v2 governor (posture.select)
+     posture:     narrow
+     because:     gaps open but none worth buying: scope and name what is left
+     branch:      nothing_worth_buying
+     clock:       4s of 13s promised
+     rounds left: 1
+     answer so far: none yet
+     stopping:    gaps open but none worth buying: scope and name what is left
+· governor: narrow — gaps open but none worth buying: scope and name what is left (one round to write it)
+
+✓ [prompt] round 1: communicate prompt (75,784 chars)
+     from:        v2 prompt build
+     posture block: communicate
+     built by:    v1_composition · composition 88 · posture block applied
+     system:      75,107 chars
+     evidence:    677 chars
+     tools in hand: none
+
+✓ [llm] round 1: model asks for rag
+     from:        llm manager
+     elapsed:     1.8s
+     answer:      none
+     asks next:   rag
+
+✓ [governor] round 2: narrow — gaps open but none worth buying: scope and name what is left
+     from:        v2 governor (posture.select)
+     posture:     narrow
+     because:     gaps open but none worth buying: scope and name what is left
+     branch:      nothing_worth_buying
+     clock:       5s of 13s promised
+     rounds left: 0
+     answer so far: none yet
+     stopping:    gaps open but none worth buying: scope and name what is left
+· governor: narrow — gaps open but none worth buying: scope and name what is left (one round to write it)
+
+◌ [tools] round 2: rag
+     from:        v2 loop
+     tool:        rag
+       • query = Molina Healthcare timely filing deadline for corrected claims
+     to close:    not stated by the model — it named a tool without a gap
+· → rag via chat
+· Got it — searching for: Molina Healthcare timely filing deadline for corrected claims
+· Searching our authoritative materials…
+· ◌ corpus search: 47 chunks · 0ms
+· ✓ Found 47 relevant passages across 7 docs · top match 80%
+· Found 15 relevant passages.
+
+✓ [tools] round 2: rag — answered, 15 source(s)
+     from:        v2 loop
+     outcome:     answered
+     evidence:    89691 chars
+     sources:     15
+
+✓ [prompt] round 2: communicate prompt (169,414 chars)
+     from:        v2 prompt build
+     posture block: communicate
+     built by:    v1_composition · composition 88 · posture block applied
+     system:      75,107 chars
+     evidence:    94,307 chars
+     tools in hand: search_corpus
+
+✓ [llm] round 2: model proposes complete
+     from:        llm manager
+     elapsed:     3.2s
+     answer:      565 chars
+     proposes:    complete — the governor still decides
+
+✓ [exit] turn ended after 2 round(s): model_complete_no_gaps
+     from:        v2 loop
+     stopped by:  model_complete_no_gaps
+     mode:        —
+     clock:       14s of 13s
+     answer:      565 chars
+
+✓ [integrator] ⚠ integrator: 1 part(s) unverified — What is Molina Healthcare's timely filin
+     coverage:
+          unobservable   What is Molina Healthcare's timely filing deadline for corre
+     ⚠ no grounded facts to check the answer against — an empty fact list cannot make a claim unsupported, only unverifiable (see coverage, which reports those parts as unobservable)
+     ran: {'assemble': 'ok', 'critique': 'deterministic (verify_claims) — nothing flagged', 'next_steps': 'ok'} · prompts: {'v2.integrator.next_steps': 'fallback (missing)'}
+· → quick · 3/3 round(s)
+· Gemini Flash · 1.4s
+· Composing answer…
+· (Integrator: turning reasoning + tool output into your answer card.)
+· ✓ Turn completed in 0 round(s), 20614ms · promised 13s · delivered 21.1s · MISSED
+
+────────────────────────────────────────────────────────────
+status=completed  wall=26.7s  rounds=0  sources=15
+exit=None  stopped_by=None
+
+ANSWER (2174 chars):
+{"mode": "FACTUAL", "direct_answer": "**Molina Healthcare's timely filing deadline for corrected claims is six months from the Date of Service or most recent adjudicated date of the Claim.**\n*   Corrected claims can be submitted directly to Molina via the **Availity Essentials portal** or through your regular **EDI clearinghouse**.\n*   The original claim number must be inserted in field 64 of the CMS-1450 (UB-04) or field 22 of the CMS-1500 for paper claims, or the applicable 837 transaction loop for electronic submissions.\n*   The appropriate frequency code/resubmission code must also be billed.", "sections": [], "presentation": {"abstained": true, "rule_id": "abstain.thin_evidence", "why": "no supporting sources; a card would imply more certainty than we have", "note": "Shown as text, not as a card \u2014 nothing in the sources grounds this answer."}, "react_draft": "**Molina Healthcare's timely filing deadline for corrected claims is six months from the Date of Service or most recent adjudicated date of the Claim.**\n*   Corrected claims can be submitted directly to Molina via the **Availity Essentials portal** or through your regular **EDI clearinghouse**.\n*   The original 
+
+4/4 produced an answer
