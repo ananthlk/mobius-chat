@@ -109,6 +109,13 @@ _cold_import_t0 = time.perf_counter()
 # Kept as a dict so /diag/prewarm can serve it, and STILL logged, because the
 # log is the record and this is the window.
 _PREWARM_REPORT: dict = {"state": "not_run"}
+
+# MCP auto-register's result, for the same reason as the prewarm report above:
+# it is the fact that decides whether v1 has any tools, and it lived only in a
+# log. "not_run" is distinct from "listed_empty" is distinct from "failed" --
+# an API-only process never runs it, a server can answer with nothing, and a
+# connection can fail. Those three were one silence until 2026-09-15.
+_MCP_REGISTER_REPORT: dict = {"state": "not_run", "tools": 0, "names": [], "error": None}
 try:
     import vertexai  # noqa: F401
     from vertexai.generative_models import GenerativeModel  # noqa: F401
@@ -633,15 +640,32 @@ def maybe_start_worker():
         try:
             from app.skills.mcp_adapter import register_mcp_skills
             names = register_mcp_skills()
+            # 🔴 RECORDED, NOT ONLY LOGGED. Ananth: "put emits so that I can
+            # track". MCP listing decides whether v1 has tools at all, and its
+            # only record was logger.info — unreadable to this seat (gcloud
+            # logging is PERMISSION_DENIED) and invisible to anyone watching a
+            # turn. On 2026-09-15 it returned zero tools for hours and the only
+            # sign was a tool later reporting it had no route.
+            global _MCP_REGISTER_REPORT
             if names:
+                _MCP_REGISTER_REPORT = {"state": "listed", "tools": len(names),
+                                        "names": sorted(names)[:40], "error": None}
                 logger.info("MCP auto-register: %d skill(s): %s", len(names), ", ".join(names))
             else:
+                # EMPTY IS NOT AN ERROR AND NOT A SUCCESS. A server that
+                # answered with no tools and a server that never answered look
+                # identical here, which is the distinction this fleet has spent
+                # the week separating everywhere else.
+                _MCP_REGISTER_REPORT = {"state": "listed_empty", "tools": 0,
+                                        "names": [], "error": None}
                 logger.info(
                     "MCP auto-register: no tools discovered "
                     "(MCP server down or returned empty tool list). "
                     "Chat continues with builtin skills only."
                 )
         except Exception as e:
+            _MCP_REGISTER_REPORT = {"state": "failed", "tools": 0, "names": [],
+                                    "error": f"{type(e).__name__}: {str(e)[:600]}"}
             logger.warning("MCP auto-register failed: %s — continuing with builtins", e, exc_info=True)
 
 
@@ -3134,6 +3158,19 @@ from app.api._common import task_manager_base_url as _task_manager_base
 # services all gone, the aggregator has no caller.
 
 # Phase 1f.1: /chat/tasks/* moved to app.api.tasks. Router included below.
+
+
+@app.get("/diag/mcp")
+def diag_mcp():
+    """What MCP auto-register actually found, for people without log access.
+
+    Reads a dict already in memory. `state` is one of:
+      not_run       this process never ran auto-register (API-only worker)
+      listed        tools were discovered — `tools` is how many
+      listed_empty  a server ANSWERED and offered nothing
+      failed        the listing raised — `error` carries type and message
+    """
+    return _MCP_REGISTER_REPORT
 
 
 @app.get("/diag/prewarm")

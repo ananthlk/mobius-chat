@@ -5774,12 +5774,22 @@ def _execute_tool_with_retry(
             # it. Confirmed live 2026-09-15: appeals_find_carc came back "no
             # executable route declared" and there was no way to turn the new
             # path off short of a redeploy.
+            # 🔴 WHICH PATH SERVED THIS TOOL, SAID OUT LOUD. Ananth: "when we
+            # flip to tools_manifest i want that to go through tools_manifest..
+            # put emits so that i can track". Until now the two paths were
+            # indistinguishable from a trace: the same tool, the same result
+            # shape, and nothing saying whether chat or Tool Manifest ran it.
+            # That is precisely what made today's outage take three hours --
+            # a tool failing through one path while the other still worked,
+            # with no line anywhere naming which had been used.
             if (tool in _TOOLREG_OWNED
                     and os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
                     not in ("0", "false", "no")):
+                emit_fn(f"  → {tool} via tool-manifest")
                 out = _execute_via_toolreg(tool, inputs, ctx, emit_fn,
                                            skip_retry=skip_retry)
             else:
+                emit_fn(f"  → {tool} via chat")
                 out = _execute_tool(tool, inputs, ctx, tool_emitter,
                                     open_gaps=open_gaps)
         except Exception as exc:
