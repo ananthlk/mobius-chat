@@ -46,12 +46,35 @@ PER_PLAN: tuple[Field, ...] = (
         "cheap_test", False,
         "how to find that out cheaply, or null.",
     ),
+    # deep-research, 2026-09-15: the second test, which did not make it across
+    # when I took the first.
+    Field(
+        "evidence_kind", True,
+        "what KIND of evidence this produces, in your own words. Not the tool\n"
+        "name — what sort of thing comes back.",
+    ),
 )
 
 #: Required only when the round names more than one tool. This is the
 #: independence test, and it is the load-bearing field: without it a "plan" is
 #: a retry wearing a plan's clothes, and a round spends twice for one theory.
 ACROSS_PLANS: tuple[Field, ...] = (
+    # TWO TESTS, NOT ONE. Independence asks "does A's failure predict B's".
+    # Evidence-kind asks "are these the same MOVE wearing different tool
+    # names" — three corpus searches with different keywords pass the
+    # independence test if you squint, and are one theory. On deep-research's
+    # request 879 that is exactly what happened: nineteen retrieval calls, all
+    # the same move, and the document the question NAMED was never opened.
+    #
+    # The test does not need their six-kind taxonomy, which they are explicit
+    # is unvalidated. It needs the model to name the kind in its own words and
+    # notice when two match.
+    Field(
+        "same_kind_check", True,
+        "look at the evidence_kind you wrote for each. If they are the same\n"
+        "kind, you have written ONE plan several times — say so and replace\n"
+        "all but one with a plan that produces a DIFFERENT kind of evidence.",
+    ),
     Field(
         "independent_because", True,
         "what makes this a DIFFERENT theory rather than a retry. Apply the\n"

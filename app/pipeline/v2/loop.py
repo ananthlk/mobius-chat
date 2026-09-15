@@ -289,26 +289,50 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             caller_mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
             correlation_id=getattr(ctx, "correlation_id", None),
         )
-        # 🔴 RAG IS A FLOOR, NOT A FALLBACK.
+        # 🔴 RAG IS A FLOOR — BUT AN EVIDENCE FLOOR, NOT A CONSTANT.
         #
-        # This read `[...] or ["rag"]`, which adds rag only when estimate
-        # returns NOTHING. Ananth's ruling is "no we will always do rag" —
-        # made after rag ranked 12th of 13 on a question only rag could
-        # answer, so ranking is exactly the thing it must not be subject to.
+        # THE ORIGINAL DEFECT. This read `[...] or ["rag"]`, which adds rag
+        # only when estimate returns NOTHING. Ananth: "no we will always do
+        # rag", ruled after rag ranked 12th of 13 on a question only rag could
+        # answer.
         #
-        # Measured on the canonical question ("timely filing deadline for
-        # Sunshine Health", 2026-09-15): estimate returned TWELVE tools and
-        # not one of them retrieves from the corpus — no rag, no
-        # search_corpus. The list was non-empty, so the floor never fired, and
-        # preload ran appeals_get_playbook and payor_fact, BOTH of which were
-        # rejected for missing required arguments. The turn spent 8.3s of a
-        # 31s promise and reached round 1 with zero evidence.
+        # MY FIRST FIX WAS ALSO WRONG, and Tool Manifest was right to object:
+        # inserting rag unconditionally is "the governor overruling Tool
+        # Manifest's own budget arithmetic with nothing but a constant".
+        # estimate does not merely fail to rank rag — it SUPPRESSES it, with a
+        # stated reason, and a suppression with a reason deserves an argument
+        # rather than a constant.
         #
-        # A non-empty list of tools that cannot retrieve is precisely the case
-        # the ruling exists for, and "or" could not see it.
+        # WHAT IS ACTUALLY MEASURED (canonical question, 2026-09-15):
+        #
+        #   rag_needed = False
+        #   rag_reason = "offered tools reach density 1.00 over [...] — every
+        #                 code the question raised is covered, so retrieval
+        #                 would add nothing"
+        #
+        # The two tools carrying that coverage are marked `inputs_status =
+        # fillable` WITH inputs. Both are then rejected at execution:
+        # appeals_get_playbook for `missing required ['payor']; unknown
+        # argument(s) ['query']`, payor_fact for `missing required ['payor',
+        # 'predicate']`. estimate filled arguments against a different
+        # signature than the callee declares, so the density is over tools
+        # that cannot run. "Retrieval would add nothing" was false: with rag
+        # forced, rag returned 21 sources.
+        #
+        # SO THE FLOOR IS ON THE OUTCOME, NOT THE PLAN. We honour the
+        # suppression — if the chosen tools DO return evidence, rag stays
+        # suppressed and their arithmetic stands. We only retrieve when the
+        # preload produced none. A suppression justified by coverage is then
+        # checked against whether that coverage materialised, which is the one
+        # thing a caller can see and the ranker cannot.
+        #
+        # This is deliberately NOT "could not check" treated as "checked
+        # false": we run the plan first and read the result.
         _offer = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
-        if "rag" not in _offer:
-            _offer.insert(0, "rag")
+        _rag_suppressed = ("rag" not in _offer)
+        if not _offer:
+            _offer = ["rag"]
+            _rag_suppressed = False
         if _offer:
             _plan = _v2pre.plan(_offer)
             _preloaded = _v2pre.execute(
@@ -317,6 +341,21 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                     _t, _i, ctx, speculative=True, emitter=emitter),
                 _q,
             )
+            if _rag_suppressed and not _has_evidence(_preloaded):
+                # Their reason was falsified by their own plan's results.
+                # Say so out loud — a floor that fires silently is a governor
+                # overruling a peer without telling anyone.
+                emit(f"  rag was suppressed — "
+                     f"{(getattr(_off, 'rag_reason', '') or '')[:120]}")
+                emit("  …but the preloaded tools returned no evidence, "
+                     "so retrieving anyway")
+                _rag = _v2pre.execute(
+                    _v2pre.plan(["rag"]),
+                    lambda _t, _i: _preload_runner_toolreg(
+                        _t, _i, ctx, speculative=True, emitter=emitter),
+                    _q,
+                )
+                _preloaded = list(_preloaded or []) + list(_rag or [])
             # The literal 1 is deliberate and the reason is in react_loop's
             # copy: preload runs BEFORE the round loop, so no round variable
             # exists yet. Writing `rn` there shipped a turn with no evidence
@@ -758,6 +797,24 @@ def _no_gaps_left(decision_json: dict) -> bool:
     if not isinstance(er, dict):
         return True
     return not [g for g in (er.get("gaps_open") or []) if isinstance(g, str)]
+
+
+def _has_evidence(results) -> bool:
+    """Did the preload actually produce anything to reason over?
+
+    Not "did it run" and not "did it succeed" — a tool can succeed and return
+    an empty body, and a tool rejected before calling succeeds at nothing
+    while raising no error. The only question the floor cares about is whether
+    there is text or a source in hand.
+    """
+    for r in (results or []):
+        if not isinstance(r, dict):
+            continue
+        if r.get("sources"):
+            return True
+        if str(r.get("result") or "").strip():
+            return True
+    return False
 
 
 def _gap_text(state: P.RoundState, gap_id) -> str:

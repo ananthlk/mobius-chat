@@ -28,6 +28,17 @@ from app.pipeline.v2.posture import Posture
 #
 #   tools_i_passed_over      turns "it never occurred to me" and "I considered
 #                            and rejected it" into different VISIBLE states.
+# CITATION BURDEN (deep-research, 2026-09-15). `already_answered` carried no
+# citation requirement while NARROW's `answered` did — the same claim under two
+# burdens, and the WEAKER one sat on the posture that runs FIRST and can end
+# the turn. The cheapest path to a finished turn was the one path that did not
+# have to cite anything. Their verifier, which checks every quote
+# character-for-character, caught in two days: an ellipsis-stitched quote
+# presented as verbatim, a quote assembled from two sections of one rule, and
+# an answer built from a sentence about a DIFFERENT service. All three fluent,
+# all three wrong, none catchable by a field that reports what evidence
+# "settles" without naming where.
+#
 #   what_i_expect_to_be_hard written BEFORE planning, so it is a falsifiable
 #                            prediction rather than a rationalisation. On their
 #                            request 879 it predicted which fields would fail,
@@ -42,9 +53,11 @@ Say, briefly:
   what_kind_of_question   what is being asked, in your own words — and WHAT
                           KIND OF DOCUMENT answers questions like it. The kind
                           of document, not the topic: it shapes everything after.
-  already_answered        what the evidence in hand already settles. If it
-                          settles the whole question, say so plainly. Do not
-                          manufacture a gap to justify another round.
+  already_answered        what the evidence in hand already settles — WITH THE
+                          DOCUMENT AND SENTENCE FOR EACH. If it settles the
+                          whole question, say so plainly. Do not manufacture a
+                          gap to justify another round. If a settlement cannot
+                          be quoted, it has not settled anything.
   still_open              what is genuinely missing, named specifically enough
                           that someone could go and look for it.
   tools_i_passed_over     tools you considered and did not choose, one clause

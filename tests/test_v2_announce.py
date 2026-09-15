@@ -146,24 +146,29 @@ def test_prompt_provenance_says_whether_the_db_answered():
 
 # ── the rag floor ───────────────────────────────────────────────────────────
 
-def test_rag_is_added_to_the_offer_even_when_the_manifest_returns_tools():
-    """Ananth: "no we will always do rag" — a ruling made after rag ranked
-    12th of 13 on a question only rag could answer.
+def test_the_rag_floor_is_on_the_OUTCOME_not_a_constant():
+    """Ananth: "no we will always do rag". Tool Manifest: a constant must not
+    overrule estimate's own arithmetic, which SUPPRESSES rag with a stated
+    reason rather than merely failing to rank it.
 
-    THE DEFECT: the floor read `[...] or ["rag"]`, which fires only on an
-    EMPTY list. Measured 2026-09-15 on "timely filing deadline for Sunshine
-    Health", estimate returned TWELVE tools and none of them retrieved from
-    the corpus. Non-empty, so the floor never fired, and the turn reached
-    round 1 with no evidence at all.
+    Both are right, and the resolution is that the floor reads RESULTS:
 
-    Asserts the PROPERTY — rag is in the offer regardless of what came back —
-    not the fingerprint of that one twelve-tool list.
+      measured 2026-09-15, canonical question —
+        rag_needed = False, because "offered tools reach density 1.00 ...
+        retrieval would add nothing"
+        the two tools carrying that density: inputs_status = fillable
+        the same two at execution: rejected, missing required ['payor']
+        so the density was over tools that cannot run, and rag returned
+        21 sources once it was allowed to.
+
+    The gate: the suppression must be honoured until the plan has RUN and
+    produced nothing. An unconditional insert is a constant overruling a peer;
+    a pre-emptive skip is could-not-check treated as checked-false.
     """
     tree = ast.parse(_src())
     fn = next(f for f in ast.walk(tree)
               if isinstance(f, ast.FunctionDef) and f.name == "run_react_v2")
 
-    # the `or ["rag"]` shape must be gone: it cannot express "always"
     for n in ast.walk(fn):
         if isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or):
             for v in n.values:
@@ -171,14 +176,33 @@ def test_rag_is_added_to_the_offer_even_when_the_manifest_returns_tools():
                         and isinstance(v.elts[0], ast.Constant)
                         and v.elts[0].value == "rag"):
                     raise AssertionError(
-                        f"line {n.lineno}: `or [\"rag\"]` makes rag a FALLBACK "
-                        "for an empty offer, not a floor — a non-empty list of "
-                        "tools that cannot retrieve slips straight past it")
+                        f'line {n.lineno}: `or ["rag"]` fires only on an EMPTY '
+                        "offer — a non-empty list of tools that cannot "
+                        "retrieve slips straight past it")
 
-    # and an unconditional membership guard must be present
-    guards = [n for n in ast.walk(fn)
-              if isinstance(n, ast.Compare)
-              and any(isinstance(o, ast.NotIn) for o in n.ops)
-              and isinstance(n.left, ast.Constant) and n.left.value == "rag"]
-    assert guards, ('no `"rag" not in _offer` guard — nothing makes rag a '
-                    "floor")
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_has_evidence"]
+    assert calls, (
+        "nothing calls _has_evidence — the rag floor is not reading whether "
+        "the preload actually produced anything, so it is either a constant "
+        "overruling Tool Manifest or absent")
+
+    guarded = any(isinstance(n, ast.If) and any(c in ast.walk(n.test)
+                                                for c in calls)
+                  for n in ast.walk(fn))
+    assert guarded, "_has_evidence is called but not used as the condition"
+
+
+def test_has_evidence_counts_sources_or_text_and_nothing_else():
+    """A tool can SUCCEED and return an empty body; a tool rejected before
+    calling raises no error at all. "Did it run" and "did it succeed" both
+    read those as fine, which is how a turn reaches round 1 with nothing."""
+    assert not L._has_evidence(None)
+    assert not L._has_evidence([])
+    assert not L._has_evidence([{"tool": "x", "success": True, "result": ""}])
+    assert not L._has_evidence([{"tool": "x", "success": True, "result": "  ",
+                                 "sources": []}])
+    assert L._has_evidence([{"tool": "x", "success": True, "result": "text"}])
+    assert L._has_evidence([{"tool": "x", "success": False,
+                             "sources": [{"document": "d"}]}])
