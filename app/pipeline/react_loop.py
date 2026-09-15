@@ -4151,9 +4151,43 @@ def _execute_tool(
             or "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app"
         ).rstrip("/")
 
+        # 🔴 "NOT IN THE LIBRARY" IS AN ANSWER, NOT A FAILURE.
+        #
+        # The appeals service returns 404 with {"detail": "CARC 24 not in
+        # library"} for a code it does not cover -- it holds 18 CARCs and 24 is
+        # not among them. raise_for_status turned that into an exception, the
+        # handler turned it into "[appeals_lookup_rules] Error: ...", and react
+        # reported a broken tool. Measured live 2026-09-15: the user's answer to
+        # "How do I appeal a CARC 24 denial?" was
+        #     "I attempted to look up appeal rules ... but the tools failed to
+        #      execute correctly."
+        # A confession about our internals, when the truth was a fact about the
+        # library that the person could act on.
+        #
+        # This is the empty-versus-could_not_run distinction that Tool Manifest
+        # built into the executor, arriving in chat's own branch: a 404 that
+        # NAMES the gap is the library answering; anything else is us failing.
+        class _AppealsNotInLibrary(Exception):
+            """The service answered, and the answer is that it does not cover
+            this code. Carries the service's own words rather than ours."""
+            def __init__(self, detail: str):
+                self.detail = detail
+                super().__init__(detail)
+
         def _appeals_get(path: str, **params):
             with httpx.Client(timeout=30.0) as _c:
                 _r = _c.get(f"{_appeals_base}{path}", params={k: v for k, v in params.items() if v is not None})
+                if _r.status_code == 404:
+                    _detail = ""
+                    try:
+                        _detail = str((_r.json() or {}).get("detail") or "")
+                    except Exception:
+                        _detail = ""
+                    # Only a NAMED gap. A bare 404 ("Not Found") is a wrong URL
+                    # -- our defect -- and must keep failing loudly rather than
+                    # being reported to the user as an absence in the library.
+                    if "not in library" in _detail.lower():
+                        raise _AppealsNotInLibrary(_detail)
                 _r.raise_for_status()
                 return _r.json()
 
@@ -4678,6 +4712,20 @@ def _execute_tool(
                     "is_terminal": bool(letter),
                 }
 
+        except _AppealsNotInLibrary as _nil:
+            # An EARNED absence: the library was asked and does not cover it.
+            # success=False with the no-sources signal, same shape as any other
+            # honest empty, so the retry guard sees it and react does not
+            # re-ask -- and the text says what is missing, so the answer can be
+            # "we have no appeal rules for this code" plus the payer's general
+            # process, instead of "the tools failed".
+            emit(f"  ↓ {tool}: {_nil.detail}")
+            return {**_no_src(),
+                    "result": (f"[{tool}] {_nil.detail}. The appeals library "
+                               f"does not cover this code — answer from the "
+                               f"payer's general appeal process instead, and "
+                               f"say the code-specific rules are unavailable."),
+                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES}
         except Exception as _exc:
             emit(f"⊘ {tool} error: {_exc}")
             return {**_no_src(), "result": f"[{tool}] Error: {_exc}"}
