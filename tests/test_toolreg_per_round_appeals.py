@@ -170,11 +170,19 @@ def test_an_appeals_tool_reaches_toolreg_THROUGH_the_retry_wrapper():
     import toolreg.v2 as v2
     with mock.patch.object(v2, "execute_tool", _spy), \
          mock.patch.object(react_loop, "_execute_tool", _boom):
+        # 🔴 EXERCISE WHATEVER IS ACTUALLY ROUTED, not a hardcoded name.
+        # This pinned "appeals_lookup_rules" and broke on 2026-09-15 when that
+        # tool was pulled for having no route in the deployed catalogue -- the
+        # second gate that day to fail a rollback rather than a fault. Which
+        # tools are in the cut is governed by the subset test above; what THIS
+        # test proves is that a tool in the cut reaches toolreg and not the
+        # legacy path, and that property holds whichever tool it is.
+        _routed = sorted(react_loop._TOOLREG_OWNED)[0]
         out = react_loop._execute_tool_with_retry(
-            "appeals_lookup_rules", {"carc": "197"}, _Ctx(), 1,
+            _routed, {"carc": "197", "payor": "sunshine health"}, _Ctx(), 1,
             lambda *_a: None, None, skip_retry=True)
 
-    assert seen.get("toolreg") == "appeals_lookup_rules", (
+    assert seen.get("toolreg") == _routed, (
         "the appeals tool did not reach toolreg through the retry wrapper")
     assert "legacy" not in seen
     assert out["success"] is True

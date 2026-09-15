@@ -5487,9 +5487,23 @@ _TOOLREG_OWNED: frozenset[str] = frozenset({
     # Removed rather than left failing: a tool that cannot run is worse than a
     # tool routed the old way, and react loses a capability either way.
     "appeals_get_playbook",
-    "appeals_lookup_rules",
-    "appeals_validate_claim",
-    "appeals_assemble_letter",
+    # PULLED 2026-09-15, evidence-led. Keep what is PROVEN to route in the
+    # DEPLOYED catalogue; pull what is not. appeals_get_playbook stays because
+    # it demonstrably has a route there -- it reached argument validation and
+    # rejected a missing `payor`, which only happens after routing succeeds.
+    #
+    #   appeals_lookup_rules   "no executable route declared" on live turns.
+    #                          Chat's own branch (:4233) needs only `carc`,
+    #                          which is exactly what "how do I appeal a CARC 24
+    #                          denial" carries -- routing it through toolreg
+    #                          replaced a working answer with a confession.
+    #   appeals_validate_claim  route in the deployed catalogue UNVERIFIED.
+    #   appeals_assemble_letter route in the deployed catalogue UNVERIFIED.
+    #
+    # Unverified is not "probably fine". Two of the five turned out to be
+    # missing, and the failure reaches the user as an answer that says the
+    # tools broke. These go back through chat's branches until Tool Manifest
+    # reconciles the deployed catalogue with the authoring one.
 })
 
 
