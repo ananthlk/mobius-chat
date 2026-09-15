@@ -822,6 +822,12 @@ MODEL_CATEGORIES: dict[str, str] = {
     "gemini-2.5-pro":                                "frontier_reasoning",
     "gemini-2.5-flash":                              "frontier_fast",
     "gemini-2.0-flash-lite":                         "tiny_classifier",
+    "gemini-3.1-pro-preview":                        "frontier_reasoning",
+    "gemini-3.8-flash":                              "frontier_fast",
+    "gemini-3.7-flash":                              "frontier_fast",
+    "gemini-3.5-flash":                              "frontier_fast",
+    "gemini-3.5-flash-lite":                         "tiny_classifier",
+    "gemini-3.1-flash-lite":                         "tiny_classifier",
     "claude-sonnet-4-6":                             "frontier_reasoning",
     "claude-haiku-4-5-20251001":                     "frontier_fast",
     "claude-opus-4-7":                               "frontier_reasoning_premium",
@@ -1143,11 +1149,17 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
-        spec_output_per_1m_usd=5.00,
+        # 2026-09-15: was $5.00 -- stale, half the real rate. Verified
+        # against ai.google.dev's published rate (<=200k-token prompt
+        # tier; $15.00 above 200k). Found while pricing the new Gemini
+        # 3.x additions -- this model is enabled=True and live, so real
+        # ema_cost_usd has likely already drifted from this cold-start
+        # value via production telemetry; updated anyway for consistency.
+        spec_output_per_1m_usd=10.00,
         benchmark_category="frontier_reasoning",
         ema_quality=0.88,
         ema_latency_ms=8000.0,
-        ema_cost_usd=0.030,
+        ema_cost_usd=0.0075,                       # (2000 in + 500 out) at the verified rate
     ),
 
     "gemini-2.5-flash": ModelSpec(
@@ -1163,12 +1175,17 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES + PAYOR_FACT_STAGES,
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
-        spec_input_per_1m_usd=0.075,
-        spec_output_per_1m_usd=0.30,
+        # 2026-09-15: was $0.075/$0.30 -- stale, 4x and 8.3x under the real
+        # rate. Verified against ai.google.dev's published rate. This model
+        # is enabled=True and live, so real ema_cost_usd has likely already
+        # drifted from this cold-start value via production telemetry;
+        # updated anyway for consistency.
+        spec_input_per_1m_usd=0.30,
+        spec_output_per_1m_usd=2.50,
         benchmark_category="frontier_fast",
         ema_quality=0.78,
         ema_latency_ms=2500.0,
-        ema_cost_usd=0.003,
+        ema_cost_usd=0.00185,                      # (2000 in + 500 out) at the verified rate
     ),
 
     "gemini-2.0-flash-lite": ModelSpec(
@@ -1186,6 +1203,157 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         ema_quality=0.65,
         ema_latency_ms=800.0,
         ema_cost_usd=0.0003,
+    ),
+
+    # ── GOOGLE VERTEX — Gemini 3.x (2026-09-15, Ananth directive: "add all
+    # these models with the right priors and pricing... so that bandit can
+    # start to learn about these models, including lite versions") ──────────
+    #
+    # Google's Gemini Enterprise Agent Platform retirement notice (received
+    # 2026-09-15) retires gemini-2.5-flash/flash-lite/pro starting
+    # 2026-10-20, naming these as the recommended GA migration targets.
+    # Verified each one is ACTUALLY callable -- not just documented -- with
+    # a real generateContent call against our own project (mobius-os-dev):
+    # every one of these 404s on location=us-central1 (our current
+    # VERTEX_LOCATION) and only responds on location=global. The existing
+    # 2.5 models also respond fine on global, so switching is additive, not
+    # a tradeoff -- but it MUST happen (locally via .env, and in the
+    # deployed Cloud Run env at actual deploy time) or every one of these
+    # entries repeats the exact "stale roster, drawn and 404ing forever"
+    # trap already found and deferred for three dead Groq models on
+    # 2026-09-10 (project-model-roster-deferred).
+    #
+    # Pricing verified against ai.google.dev's published per-token rates
+    # (2026-09-15) -- Google documents Vertex pricing for its OWN Gemini
+    # models as matching the Gemini API price sheet exactly (unlike
+    # third-party Vertex partner models such as Claude, which have separate
+    # negotiated Vertex rates). Gemini 3.7 Flash and 3.8 Flash share an
+    # identical promotional rate through 2026-12-31 (rising afterward); the
+    # current rate is used here.
+    #
+    # ema_cost_usd priors: no real usage exists yet for any of these, so
+    # there is no EMA to anchor to. Computed from a stated, consistent
+    # assumed call shape (2000 input + 500 output tokens) applied to the
+    # VERIFIED real price -- not scaled from an existing peer's ema_cost_usd,
+    # several of which (gemini-2.5-flash in particular) were themselves
+    # found stale during this same pricing pass and would have propagated
+    # the error into these new priors.
+    #
+    # ema_quality priors are provisional, stepped by generation relative to
+    # the closest existing tier -- these are exactly what the "Runtime
+    # state -- updated from llm_calls PG data + EMA" ModelSpec fields exist
+    # for; real telemetry corrects them once the bandit starts drawing.
+
+    "gemini-3.1-pro-preview": ModelSpec(
+        model_id="gemini-3.1-pro-preview",
+        provider="vertex",
+        display_name="Gemini 3.1 Pro (Preview)",
+        enabled=True,
+        hipaa_eligible=True,
+        # NOT vertex_roster_eligible_stages() -- that helper is documented
+        # "Stages for Gemini 2.5 Pro/Flash only" (credentialing skill,
+        # appeals letters, the heavy roster integrator, RAG-routed stages)
+        # and test_model_router_bandit.py enforces that exclusivity
+        # directly. Also excludes PARALLEL_INTEGRATOR_STAGES, which
+        # test_parallel_integrator_stage_registration.py locks to exactly
+        # {gemini-2.5-flash, gemini-2.5-pro} ("flash-biased start, not the
+        # full unconstrained reasoning pool"). CORE_REASONING_STAGES is the
+        # broad-but-safe surface every other newly-added reasoning model
+        # (e.g. claude-sonnet-5, claude-opus-5) uses instead.
+        eligible_stages=list(CORE_REASONING_STAGES) + ["thread_summary", LEXICON_ANALYZE_STAGE] + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES + PAYOR_FACT_STAGES,
+        spec_tokens_per_sec=90.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=2.00,                # <=200k-token prompt tier; $4.00 above 200k
+        spec_output_per_1m_usd=12.00,               # <=200k-token prompt tier; $18.00 above 200k
+        benchmark_category="frontier_reasoning",
+        ema_quality=0.90,                          # provisional: above gemini-2.5-pro (0.88)
+        ema_latency_ms=8500.0,
+        ema_cost_usd=0.010,                        # (2000 in + 500 out tokens) at the verified rate
+    ),
+
+    "gemini-3.8-flash": ModelSpec(
+        model_id="gemini-3.8-flash",
+        provider="vertex",
+        display_name="Gemini 3.8 Flash",
+        enabled=True,
+        hipaa_eligible=True,
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES + PAYOR_FACT_STAGES,
+        spec_tokens_per_sec=300.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=0.75,                 # current promo rate through 2026-12-31; $1.50 from 2027-01-01
+        spec_output_per_1m_usd=3.75,                # current promo rate through 2026-12-31; $7.50 from 2027-01-01
+        benchmark_category="frontier_fast",
+        ema_quality=0.82,                          # provisional: newest Flash generation, above 3.7/3.5
+        ema_latency_ms=2500.0,
+        ema_cost_usd=0.0034,
+    ),
+
+    "gemini-3.7-flash": ModelSpec(
+        model_id="gemini-3.7-flash",
+        provider="vertex",
+        display_name="Gemini 3.7 Flash",
+        enabled=True,
+        hipaa_eligible=True,
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES + PAYOR_FACT_STAGES,
+        spec_tokens_per_sec=300.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=0.75,                 # current promo rate through 2026-12-31; $1.50 from 2027-01-01
+        spec_output_per_1m_usd=3.75,                 # current promo rate through 2026-12-31; $7.50 from 2027-01-01
+        benchmark_category="frontier_fast",
+        ema_quality=0.81,                          # provisional: between 3.5 and 3.8
+        ema_latency_ms=2500.0,
+        ema_cost_usd=0.0034,
+    ),
+
+    "gemini-3.5-flash": ModelSpec(
+        model_id="gemini-3.5-flash",
+        provider="vertex",
+        display_name="Gemini 3.5 Flash",
+        enabled=True,
+        hipaa_eligible=True,
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES + PAYOR_FACT_STAGES,
+        spec_tokens_per_sec=280.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=1.50,
+        spec_output_per_1m_usd=9.00,
+        benchmark_category="frontier_fast",
+        ema_quality=0.80,                          # provisional: above gemini-2.5-flash (0.78)
+        ema_latency_ms=2600.0,
+        ema_cost_usd=0.0075,
+    ),
+
+    "gemini-3.5-flash-lite": ModelSpec(
+        model_id="gemini-3.5-flash-lite",
+        provider="vertex",
+        display_name="Gemini 3.5 Flash Lite",
+        enabled=True,
+        hipaa_eligible=True,
+        eligible_stages=FAST_ONLY_STAGES,
+        spec_tokens_per_sec=480.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=0.30,
+        spec_output_per_1m_usd=2.50,
+        benchmark_category="tiny_classifier",
+        ema_quality=0.68,                          # provisional: above gemini-2.0-flash-lite (0.65)
+        ema_latency_ms=900.0,
+        ema_cost_usd=0.00185,
+    ),
+
+    "gemini-3.1-flash-lite": ModelSpec(
+        model_id="gemini-3.1-flash-lite",
+        provider="vertex",
+        display_name="Gemini 3.1 Flash Lite",
+        enabled=True,
+        hipaa_eligible=True,
+        eligible_stages=FAST_ONLY_STAGES,
+        spec_tokens_per_sec=460.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=0.25,
+        spec_output_per_1m_usd=1.50,
+        benchmark_category="tiny_classifier",
+        ema_quality=0.66,                          # provisional: between 2.0-flash-lite and 3.5-flash-lite
+        ema_latency_ms=950.0,
+        ema_cost_usd=0.00125,
     ),
 
     # ── GROQ (one API key, multiple production models) ────────────────────────

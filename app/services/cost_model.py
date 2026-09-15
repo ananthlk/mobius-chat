@@ -8,13 +8,27 @@ from app.services.usage import LLMUsageDict
 _DEFAULT_RATES: dict[tuple[str, str], tuple[float, float]] = {
 
     # ── GOOGLE VERTEX ─────────────────────────────────────────────────────────
-    ("vertex", "gemini-2.5-flash"):      (0.000150, 0.001250),
+    # gemini-2.5-flash and gemini-2.5-pro corrected 2026-09-15 -- both were
+    # stale here too, and by DIFFERENT amounts than model_registry.py's own
+    # (also-stale) values, a third independent number for the same two
+    # models. Verified against ai.google.dev's published rates.
+    ("vertex", "gemini-2.5-flash"):      (0.000300, 0.002500),
     ("vertex", "gemini-2.5-flash-lite"): (0.000100, 0.000400),
-    ("vertex", "gemini-2.5-pro"):        (0.001250, 0.005000),
+    ("vertex", "gemini-2.5-pro"):        (0.001250, 0.010000),
     ("vertex", "gemini-2.0-flash"):      (0.000100, 0.000400),
     ("vertex", "gemini-2.0-flash-lite"): (0.000018, 0.000072),
     ("vertex", "gemini-1.5-flash"):      (0.000075, 0.000300),
     ("vertex", "gemini-1.5-pro"):        (0.001250, 0.005000),
+    # Gemini 3.x (2026-09-15) -- verified against ai.google.dev's published
+    # per-token rates, converted to $/1K. See model_registry.py's Gemini
+    # 3.x section for the full pricing/verification writeup; do not edit
+    # these two tables independently, they've already drifted apart once.
+    ("vertex", "gemini-3.1-pro-preview"): (0.002000, 0.012000),
+    ("vertex", "gemini-3.8-flash"):       (0.000750, 0.003750),
+    ("vertex", "gemini-3.7-flash"):       (0.000750, 0.003750),
+    ("vertex", "gemini-3.5-flash"):       (0.001500, 0.009000),
+    ("vertex", "gemini-3.5-flash-lite"):  (0.000300, 0.002500),
+    ("vertex", "gemini-3.1-flash-lite"):  (0.000250, 0.001500),
 
     # ── GROQ (production) ─────────────────────────────────────────────────────
     ("groq", "llama-3.1-8b-instant"):    (0.000050, 0.000080),
