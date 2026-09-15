@@ -46,12 +46,36 @@ def test_the_loop_can_EXTEND_not_only_stop():
     """The asymmetry this replaces: the framing hook could stop a turn and
     never extend one — a brake with no accelerator. A loop that only ever
     shortens is not a governor, it is a timeout."""
+    import ast
     code = _code()
     # the round counter advances on a CONTINUE decision, not only on a stop
     assert "if not action.continues:" in code
-    i = code.index("if not action.continues:")
-    after = code[i:i + 400]
-    assert "break" in after
+
+    # 🔴 PARSED, NOT SLICED. This took `code[i:i+400]` and asserted `break`
+    # appeared in it — so adding a comment inside the branch failed the test
+    # while the behaviour was unchanged. A gate that measures the distance
+    # between two strings breaks on prose and passes on a rewrite.
+    #
+    # The property is: the stop branch can leave the loop, and some other path
+    # goes round again. Both read off the tree.
+    tree = ast.parse(code)
+    stop_branches = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        # The dump of `not action.continues` contains attr='continues' and
+        # id='action' — never the source-form string "action.continues".
+        # My first matcher looked for the latter and found nothing, which
+        # read as "no branch tests it" when the branch was right there.
+        and any(isinstance(x, ast.Attribute) and x.attr == "continues"
+                and getattr(x.value, "id", None) == "action"
+                for x in ast.walk(n.test))
+    ]
+    assert stop_branches, "no branch tests action.continues"
+    assert any(isinstance(d, ast.Break)
+               for n in stop_branches for d in ast.walk(n)), (
+        "the stop branch cannot leave the loop — a governor that cannot stop "
+        "is not a governor"
+    )
     # ...and there is a path that goes round again
     assert "extensions_used += 1" in code
 

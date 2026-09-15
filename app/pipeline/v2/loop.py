@@ -172,7 +172,77 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             except Exception:
                 pass
 
+    # 🔴 THE CLOCK STARTS BEFORE THE TOOLS, NOT AFTER.
+    #
+    # I put the preload step above this line first, and
+    # test_the_wall_clock_stops_a_loop_that_overran caught it: with t0 set
+    # afterwards, preload's time did not count against the promise, and a turn
+    # that had already overrun got its budget silently reset by the step that
+    # spent the most of it. Preload is turn time. The promise covers it.
     t0 = time.monotonic()
+
+    # ── TOOLS, BEFORE THE FIRST ROUND ───────────────────────────────────────
+    #
+    # 🔴 THIS LOOP HAD NO TOOLS STEP. It would have started every turn blind
+    # while the shared loop preloaded — react reasoning from nothing, then
+    # spending its first round fetching what preload already had.
+    #
+    # IMPORTED, NOT EXTRACTED. The equivalent block in react_loop.py is 251
+    # lines and reachable only from v1's loop. I started by pulling it out into
+    # a shared module — and that edits v1, which is the coupling this loop
+    # exists to remove. Ananth: "i want you to create it because it will allow
+    # us to refactor without impacting v1." A read-only import costs v1
+    # nothing; moving its code costs it a regression surface.
+    #
+    # So the PRIMITIVES are shared (v2/preload.py is already v2-owned, and the
+    # runner translates a tool result into react's result shape) and the
+    # SEQUENCE is ours — which is the same rule the rest of this file follows.
+    _preloaded = None
+    try:
+        from app.pipeline.v2 import preload as _v2pre
+        from app.pipeline.react_loop import _preload_runner_toolreg
+
+        _q = (getattr(ctx, "message", None) or "").strip()
+
+        # 🔴 NO hasattr GUARD AROUND THE THING THAT DOES THE WORK. My first
+        # draft called a helper I had not verified existed, behind
+        # `if hasattr(...)` — so the tools step would have been silently
+        # skipped on every turn and looked like a preload that found nothing.
+        # A guard around a capability you have not checked is how a step that
+        # never runs passes review.
+        from toolreg.estimate import estimate as _tr_estimate
+
+        _off = _tr_estimate(
+            _q,
+            caller_mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
+            correlation_id=getattr(ctx, "correlation_id", None),
+        )
+        # rag is the floor: v1's block falls back to ["rag"] when estimate
+        # returns nothing, because a turn with no retrieval is worse than a
+        # turn with an unranked one. Ananth: "no we will always do rag".
+        _offer = [t.tool_key for t in (getattr(_off, "tools", None) or [])] or ["rag"]
+        if _offer:
+            _plan = _v2pre.plan(_offer)
+            _preloaded = _v2pre.execute(
+                _plan,
+                lambda _t, _i: _preload_runner_toolreg(
+                    _t, _i, ctx, speculative=True, emitter=emitter),
+                _q,
+            )
+            # The literal 1 is deliberate and the reason is in react_loop's
+            # copy: preload runs BEFORE the round loop, so no round variable
+            # exists yet. Writing `rn` there shipped a turn with no evidence
+            # and a trace that still said "Looking this up before I answer".
+            ctx._v2_preload_round = 1
+            ctx._v2_preloaded = _preloaded
+            ctx._v2_suggest = getattr(_plan, "suggest", []) or []
+            emit(f"  preloaded {len(_preloaded or [])} tool(s)")
+    except Exception as _pre_e:   # pragma: no cover — never fail a turn on preload
+        # Fail-soft, and SAY SO. react can reason without preload; it cannot
+        # reason correctly about why its evidence is thin if nothing says the
+        # step did not run.
+        emit(f"  preload unavailable: {type(_pre_e).__name__}")
+
     res = V2LoopResult()
     mode = react_chat_mode_label(getattr(ctx, "chat_mode", None))
     # v1's ceiling for this mode is the SOFT bound; MAX_ROUNDS_HARD is the fuse.
@@ -256,11 +326,36 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         })
 
         if not action.continues:
-            res.exit_mode = (action.exit_mode or exit_mode).value \
-                if hasattr(action.exit_mode or exit_mode, "value") else str(exit_mode)
-            res.stopped_by = decision.branch
-            emit(f"  governor: {decision.posture.value} — {action.because[:90]}")
-            break
+            # 🔴 A TURN MUST NOT EXIT WITHOUT AN ANSWER.
+            #
+            # This `break` sits BEFORE the model call, so a governor that says
+            # "stop" on round 1 exits having never asked the model to write
+            # anything. That was unreachable while this loop had no tools step:
+            # with nothing preloaded there was always a gap worth buying, so
+            # round 1 always continued. Adding preload made it reachable
+            # immediately — evidence in hand, no gap worth buying, and
+            # `stopped_by=nothing_worth_buying` with zero LLM calls.
+            #
+            # Caught by test_a_full_round_runs_and_produces_an_answer, which is
+            # exactly the test its docstring claims to be: "the test that would
+            # have caught all three live failures". It caught a fourth.
+            #
+            # The governor decides whether to buy more EVIDENCE. It does not
+            # decide whether the person gets an answer. So a stop with no
+            # answer yet converts into one final communicate round rather than
+            # an exit — and only then does the loop end.
+            if not _best_running_answer(ctx):
+                emit(f"  governor: {decision.posture.value} — "
+                     f"{action.because[:70]} (one round to write it)")
+                decision = P.Decision(P.Posture.COMMUNICATE,
+                                      "stopping with no answer written yet",
+                                      branch="forced_communicate")
+            else:
+                res.exit_mode = (action.exit_mode or exit_mode).value \
+                    if hasattr(action.exit_mode or exit_mode, "value") else str(exit_mode)
+                res.stopped_by = decision.branch
+                emit(f"  governor: {decision.posture.value} — {action.because[:90]}")
+                break
 
         # ── 2. ACT — the same prompt, model and tools v1 would use ──────────
         extensions_used += 1
