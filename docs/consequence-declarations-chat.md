@@ -200,3 +200,51 @@ For `web_scrape`, `payor_readiness`, `healthcare_query` and
 writes are unaudited, which is precisely why all four are NULL and not `true`.
 If any of those seats audits their side and finds nothing persisted, the value
 can move — but it should move on their evidence, not my inference.
+
+---
+
+## Addendum — reachability of the two in-process tools
+
+Tool Manifest asked (2026-09-14) whether `recall_evidence` and
+`list_thread_document_uploads` only ever run in-process, having found them among
+10 genuine gaps in `v_cleared_but_unreachable`. Both answers are yes, but the
+second has a wrinkle.
+
+**`recall_evidence` — unroutable by construction, not merely unrouted.** It is
+not in the skill registry at all; it is handled inline at `react_loop.py:2160`,
+before registry dispatch. It reads `ctx._evidence_memory`, which is per-turn,
+per-process state written by *this turn's* earlier rounds
+(`_store_evidence_memory`). An out-of-process caller would find that list empty,
+so a route would return "no chunks found for refs" 100% of the time. Adding one
+would create a tool that is always reachable and never useful. Record it as
+in-process by design.
+
+**`list_thread_document_uploads` — chat's builtin is in-process only, but the
+capability is reachable under a different name.** `mobius-skills-mcp/app/server.py:1309`
+exposes an MCP tool called **`list_thread_uploads`** (not
+`list_thread_document_uploads`). It is a different implementation of the same
+capability: it HTTP-GETs `{CHAT_API_BASE_URL}/chat/thread/{id}/uploads` and
+formats the result through the same
+`mobius_skills_core.skills.list_thread_uploads.run_list_thread_uploads`. The
+chat builtin reads in-process thread state directly; the MCP tool fetches the
+same records over HTTP.
+
+The chat-side mention of the name in `app/skills/mcp_adapter.py:19` is *inbound*
+collision policy — "builtins win" if an MCP server registers a colliding name —
+not an outbound route. Chat does not export the builtin.
+
+So two catalogue entries, one capability, different reachability **and**
+different consequence. They should not share a declaration:
+
+| | `list_thread_document_uploads` (chat builtin) | `list_thread_uploads` (MCP) |
+|---|---|---|
+| reachable over MCP | no | yes |
+| implementation | in-process thread-state read | HTTP GET to chat |
+| direction | inward | inward |
+| reversible | true | true |
+
+I audited the far side for the MCP one as well: `main.py:2500` `get_thread_uploads`
+is a pure `get_state(tid)` read — no INSERT/UPDATE/commit — and it raises 503 on
+unreadable state rather than returning an empty list, so it does not conflate
+"couldn't read" with "no uploads". `inward` / `true` holds for both, on separate
+evidence.
