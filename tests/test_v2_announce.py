@@ -206,3 +206,46 @@ def test_has_evidence_counts_sources_or_text_and_nothing_else():
     assert L._has_evidence([{"tool": "x", "success": True, "result": "text"}])
     assert L._has_evidence([{"tool": "x", "success": False,
                              "sources": [{"document": "d"}]}])
+
+
+# ── the retrieval signal ────────────────────────────────────────────────────
+
+def test_finalize_is_never_handed_the_no_sources_literal():
+    """THE DEFECT: v2 passed RETRIEVAL_SIGNAL_NO_SOURCES to _finalize_response
+    as a LITERAL, in the same call that handed over the sources. Measured live
+    (cid 36aa6171): sources=12 AND final_signal="no_sources" in one response,
+    which produced source_confidence_strip="no_sources", cited_source_indices=[],
+    abstained=true/abstain.thin_evidence, and the card suppressed into plain
+    text — "nothing in the sources grounds this answer", about an answer with
+    twelve sources behind it.
+
+    The success branch wrote the failure value. Asserts the ARGUMENT is a
+    tracked name, not the constant."""
+    tree = ast.parse(_src())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_finalize_response"]
+    assert calls, "no publish call found — did the terminal move?"
+    for call in calls:
+        # 4th positional argument is final_signal
+        assert len(call.args) >= 4, f"line {call.lineno}: unexpected arity"
+        sig = call.args[3]
+        assert not (isinstance(sig, ast.Name)
+                    and sig.id == "RETRIEVAL_SIGNAL_NO_SOURCES"), (
+            f"line {call.lineno}: the no-sources constant is passed as the "
+            "signal — every turn will report no sources while carrying them")
+
+
+def test_a_failed_tool_cannot_upgrade_the_signal():
+    """A signal from a call that errored describes the error, not the corpus.
+    v1 guards its source list the same way one line above."""
+    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES as NO
+
+    assert L._upgrade_signal(NO, {"signal": "corpus", "success": True}) == "corpus"
+    assert L._upgrade_signal(NO, {"signal": "corpus", "success": False}) == NO
+    assert L._upgrade_signal(NO, {"signal": "corpus", "error": "boom"}) == NO
+    # the no-sources literal never overwrites something better
+    assert L._upgrade_signal("corpus", {"signal": NO, "success": True}) == "corpus"
+    # junk is inert
+    assert L._upgrade_signal("corpus", None) == "corpus"
+    assert L._upgrade_signal(NO, {"success": True}) == NO

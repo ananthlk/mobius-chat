@@ -156,6 +156,45 @@ V2_BUDGET_FRACTION = 1.0
 # nothing stops one already running. This is the wall-clock backstop, checked
 # at the top of every round against the turn's own clock rather than against
 # the governor's arithmetic.
+def _upgrade_signal(current: str, result) -> str:
+    """The retrieval signal, upgraded from a tool result. v1's rule, exactly.
+
+    🔴 THE DEFECT THIS EXISTS TO FIX. v2 passed RETRIEVAL_SIGNAL_NO_SOURCES to
+    _finalize_response as a LITERAL — in the same call that handed over the
+    sources. So every v2 turn reported "no sources" while carrying twelve, and
+    the success branch wrote the failure value.
+
+    Measured live 2026-09-15, cid 36aa6171, one response:
+
+        sources: 12
+        final_signal: "no_sources"
+        source_confidence_strip: "no_sources"
+        cited_source_indices: []
+        abstained: true, rule_id "abstain.thin_evidence"
+        "Shown as text, not as a card — nothing in the sources grounds this"
+
+    One constant produced all of it: the citation strip, the empty citation
+    list, the abstention, and the card being suppressed into plain text. The
+    answer was correct and was presented to the user as unsupported.
+
+    v1's rule (react_loop.py:9508) is the contract every downstream consumer
+    already reads, so it is adopted rather than reinvented: any signal that is
+    not the no-sources literal upgrades, and the last such wins.
+    """
+    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES
+    if not isinstance(result, dict):
+        return current
+    # A FAILED tool's signal must not upgrade anything — v1 guards the source
+    # list the same way one line above, and a signal from a call that errored
+    # describes the error, not the corpus.
+    if result.get("success") is False or result.get("error") is not None:
+        return current
+    sig = result.get("signal")
+    if sig and sig != RETRIEVAL_SIGNAL_NO_SOURCES:
+        return sig
+    return current
+
+
 def _outcome_word(res: dict) -> str:
     """One of the five shared words for what a tool did.
 
@@ -362,6 +401,8 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             # and a trace that still said "Looking this up before I answer".
             ctx._v2_preload_round = 1
             ctx._v2_preloaded = _preloaded
+            for _pr in (_preloaded or []):
+                final_signal = _upgrade_signal(final_signal, _pr)
             ctx._v2_suggest = getattr(_plan, "suggest", []) or []
             step(_announce.tools_selected(
                 offered=_offer,
@@ -375,6 +416,9 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # reason correctly about why its evidence is thin if nothing says the
         # step did not run.
         emit(f"  preload unavailable: {type(_pre_e).__name__}: {_pre_e}")
+
+    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES as _NO_SRC
+    final_signal = _NO_SRC
 
     res = V2LoopResult()
     # 🔴 THE ROUND EXECUTES WHAT THE LAST ROUND ASKED FOR, AT ITS TOP.
@@ -548,6 +592,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 outcome=_outcome_word(_res),
                 sources=len(_res.get("sources") or []),
                 chars=len(str(_res.get("result") or ""))))
+            final_signal = _upgrade_signal(final_signal, _res)
             tool_results.append(_res)
             last_tool = _t
             for _s in (_res.get("sources") or []):
@@ -767,9 +812,11 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     logger.info("[v2.loop] cid=%s DONE rounds=%d stopped_by=%s exit=%s len=%d",
                 (getattr(ctx, "correlation_id", "") or "")[:8],
                 len(res.rounds), res.stopped_by, res.exit_mode, len(answer))
-    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES
+    logger.info("[v2.loop] cid=%s final_signal=%s sources=%d",
+                (getattr(ctx, "correlation_id", "") or "")[:8],
+                final_signal, len(all_sources))
     _finalize_response(ctx, answer, all_sources,
-                       RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
+                       final_signal, last_tool, emitter)
 
 
 # ── helpers, deliberately tiny ──────────────────────────────────────────────
