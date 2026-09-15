@@ -87,7 +87,15 @@ def test_the_loop_has_a_hard_round_fuse():
     the thing that stopped it was a person watching. The executor's
     MAX_V2_EXTENSIONS bounds extensions; this bounds the LOOP."""
     assert L.MAX_ROUNDS_HARD <= 12
-    assert "min(react_max_iterations_for_mode(mode), MAX_ROUNDS_HARD)" in _code()
+    # 🔴 v2's OWN ceiling now, bounded by the fuse. Ananth: "we develop our
+    # own round ceilings". This asserted v1's number, with the rationale
+    # "keeps the arms comparable" — which was the A/B, not this loop's job.
+    code = _code()
+    assert "V2_MAX_ROUNDS" in code, "the ceiling is not v2's own"
+    assert "MAX_ROUNDS_HARD" in code, "the hard fuse is gone"
+    for _mode, _n in L.V2_MAX_ROUNDS.items():
+        assert 0 < _n <= L.MAX_ROUNDS_HARD, (
+            f"{_mode} ceiling {_n} is outside the fuse")
 
 
 def test_unusable_rounds_end_the_turn():
@@ -397,31 +405,31 @@ def test_a_round_parses_a_REAL_model_response():
         assert d.get("tool") == "rag", raw[:40]
 
 
-def test_an_empty_answer_DEFERS_to_v1_instead_of_publishing_a_void():
-    """My own rule, written into the framing hook this morning and NOT written
-    here: "finalising an empty answer turns a governor decision into a blank
-    screen, which is worse than the round it is trying to save."
+def test_an_empty_answer_PUBLISHES_AN_HONEST_FAILURE_not_a_deferral():
+    """🔴 REPLACES test_an_empty_answer_DEFERS_to_v1. Ananth: "no fall back".
 
-    Live it was worse than a blank screen. The loop handed _finalize_response
-    an empty string and everything downstream composed an answer from NOTHING.
-    A void does not stay a void; it gets filled.
+    The old design handed a void turn to v1's loop. That net caught a real bug
+    — the loop could exit before the model was ever asked to write — but it
+    cost 40% of every turn's budget held in reserve, and it made a v2 failure
+    INVISIBLE: v1 quietly answered and the turn looked fine.
+
+    The failure is v2's now and it is said out loud. Still exactly one publish
+    path: an honest failure goes through the same terminal as an answer.
     """
     code = _code()
-    assert "if not answer.strip():" in code, "an empty answer still publishes"
+    assert "run_react as _v1_loop" not in code, (
+        "the loop still defers to v1 — the fallback was removed on purpose")
+    assert "v2_loop_deferred_to_v1" not in code, (
+        "a deferral flag survives a design that no longer defers")
     i = code.index("if not answer.strip():")
-    block = code[i:i + 900]
-    assert "run_react as _v1_loop" in block and "_v1_loop(ctx" in block, \
-        "an empty result does not defer to the known-good loop"
-    assert "return" in block
-    # the deferral must happen BEFORE the publish, or it publishes anyway
-    assert i < code.index("_finalize_response(ctx, answer")
+    assert "_finalize_response" in code[i:], (
+        "an empty answer must still publish through the one terminal")
 
-
-def test_the_deferral_is_RECORDED():
-    """A turn that silently fell back to v1 while labelled v2 would put v1's
-    behaviour in v2's column — the comparison would be measuring v1 twice."""
-    assert "v2_loop_deferred_to_v1" in _code()
-
+def test_the_reason_it_stopped_is_RECORDED():
+    """Whatever ends the turn, the branch that ended it lands on ctx. With no
+    fallback this is the ONLY record of why a turn produced nothing."""
+    code = _code()
+    assert "ctx.v2_stopped_by" in code
 
 def test_the_prompt_is_REACTS_LIVE_one_with_a_tool_manifest():
     """Ananth: "is this a prompt thing — check v1 prompt." It was.
@@ -503,28 +511,15 @@ def test_a_tool_failure_is_not_silently_swallowed():
     assert "logger.warning" in block, "a tool failure leaves no trace"
 
 
-def test_v2_never_spends_the_whole_turn_budget():
-    """The safety net spent the money the safety net needed.
+def test_v2_spends_the_WHOLE_turn_budget():
+    """🔴 INVERTS test_v2_never_spends_the_whole_turn_budget. Ananth: "v2 gets
+    whole budget".
 
-        01:16:36  round 1, remaining 95.0s
-        01:20:01  round 2, remaining 0.0s      <- ONE round took 3m25s
-        01:20:01  deferred to v1
-        01:21:35  turn_deadline_exceeded (300s)
-
-    When the loop produces nothing it hands the turn to v1, and v1 then needs
-    time for a full pipeline. A v2 turn going badly must fail EARLY and
-    cheaply, while a v1 turn is still affordable.
+    The fraction existed so a failing v2 turn left v1 time to run. With no
+    fallback there is nobody to leave it for, and reserving 38s of a 95s
+    promise for a recovery that cannot happen is just a shorter promise.
     """
-    promise = 95.0
-    assert L.V2_BUDGET_FRACTION < 1.0, "v2 may take the entire promise"
-    spent, left = L._budget_exhausted(0.0, promise)
-    assert not spent and left > 0
-    spent, _ = L._budget_exhausted(promise * L.V2_BUDGET_FRACTION + 1, promise)
-    assert spent, "the allowance does not bind"
-    # and there is always something left for the fallback
-    reserve = promise * (1 - L.V2_BUDGET_FRACTION)
-    assert reserve >= 30, f"only {reserve:.0f}s reserved for v1's whole pipeline"
-
+    assert L.V2_BUDGET_FRACTION == 1.0
 
 def test_the_wall_clock_is_checked_at_the_TOP_of_every_round():
     """spendable() is checked inside select(), BEFORE a round; nothing stops a

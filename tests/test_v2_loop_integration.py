@@ -179,15 +179,31 @@ def test_the_prompt_comes_from_REACTS_LIVE_COMPOSITION(harness):
     assert "rag" in system.lower(), "no tool manifest in the prompt"
 
 
-def test_a_loop_that_produces_nothing_DEFERS_and_does_not_publish(harness, monkeypatch):
-    """A void does not stay a void; downstream fills it. Live, that produced a
-    fluent three-payer comparison with zero sources."""
-    import app.pipeline.react.prompts as prompts
-    monkeypatch.setattr(prompts, "_call_llm_json", lambda *a, **k: "not json at all")
-    L.run_react_v2(_ctx(), emitter=lambda m: None)
-    assert harness["v1_loop"], "did not defer to v1's loop"
-    assert not harness["finalize"], "published a void instead of deferring"
+def test_a_loop_that_produces_nothing_PUBLISHES_AN_HONEST_FAILURE(harness):
+    """🔴 REPLACES ..._DEFERS_and_does_not_publish. Ananth: "no fall back".
 
+    A void turn used to go to v1's loop, which meant a v2 failure was never
+    visible — v1 answered and the turn looked fine. Now v2 says so itself, and
+    still through the ONE terminal: exactly one publish path, whether the turn
+    succeeded or not.
+    """
+    def _empty_llm(system, user, **kw):
+        harness["llm"].append({"system": system, "user": user, "kw": kw})
+        return '{"thought":"nothing","tool":null,"answer":"","is_complete":true}'
+
+    import app.pipeline.react.prompts as P
+    import pytest as _pytest
+    _mp = _pytest.MonkeyPatch()
+    _mp.setattr(P, "_call_llm_json", _empty_llm, raising=False)
+    try:
+        L.run_react_v2(_ctx(), emitter=lambda m: None)
+    finally:
+        _mp.undo()
+
+    assert not harness["v1_loop"], "the loop deferred to v1 — there is no fallback now"
+    assert harness["finalize"], "a failed turn must still publish through the one terminal"
+    published = harness["finalize"][0]["args"][1]
+    assert published and published.strip(), "published a void instead of an honest failure"
 
 def test_the_wall_clock_stops_a_loop_that_overran(harness, monkeypatch):
     """One round took 205s against a 95s promise and nothing noticed until it

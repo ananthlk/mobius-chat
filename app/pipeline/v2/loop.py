@@ -81,9 +81,43 @@ logger = logging.getLogger(__name__)
 # watching.
 MAX_ROUNDS_HARD = 12          # [GUESS] — a fuse
 
+# 🔴 v2's OWN ROUND CEILINGS. Ananth: "we develop our own round ceilings".
+#
+# This used to take react_max_iterations_for_mode(mode) — v1's number — with
+# the comment "keeps the arms comparable on the one axis the governor is
+# supposed to be deciding". That rationale was the A/B, and the A/B is not
+# what this loop is for any more.
+#
+# Lower than v1's across the board, deliberately. v1 needs rounds because it
+# starts blind: measured 2026-09-15, its pre-round state hardcodes confidence
+# to None, reads absent as "bar not met", and spends round 1 searching on
+# 40 turns out of 40. This loop preloads BEFORE round 1, so round 1 already
+# has evidence and the ceiling is what a turn should need, not what a blind
+# one does.
+#
+# [GUESS] on the numbers, not on the shape — they are ours to move now, and
+# moving them is a measurement, not a merge conflict with v1.
+V2_MAX_ROUNDS: dict[str, int] = {
+    "quick":   2,    # a 13s promise cannot afford a third round
+    "copilot": 4,
+    "agentic": 6,
+}
+V2_MAX_ROUNDS_DEFAULT = 4
+
 # When the model returns nothing usable we do NOT silently retry forever: two
 # consecutive unusable rounds ends the turn. A loop that cannot tell "the model
 # is stuck" from "keep trying" is how a runaway starts.
+# 🔴 OUR OWN, AND NAMED FOR WHAT IT CATCHES. Ananth: "this could be tool
+# failures or others.. we should use, but lets use our own".
+#
+# A round is UNUSABLE when the model returns neither an answer nor a tool to
+# call — so the turn spent a model call and learned nothing. The causes are
+# not all the model's: a tool that could_not_run leaves the round with nothing
+# to reason over, and react then has nothing to propose. Counting them is how
+# a turn stops burning rounds on a failure it cannot see.
+#
+# Two, not three: at v2's ceilings (quick 2, copilot 4, agentic 6) a third
+# wasted round is most of the budget.
 MAX_UNUSABLE_ROUNDS = 2
 
 # ── THE FALLBACK RESERVE ────────────────────────────────────────────────────
@@ -104,7 +138,17 @@ MAX_UNUSABLE_ROUNDS = 2
 #
 # 0.6 is a [GUESS] chosen so a v2 turn still gets the majority and the
 # remainder covers v1's measured p50 (rag rounds: p50 7.0s, p90 13.7s).
-V2_BUDGET_FRACTION = 0.6
+# 🔴 THE WHOLE PROMISE. Ananth, 2026-09-15: "v2 gets whole budget".
+#
+# This was 0.6 — v2 spent 60% and reserved 40% so that, when it produced
+# nothing, it could hand the turn to v1 and v1 would still have time to run a
+# full pipeline. On a 95s agentic promise that reserved 38 seconds of every
+# turn for a fallback that no longer exists.
+#
+# The reserve and the fallback were one decision and they are removed together.
+# A loop that owns its failures does not need to keep money aside for someone
+# else's recovery.
+V2_BUDGET_FRACTION = 1.0
 
 # A round can overrun regardless -- spendable() is checked BEFORE a round and
 # nothing stops one already running. This is the wall-clock backstop, checked
@@ -157,7 +201,6 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         _react_reasoning_system,
         build_reasoning_context,
         react_chat_mode_label,
-        react_max_iterations_for_mode,
     )
     from app.pipeline.react.parsing import _parse_react_decision_json
     from app.pipeline.react_loop import (
@@ -262,10 +305,9 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     # Manifest's, the list is what lets them run at once.
     pending: list[tuple[str, dict]] = []
     mode = react_chat_mode_label(getattr(ctx, "chat_mode", None))
-    # v1's ceiling for this mode is the SOFT bound; MAX_ROUNDS_HARD is the fuse.
-    # Taking v1's number keeps the arms comparable on the one axis the governor
-    # is supposed to be deciding rather than inheriting.
-    max_rounds = min(react_max_iterations_for_mode(mode), MAX_ROUNDS_HARD)
+    # OUR ceiling for this mode; MAX_ROUNDS_HARD stays the fuse.
+    max_rounds = min(V2_MAX_ROUNDS.get(mode, V2_MAX_ROUNDS_DEFAULT),
+                     MAX_ROUNDS_HARD)
 
     tool_results: list[dict] = []
     ctx.react_trace_rounds = getattr(ctx, "react_trace_rounds", None) or []
@@ -544,19 +586,30 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     # latency and yields a grounded answer, which is the right trade every
     # time.
     if not answer.strip():
+        # 🔴 NO FALLBACK. Ananth, 2026-09-15: "no fall back".
+        #
+        # This handed the turn to v1's loop. That net caught a real bug today —
+        # the loop could exit before the model was ever asked to write — but it
+        # also cost 40% of every turn's budget held in reserve, and it meant a
+        # v2 failure was invisible because v1 quietly answered instead.
+        #
+        # So the failure is v2's now, and it is SAID rather than repaired by
+        # someone else. The turn still publishes through the one terminal —
+        # there is no second publish path and no silent exit — but what
+        # publishes is an honest failure, not a void and not v1's answer
+        # wearing v2's label.
         logger.warning(
-            "[v2.loop] cid=%s produced NO answer (rounds=%d stopped_by=%s) -- "
-            "handing the turn to v1's loop rather than publishing a void",
+            "[v2.loop] cid=%s produced NO answer (rounds=%d stopped_by=%s)",
             (getattr(ctx, "correlation_id", "") or "")[:8],
             len(res.rounds), res.stopped_by)
         try:
-            ctx.v2_loop_deferred_to_v1 = True
             ctx.v2_stopped_by = res.stopped_by
         except Exception:
             pass
-        from app.pipeline.react_loop import run_react as _v1_loop
-        _v1_loop(ctx, emitter=emitter)
-        return
+        answer = (
+            "I could not put an answer together for this one. "
+            f"(The loop stopped at: {res.stopped_by or 'unknown'}.)"
+        )
     logger.info("[v2.loop] cid=%s DONE rounds=%d stopped_by=%s exit=%s len=%d",
                 (getattr(ctx, "correlation_id", "") or "")[:8],
                 len(res.rounds), res.stopped_by, res.exit_mode, len(answer))
