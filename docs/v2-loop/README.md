@@ -65,9 +65,28 @@ the Tool Manifest migration; one is a constant that belongs in
 - `/invoke` is live, directed mode. Selection, sets and MCP ownership are steps 2–4.
 - **Blocking nothing of mine.** I delete no chat-side dispatch until a live turn passes against your endpoint.
 - Open: the `suggest` / `excluded` shape you said you'd send before building.
+- **NEW, measured locally 2026-09-15** — on "What is the timely filing deadline
+  for Sunshine Health?", `toolreg.estimate` returns **12 tools and not one that
+  retrieves from the corpus**: no `rag`, no `search_corpus`. The two it ranks
+  first (`appeals_get_playbook`, `payor_fact`) are then both rejected before
+  calling, for missing required args (`payor`; `payor`+`predicate`) that the
+  caller has no way to know it must supply. Net: 8.3s spent, zero evidence.
+  I have made rag an unconditional floor on my side, so v2 is no longer
+  affected — but the ranking itself looks wrong for retrieval questions, and
+  the arg mismatch is a seam question, not a v2 one.
+- **`estimate()` latency**: 8.5s cold, ~3.9s warm, measured three times. That
+  is 13% of a 31s copilot promise and 30% of a 13s quick promise, spent before
+  any retrieval starts. Not raising it as a defect — raising it because I am
+  about to build budget policy on top of it and want your number, not mine.
 - Open: when selection lands, the 7 chat-side policy gates move to you — `ALWAYS_PRELOAD=("rag",)` is Ananth's ruling (*"no we will always do rag"*: it ranked 12th of 13 on a question only it could answer).
 
 ### Deep Research
+- **The plan shape is now declared in one place** — `app/pipeline/v2/plan_shape.py`
+  (commit 192489a). `PER_PLAN` / `ACROSS_PLANS` / `PER_ROUND`, each field
+  carrying its own justification, and EXPLORE renders from it rather than
+  restating it (with a gate that fails if the text is ever pasted back into the
+  prompt module). This is the thing I owed you. Adopt or argue with the module,
+  not with a paragraph.
 - FRAME and EXPLORE adopt your `survey` and plan fields. `stop_rule` dropped, `would_establish` in its place — your call that a stop rule is a property of the turn here.
 - **Open and owed by me:** the plan shape, declared in one place. You offered to adopt mine and delete yours. Not done.
 - Open: NARROW/ALTERNATIVES now carry `only_one_route` and *"a finding, not a complaint"*. Tell me if I've mangled them.
@@ -96,4 +115,12 @@ the Tool Manifest migration; one is a constant that belongs in
 - **The judge does not reproduce.** Mean |delta| **0.241**, max 0.621 on identical text — wider than any effect measured this week. Every quality claim in this repo is currently unfalsifiable in both directions. Temperature pinned to 0 today; **not re-measured**.
 - **`confidence=None` on 40/40 turns** in the SHARED loop: the pre-round state hardcodes it, the gate reads absent as "bar not met", and round 1 is `search` on every turn. A structural floor of two rounds. v2's loop does not have this; v1's does.
 - **Empty-completed turns** — `status=completed`, zero thinking entries, empty message. Intermittent, unexplained, not the answer cache.
+- **Local suite hides 8 red as green-ish.** `tests/test_v2_toolreg_bridge.py`
+  fails 8/10 with `ModuleNotFoundError: No module named 'toolreg'` unless Tool
+  Manifest's repo is pip-installed editable (`pip install -e
+  ../mobius-tool-manifest --no-deps`). They FAIL rather than skip, so a local
+  run shows red that is not real — and, worse, the preload step silently does
+  not run at all, which is invisible unless you read the trace.
+- **The full suite outruns a 10-minute tool timeout**, so it is not part of my
+  normal loop; I gate on a scoped run and say so. That is a gap, not a policy.
 - **Instances disagree.** `/diag/mcp` returned `listed_empty` and `listed` on consecutive requests of the same revision. Any single-probe measurement is per-instance, not system-wide.
