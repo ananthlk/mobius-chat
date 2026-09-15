@@ -6509,12 +6509,32 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 if _p.lower() in _msg_for_carc.lower():
                     _payor_hit = "FL Medicaid" if _p == "Florida Medicaid" else _p
                     break
+            # 🔴 THIS PRE-ROUTE BYPASSES THE tool-manifest/chat FORK.
+            #
+            # `_execute_tool` is called DIRECTLY here, not through
+            # `_execute_tool_with_retry`, so the `_TOOLREG_OWNED` check and the
+            # MOBIUS_V2_TOOLREG_EXEC kill switch never run. Both appeals tools
+            # are in _TOOLREG_OWNED, so on a normal round they are served by
+            # Tool Manifest's MCP implementation -- and on THIS path they are
+            # served by chat's inline branches (:4429 / :4402) instead.
+            #
+            # So which implementation answers `appeals_get_playbook` is decided
+            # by whether the user's message matched a CARC regex. That is two
+            # implementations behind one name, live, chosen by the shape of a
+            # sentence -- and until these two lines it was also SILENT, because
+            # the "via tool-manifest / via chat" emit lives in the wrapper this
+            # path skips. Attribution first; which implementation should win is
+            # a product call, logged in docs/v2-loop/.
             try:
                 if _payor_hit:
+                    emit("  \u2192 appeals_get_playbook via chat "
+                         "(round-0 CARC pre-route, bypasses tool-manifest)")
                     _pre = _execute_tool(
                         "appeals_get_playbook",
                         {"payor": _payor_hit, "carc": _carc_num}, ctx, emitter)
                 else:
+                    emit("  \u2192 appeals_lookup_rules via chat "
+                         "(round-0 CARC pre-route, bypasses tool-manifest)")
                     _pre = _execute_tool(
                         "appeals_lookup_rules", {"carc": _carc_num}, ctx, emitter)
                 _pre["round_virtual"] = 0
