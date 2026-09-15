@@ -429,3 +429,81 @@ class TestFactsMayFillAnEmptyCard:
         from app.responder.v2_adapter import add_fact_sections
         out = add_fact_sections(self._card("abstain.no_match"), self.FACTS)
         assert "presentation" not in out
+
+
+class TestAFailureTurnRefusesStructure:
+    """COMMUNICATE_FAILURE's prompt says "do not write labels, lines or
+    sections — a failure shaped like an answer reads as a confident one."
+
+    That is a request. This is the enforcement, and it is needed because
+    models drift into labels: every other prompt in the system asks for them.
+
+    COVERAGE CANNOT EXPRESS THIS. `unobservable` and `not_attempted` are
+    deliberately non-decisive in grounding_from_v2 so that an unexamined turn
+    does not get its cards stripped — right for a normal turn, exactly wrong
+    for a failure one. Measured 2026-09-15: a drifted failure answer rendered
+    as a four-row TABLE on both statuses.
+    """
+
+    DRIFTED = (
+        "We could not confirm the credentialing status.\n\n"
+        "- **What we tried:** the provider-directory tool, which did not run\n"
+        "- **What this means:** nothing was searched, so it may well exist\n"
+        "- **What would resolve it:** re-ask, or contact the credentialing team\n"
+    )
+
+    def _cov(self, status):
+        return {"coverage": [{"part": "x", "status": status, "evidence": []}],
+                "citations": [], "ran": {"assemble": "ok"}}
+
+    def test_without_the_marker_the_unexamined_statuses_render_a_table(self):
+        """The gap this closes, pinned so it cannot be called theoretical."""
+        from app.responder.deterministic_format import deterministic_format
+        for status in ("unobservable", "not_attempted"):
+            card = deterministic_format(self.DRIFTED, budget=budget_from_v2(self._cov(status)))
+            assert [s["format"] for s in card["sections"]] == ["table"], status
+
+    def test_the_marker_refuses_on_every_coverage_status(self):
+        from app.responder.deterministic_format import deterministic_format
+        for status in ("unsupported", "unobservable", "not_attempted", "supported"):
+            card = deterministic_format(
+                self.DRIFTED, budget=budget_from_v2(self._cov(status), is_failure_turn_=True))
+            assert card["sections"] == [], status
+            assert card["presentation"]["rule_id"] == "abstain.failure_turn"
+
+    def test_it_beats_even_a_grounded_turn(self):
+        """A failure round that somehow has grounded coverage is still a
+        failure. The posture is the authority on whether there is an answer."""
+        from app.responder.deterministic_format import deterministic_format
+        card = deterministic_format(
+            self.DRIFTED,
+            budget=budget_from_v2({"coverage": [{"part": "x", "status": "supported",
+                                                 "evidence": ["d.pdf p1"]}],
+                                   "citations": ["d.pdf p1"], "ran": {"assemble": "ok"}},
+                                  is_failure_turn_=True))
+        assert card["sections"] == []
+
+    def test_a_normal_turn_is_completely_unaffected(self):
+        from app.responder.deterministic_format import deterministic_format
+        card = deterministic_format(self.DRIFTED, budget=budget_from_v2(None))
+        assert card["sections"], "the gate fired on a turn nobody marked"
+
+    def test_the_marker_is_read_from_several_plausible_ctx_names(self):
+        """The posture plumbing is the v2 loop's to name. Accepting what they
+        already set beats making them rename something."""
+        from app.responder.v2_adapter import is_failure_turn
+
+        class Ctx: pass
+        assert is_failure_turn(Ctx()) is False
+        for attr in ("v2_failure_turn", "_v2_failure_turn", "_v2_communicate_failure"):
+            c = Ctx(); setattr(c, attr, True)
+            assert is_failure_turn(c) is True, attr
+
+    def test_a_failure_POSTURE_name_is_enough_on_its_own(self):
+        from app.responder.v2_adapter import is_failure_turn
+
+        class Ctx: pass
+        c = Ctx(); c.v2_posture = "COMMUNICATE_FAILURE"
+        assert is_failure_turn(c) is True
+        c2 = Ctx(); c2.v2_posture = "COMMUNICATE"
+        assert is_failure_turn(c2) is False

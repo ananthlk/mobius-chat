@@ -189,6 +189,21 @@ class RenderBudget:
     #: Gate inputs (R3).
     is_raw_excerpt: bool = False
     is_thin_evidence: bool = False
+    #: This turn is a FAILURE — the COMMUNICATE_FAILURE posture, or any round
+    #: whose job is to say why there is no answer.
+    #:
+    #: Needed because coverage CANNOT express it. `unobservable` and
+    #: `not_attempted` are deliberately non-decisive here, so that an
+    #: unexamined turn does not get its cards stripped — right for a normal
+    #: turn, and exactly wrong for a failure one. Measured 2026-09-15: a
+    #: failure answer that drifted into labels (models do, because every
+    #: other prompt asks for them) was rendered as a four-row TABLE on both
+    #: of those statuses.
+    #:
+    #: The posture prompt says "do not write labels, lines or sections". That
+    #: is a request. This is the enforcement, and a failure shaped like an
+    #: answer reads as a confident one.
+    is_failure_turn: bool = False
 
 
 @dataclass(frozen=True)
@@ -332,6 +347,10 @@ def looks_like_raw_excerpt(text: str | None) -> bool:
 
 def _gate(payload: ContentPayload, budget: RenderBudget) -> Verdict | None:
     """Returns an abstain verdict, or None to let the ladder run."""
+    if budget.is_failure_turn:
+        return Verdict(None, "abstain.failure_turn",
+                       "this turn has no answer; structure would make the "
+                       "absence of one look like a finding")
     if budget.is_raw_excerpt or looks_like_raw_excerpt(payload.text):
         return Verdict(None, "abstain.raw_excerpt",
                        "verbatim retrieved excerpt; structuring it would overstate confidence")

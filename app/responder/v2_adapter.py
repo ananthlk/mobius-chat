@@ -266,10 +266,34 @@ def pages_per_part(v2_integration: dict[str, Any] | None) -> dict[str, int]:
 _PAGE_RE = re.compile(r"\bp\.?\s*(\d+)\b", re.IGNORECASE)
 
 
+#: ctx attributes any of which marks the turn a failure. Read defensively
+#: rather than pinned to one name: the producer is the v2 loop and the posture
+#: plumbing is theirs to name, so a contract that accepts what they already
+#: set beats one that makes them rename something.
+_FAILURE_MARKERS: tuple[str, ...] = (
+    "v2_failure_turn", "_v2_failure_turn", "_v2_communicate_failure",
+)
+
+
+def is_failure_turn(ctx: Any) -> bool:
+    """Did this turn end without an answer?
+
+    True when the loop marked it, or when the posture it ran is a failure
+    posture. Either is proof; neither is inferrable from coverage, because
+    `unobservable` and `not_attempted` are non-decisive there ON PURPOSE.
+    """
+    for attr in _FAILURE_MARKERS:
+        if bool(getattr(ctx, attr, False)):
+            return True
+    posture = getattr(ctx, "v2_posture", None) or getattr(ctx, "_v2_posture", None)
+    return str(getattr(posture, "name", posture) or "").upper().endswith("FAILURE")
+
+
 def budget_from_v2(
     v2_integration: dict[str, Any] | None,
     is_raw_excerpt: bool = False,
     fallback_thin: bool = False,
+    is_failure_turn_: bool = False,
 ) -> RenderBudget:
     """Build the classifier's RenderBudget from v2's verdict.
 
@@ -280,8 +304,12 @@ def budget_from_v2(
     """
     grounding = grounding_from_v2(v2_integration)
     if grounding is None:
-        return RenderBudget(is_raw_excerpt=is_raw_excerpt, is_thin_evidence=fallback_thin)
-    return RenderBudget(is_raw_excerpt=is_raw_excerpt, is_thin_evidence=grounding.thin)
+        return RenderBudget(is_raw_excerpt=is_raw_excerpt,
+                            is_thin_evidence=fallback_thin,
+                            is_failure_turn=is_failure_turn_)
+    return RenderBudget(is_raw_excerpt=is_raw_excerpt,
+                        is_thin_evidence=grounding.thin,
+                        is_failure_turn=is_failure_turn_)
 
 
 def coverage_payload(v2_integration: dict[str, Any] | None) -> ContentPayload | None:

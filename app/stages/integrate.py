@@ -160,6 +160,14 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
 )
 
 
+def _v2_failure_turn(ctx) -> bool:
+    """A COMMUNICATE_FAILURE round. Structure is refused on these regardless
+    of what the draft looks like — see v2_adapter.is_failure_turn."""
+    from app.responder.v2_adapter import is_failure_turn
+
+    return is_failure_turn(ctx)
+
+
 def _v2_turn(ctx) -> bool:
     """Moved to app.responder.v2_adapter.is_v2_turn — react_loop needs the
     same test, and two copies would drift. Kept as a thin alias so this
@@ -1031,7 +1039,9 @@ def run_integrate(
         _det_card = deterministic_format(
             getattr(ctx, "react_draft", None),
             cid=getattr(ctx, "correlation_id", None),
-            budget=budget_from_v2(getattr(ctx, "v2_integration", None)),
+            budget=budget_from_v2(
+                getattr(ctx, "v2_integration", None),
+                is_failure_turn_=_v2_failure_turn(ctx)),
         )
         # Same guarantee as the LLM paths -- tool-derived typed sections
         # (deterministic, not LLM-composed) must survive regardless of which
@@ -1447,7 +1457,9 @@ def run_integrate(
                 _before = [s.get("format") for s in parsed["sections"] if isinstance(s, dict)]
                 parsed["sections"], _verdicts = reclassify_sections(
                     parsed["sections"],
-                    budget=budget_from_v2(getattr(ctx, "v2_integration", None)),
+                    budget=budget_from_v2(
+                getattr(ctx, "v2_integration", None),
+                is_failure_turn_=_v2_failure_turn(ctx)),
                 )
                 _after = [s.get("format") for s in parsed["sections"]]
                 if _before != _after:
