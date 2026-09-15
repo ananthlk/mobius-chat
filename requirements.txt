@@ -110,7 +110,23 @@ redis>=5.0.0
 # through MCP rather than being invoked as in-process Python imports.
 # Beta monolith uses the in-process path so this is currently
 # unused-at-runtime but kept for the post-beta split.
-mcp>=1.0.0
+# 🔴 PINNED TO THE MAJOR THAT ACTUALLY RUNS. Was `mcp>=1.0.0`, unpinned.
+#
+# 2026-09-15: the image resolved mcp 2.2.0, which RENAMED the streamable-http
+# transport (`streamablehttp_client` -> `streamable_http_client`) and dropped
+# the legacy alias. Tool Manifest's vendored library still imported the old
+# name, so EVERY MCP tool was unreachable in the deployed process -- and their
+# 410 tests passed, because they develop against 1.26.0 where both spellings
+# exist. An unpinned range let a MAJOR version into the image silently and the
+# only place it showed was production.
+#
+# chat's own client already uses the 2.x name and unpacks the stream tuple by
+# index, so chat was correct on 2.x and would have BROKEN on older 1.x -- the
+# exposure ran both directions and neither was declared.
+#
+# Pinned to the major we run and have verified, not to an exact patch: the
+# rename was a major-version event and that is the boundary worth holding.
+mcp>=2.2,<3
 
 # ── LLMManager (Chat pipeline refactor) ──────────────────────────────
 # PromptManager renders DB-backed prompt templates with Jinja2
