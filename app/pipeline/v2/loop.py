@@ -244,6 +244,23 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         emit(f"  preload unavailable: {type(_pre_e).__name__}")
 
     res = V2LoopResult()
+    # 🔴 THE ROUND EXECUTES WHAT THE LAST ROUND ASKED FOR, AT ITS TOP.
+    #
+    # Ananth's shape: "preload >> should we run >> yes - loop >> select tool +
+    # execute (could be many) >> build the system prompt >> get the llm posture
+    # >> execute react >> parse output and get ready for next".
+    #
+    # The order matters beyond tidiness. Executing at the END of a round means
+    # a round's last act is a tool call whose result nothing has reasoned over
+    # yet, so "what happened" is split across two iterations and the trace
+    # reads out of order. Executing at the TOP makes a round self-contained:
+    # here is the evidence, here is the thinking, here is what to fetch next.
+    #
+    # A LIST, not a tool. "could be many" is the point — react naming three
+    # independent tools should cost one round, not three. Today they run in
+    # sequence because chat's dispatch mutates ctx; once execution is Tool
+    # Manifest's, the list is what lets them run at once.
+    pending: list[tuple[str, dict]] = []
     mode = react_chat_mode_label(getattr(ctx, "chat_mode", None))
     # v1's ceiling for this mode is the SOFT bound; MAX_ROUNDS_HARD is the fuse.
     # Taking v1's number keeps the arms comparable on the one axis the governor
@@ -357,7 +374,33 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 emit(f"  governor: {decision.posture.value} — {action.because[:90]}")
                 break
 
-        # ── 2. ACT — the same prompt, model and tools v1 would use ──────────
+        # ── 2. TOOLS — whatever the last round asked for, before reasoning ──
+        for _t, _in in pending:
+            emit(f"  round {rn}: {_t}")
+            try:
+                # KEYWORDS against the real signature, checked with
+                # inspect.signature rather than recalled: SIX required
+                # parameters, and `tool_emitter` is a different channel from
+                # `emit_fn`. Omitting it raised TypeError on a live turn and
+                # the except swallowed it into "tool failed".
+                _res = _execute_tool_with_retry(
+                    _t, _in or {}, ctx, rn, emit, emitter,
+                    skip_retry=(mode == "quick"),
+                    open_gaps=_open_gap_texts(state),
+                )
+            except Exception as exc:
+                logger.warning("[v2.loop] tool %s failed: %s", _t, exc)
+                _res = {"tool": _t, "success": False, "result": ""}
+            tool_results.append(_res)
+            last_tool = _t
+            for _s in (_res.get("sources") or []):
+                all_sources.append(_s)
+            ctx.react_trace_rounds.append({
+                "round": rn, "tool": _t, "inputs": _in or {}, "enrichment": None,
+            })
+        pending = []
+
+        # ── 3. ACT — the same prompt, model and tools v1 would use ──────────
         extensions_used += 1
         try:
             system, prompt_source = _v2_system_prompt(
@@ -421,39 +464,49 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             continue
         unusable = 0
 
-        emit(f"  round {rn}: {tool}")
-        try:
-            # KEYWORDS, against the real signature — it takes round_num and
-            # emit_fn, not the positional shape I first assumed. Checked with
-            # inspect.signature rather than from memory, because every
-            # positional guess in this codebase today has been wrong.
-            # SIX required parameters, not five. `tool_emitter` is the
-            # RAW emitter react passes alongside emit_fn -- two different
-            # channels, and omitting it raised TypeError on the live turn,
-            # which my except swallowed into "tool failed".
-            #
-            # Fourth signature/shape error today. Every one came from calling
-            # a function I had read the NAME of rather than the SIGNATURE, and
-            # every one was four seconds of inspect.signature away. Copied
-            # from react's own call site (react_loop.py:6344) rather than
-            # assembled from the parameter list.
-            result = _execute_tool_with_retry(
-                tool, decision_json.get("inputs") or {}, ctx, rn, emit, emitter,
-                skip_retry=(mode == "quick"),
-                open_gaps=_open_gap_texts(state),
-            )
-        except Exception as exc:
-            logger.warning("[v2.loop] tool %s failed: %s", tool, exc)
-            result = {"tool": tool, "success": False, "result": ""}
+        # ── 5. GET READY FOR NEXT — queue, do not execute ───────────────────
+        #
+        # The round ends by deciding what to fetch; the NEXT round's top
+        # executes it. Nothing is called after the model has spoken, so a
+        # round's trace reads in the order it happened.
+        #
+        # `tools` (a list) is read first and `tool` (one) is the fallback, so
+        # react naming three independent tools costs ONE round. The prompt does
+        # not offer the plural yet — this is the loop being ready for it rather
+        # than the model being asked for it, and a list of one behaves exactly
+        # as today until that prompt lands.
+        _many = decision_json.get("tools")
+        if isinstance(_many, list) and _many:
+            for _entry in _many:
+                if isinstance(_entry, dict) and _entry.get("tool"):
+                    pending.append((_entry["tool"], _entry.get("inputs") or {}))
+                elif isinstance(_entry, str):
+                    pending.append((_entry, {}))
+        else:
+            pending.append((tool, decision_json.get("inputs") or {}))
 
-        tool_results.append(result)
-        last_tool = tool
-        for s in (result.get("sources") or []):
-            all_sources.append(s)
         ctx.react_trace_rounds.append({
             "round": rn, "tool": tool,
             "inputs": decision_json.get("inputs") or {},
             "enrichment": _enrichment_from(decision_json),
+        })
+
+    # 🔴 A REQUESTED TOOL THAT NEVER RAN IS INFORMATION, NOT NOTHING.
+    #
+    # Executing at the TOP of a round means a tool react asked for in its LAST
+    # round is never executed — the governor decided not to buy another round,
+    # so the request dies with it. That is the right call (a tool the governor
+    # would not fund does not become affordable by being already requested),
+    # but it must be SAID. Silently dropping work the model asked for is the
+    # defect this fleet has spent the week removing in every other form.
+    if pending:
+        _dropped = ", ".join(t for t, _ in pending)
+        emit(f"  not run — turn ended before these could execute: {_dropped}")
+        logger.info("[v2.loop] cid=%s pending tools dropped at exit: %s",
+                    (getattr(ctx, "correlation_id", "") or "")[:8], _dropped)
+        ctx.react_trace_rounds.append({
+            "round": None, "tool": None, "inputs": {},
+            "dropped_pending": [t for t, _ in pending],
         })
 
     else:

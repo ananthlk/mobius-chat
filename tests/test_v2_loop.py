@@ -475,10 +475,22 @@ def test_the_tool_call_matches_the_REAL_signature():
     required = [n for n, p in inspect.signature(_execute_tool_with_retry).parameters.items()
                 if p.default is inspect.Parameter.empty]
     assert required == ["tool", "inputs", "ctx", "round_num", "emit_fn", "tool_emitter"]
-    code = _code()
-    assert "_execute_tool_with_retry(\n                tool, decision_json" in code \
-        or "tool, decision_json.get(\"inputs\") or {}, ctx, rn, emit, emitter," in code, \
-        "the call does not pass all six positionally, as react's own call site does"
+    # 🔴 PARSED, NOT PINNED. This asserted the literal source text of the
+    # call — so renaming two loop variables broke it while the contract it
+    # protects was unchanged. A fingerprint passes on the next instance and
+    # fails on a rename; the PROPERTY is that all six required parameters are
+    # passed positionally, exactly as react's own call site does.
+    import ast
+    tree = ast.parse(_code())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "_execute_tool_with_retry"]
+    assert calls, "the loop never calls the tool dispatcher"
+    for c in calls:
+        assert len(c.args) == len(required), (
+            f"call at line {c.lineno} passes {len(c.args)} positional args; "
+            f"the signature requires {len(required)}: {required}"
+        )
 
 
 def test_a_tool_failure_is_not_silently_swallowed():
