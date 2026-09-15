@@ -220,3 +220,31 @@ def test_the_verify_step_distinguishes_could_not_check_from_clean():
     assert "could not check" in heads["skipped"].lower()
     assert "confirmed" in heads["clean"].lower()
     assert "do not match" in heads["findings"].lower()
+
+
+# ── next steps survive the communicate-round skip ───────────────────────────
+
+def test_next_steps_run_even_when_the_communicate_round_wrote_the_answer():
+    """THE DEFECT, reproduced on the default UI path (cid 1fc208d1): the card
+    carried NO next_steps and NO follow-up questions, and the integrator said
+    "not run: answer written by the communicate round".
+
+    should_enrich returned False for BOTH the critic and next_steps there. The
+    6.8s measurement that justified it was about a CRITIC nobody was waiting
+    for — not about the two blocks the person actually reads. Ananth:
+    "these are important.. USER first" / "producing this every time".
+
+    The critic stays skipped; only next_steps is restored.
+    """
+    from app.pipeline.v2.enrich import should_enrich
+
+    d = should_enrich(answer="an answer", facts=(), open_gaps=(),
+                      is_complete=True, elapsed_s=10.0, promise_s=31.0,
+                      rounds_left=1, finalised_via_communicate=True)
+    assert d.run_next_steps is True, (
+        "next_steps is skipped on a communicate round — the person gets no "
+        "onward route on exactly the turns that finished cleanly")
+    assert d.run_critic is False, (
+        "the critic must stay skipped here — that is the measured 6.8s and a "
+        "standing ruling, and this change was never about it")
+    assert d.runs_anything is True

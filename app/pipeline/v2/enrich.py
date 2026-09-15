@@ -153,10 +153,24 @@ def should_enrich(*, answer: str, facts=(), open_gaps=(), is_complete=None,
         #
         # SKIPPED IS NOT UNCHECKED: run() still returns the deterministic
         # coverage and citations, and marks the two model sections "skipped".
-        return EnrichDecision(False, False,
+        # 🔴 NEXT STEPS SURVIVE THIS SKIP. Ananth, 2026-09-15, after seeing a
+        # live card with neither: "we need a next steps and follow up questions
+        # which is missing.. these are important.. USER first and then we work
+        # towards the promise" and "lets start with producing this every time".
+        #
+        # This returned False for BOTH, on the reasoning above that "next_steps
+        # is advisory" — true of the 6.8s measurement, which was about a CRITIC
+        # nobody was waiting for, and not true of the two blocks the person
+        # actually reads. The communicate round writes prose; it does not write
+        # an onward route, and the turn where the answer is finished is exactly
+        # the turn where the next question is most useful.
+        #
+        # The critic stays skipped here for every reason recorded above.
+        return EnrichDecision(False, True,
                               "answer written by the communicate round — "
-                              "deterministic coverage only; claim checking "
-                              "claim checking NOT yet wired (verify-claims pending)",
+                              "deterministic coverage only, and NEXT STEPS "
+                              "still run (the person reads those); claim "
+                              "checking NOT yet wired (verify-claims pending)",
                               criteria, affordable)
 
     if ALWAYS_ENRICH:

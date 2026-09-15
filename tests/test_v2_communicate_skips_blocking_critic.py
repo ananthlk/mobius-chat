@@ -1,4 +1,4 @@
-"""The communicate round ends the turn: no blocking model call after it.
+"""The communicate round ends the turn: no blocking CRITIC after it.
 
 Ananth, 2026-09-13: "the second call should have been communicate and direct
 to our v2 deterministic module and no UX".
@@ -6,8 +6,27 @@ to our v2 deterministic module and no UX".
 Measured on the three-payer turn before this gate: loop complete at +41.9s,
 card out at +48.7s -- 6.8s of critic + next_steps that nothing was waiting for.
 
-These assert the PROPERTY (the runner is never invoked) rather than the
-decision's wording, so rephrasing `why` cannot make them pass vacuously.
+🔴 NARROWED 2026-09-15, BY A LATER RULING THAT PARTLY REVERSES THE ONE ABOVE.
+
+Ananth, after seeing a live card with neither block: "we need a next steps and
+follow up questions which is missing.. these are important.. USER first and
+then we work towards the promise" and "lets start with producing this every
+time".
+
+So the gate now covers the CRITIC, which is what the 6.8s was really about and
+what the standing ruling names. next_steps is no longer "nothing was waiting
+for it" -- the person reads it, and a communicate round is exactly the turn
+where the answer is finished and the next question is most useful.
+
+THIS COSTS A MODEL CALL ON THE BLOCKING PATH and that is a deliberate, recorded
+trade, not an oversight: the earlier decision was measured and this one
+overrules it on the newer priority. If the latency proves worse than the block
+is worth, the fix is to make next_steps non-blocking, NOT to quietly restore
+the skip.
+
+These assert the PROPERTY (the runner is never invoked FOR THE CRITIC) rather
+than the decision's wording, so rephrasing `why` cannot make them pass
+vacuously.
 """
 from app.pipeline.v2 import enrich, integrator
 
@@ -25,20 +44,40 @@ def _runner_that_must_not_run(*a, **k):        # pragma: no cover
         "round -- that is the 6.8s this gate exists to stop")
 
 
-def test_communicate_round_makes_no_model_call():
+def test_communicate_round_makes_no_CRITIC_model_call():
+    """The critic is skipped and next_steps is not. Asserts the runner is
+    invoked ONLY for the next-steps stage -- a critic call still trips it."""
+    calls = []
+
+    def _runner(system, user, **kw):
+        stage = kw.get("stage") or ""
+        if "next_steps" not in stage:
+            raise AssertionError(
+                f"a CRITIC model call was made on the blocking path "
+                f"(stage={stage!r}) -- that is the 6.8s this gate exists to "
+                "stop, and the standing ruling it enforces")
+        calls.append(stage)
+        return '{"next_steps":["s"],"follow_up_questions":["q?"]}'
+
     d = enrich.should_enrich(answer="Molina, Sunshine and UHC each...",
                              facts=(_Fact(),), open_gaps=("one open gap",),
                              is_complete=True, finalised_via_communicate=True)
-    assert d.runs_anything is False
+    assert d.run_critic is False
+    assert d.run_next_steps is True, (
+        "the person gets no onward route on a clean turn")
+
     out = integrator.run(question="care management philosophy?",
                          answer="Molina, Sunshine and UHC each...",
                          facts=(_Fact(),), open_gaps=("one open gap",),
                          all_parts=("Molina", "Sunshine", "UHC"),
-                         decision=d, runner=_runner_that_must_not_run)
+                         decision=d, runner=_runner)
+    assert calls, "next_steps never called the model"
     # SKIPPED IS NOT UNCHECKED: the deterministic half still ran.
-    assert out.ran["critique"] == "skipped"
-    assert out.ran["next_steps"] == "skipped"
+    assert out.ran["critique"] in ("skipped", "deterministic (verify_claims)",
+                                   "deterministic (verify_claims) — nothing flagged")
     assert out.coverage, "deterministic coverage must survive the skip"
+    assert out.next_steps, "next_steps produced nothing"
+    assert out.follow_up_questions, "follow-up questions produced nothing"
 
 
 def test_open_gap_alone_does_not_skip():
