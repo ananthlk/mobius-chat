@@ -5527,31 +5527,26 @@ _MAX_AUTO_RETRY_SLEEP_S = 30
 # silently fall back to its own branches and the A/B would compare two things
 # that were never distinguished. An explicit literal is reviewable in a diff.
 _TOOLREG_OWNED: frozenset[str] = frozenset({
-    # appeals_find_carc REMOVED 2026-09-15. Live in dev it returned "no
-    # executable route declared" from the deployed catalogue, while the same
-    # call resolves a route locally -- so the container's catalogue and the
-    # authoring one disagree, which is Tool Manifest's to reconcile. Until it
-    # does, this tool goes back through chat's own branch, where it worked.
-    # Removed rather than left failing: a tool that cannot run is worse than a
-    # tool routed the old way, and react loses a capability either way.
+    # RESTORED to all five 2026-09-15 after Tool Manifest found the real cause.
+    # It was never missing route rows -- none of the five HAS a probe row and
+    # none should; they are MCP-served. Two defects in their MCP map:
+    #   1. a PARTIAL listing was cached for the life of the process, so a
+    #      transient failure at boot became a permanent capability loss in
+    #      that worker;
+    #   2. the merge used update() and never pruned, so a tool listed by an
+    #      earlier healthy attempt survived while its siblings were absent.
+    # That is exactly why appeals_get_playbook routed and the other two did
+    # not -- a stale entry beside two missing ones, which "the server is down"
+    # never explained.
+    #
+    # toolreg is VENDORED AT BUILD TIME (Dockerfile:95), so their fix changes
+    # nothing in the running process until chat is rebuilt. This restore and
+    # that rebuild are one action, not two.
+    "appeals_find_carc",
     "appeals_get_playbook",
-    # PULLED 2026-09-15, evidence-led. Keep what is PROVEN to route in the
-    # DEPLOYED catalogue; pull what is not. appeals_get_playbook stays because
-    # it demonstrably has a route there -- it reached argument validation and
-    # rejected a missing `payor`, which only happens after routing succeeds.
-    #
-    #   appeals_lookup_rules   "no executable route declared" on live turns.
-    #                          Chat's own branch (:4233) needs only `carc`,
-    #                          which is exactly what "how do I appeal a CARC 24
-    #                          denial" carries -- routing it through toolreg
-    #                          replaced a working answer with a confession.
-    #   appeals_validate_claim  route in the deployed catalogue UNVERIFIED.
-    #   appeals_assemble_letter route in the deployed catalogue UNVERIFIED.
-    #
-    # Unverified is not "probably fine". Two of the five turned out to be
-    # missing, and the failure reaches the user as an answer that says the
-    # tools broke. These go back through chat's branches until Tool Manifest
-    # reconciles the deployed catalogue with the authoring one.
+    "appeals_lookup_rules",
+    "appeals_validate_claim",
+    "appeals_assemble_letter",
 })
 
 
