@@ -3165,6 +3165,19 @@ from app.api._common import task_manager_base_url as _task_manager_base
 # Phase 1f.1: /chat/tasks/* moved to app.api.tasks. Router included below.
 
 
+@app.get("/diag/build")
+def diag_build():
+    """Which image this PROCESS is running.
+
+    The one fact that says whether a deploy landed. Read from the serving
+    process rather than from Cloud Run's config, because the question is not
+    "what did we ask for" but "what is answering" — and a smoke probe against
+    the previous revision answers 200 just as happily as the new one.
+    """
+    import os as _os
+    return {"image": _os.environ.get("MOBIUS_IMAGE_TAG") or None}
+
+
 @app.get("/diag/mcp")
 def diag_mcp():
     """What MCP auto-register actually found, for people without log access.

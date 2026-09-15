@@ -289,6 +289,19 @@ SET_ENV_VARS=(
     # it, under pressure, during the incident it exists for.
     # Empty default = unchanged behaviour (executor on).
     "MOBIUS_V2_TOOLREG_EXEC=${MOBIUS_V2_TOOLREG_EXEC:-}"
+    # 🔴 THE IMAGE TAG, INSIDE THE IMAGE. Nothing in the container knew which
+    # build it was, so "did the deploy land?" could only be answered from
+    # outside -- and `gcloud run services describe` is PERMISSION_DENIED for
+    # this account, so in practice it was answered by a smoke probe. A 200
+    # from the PREVIOUS revision is indistinguishable from success.
+    #
+    # 2026-09-15, Tool Manifest: six of their revisions failed to start while
+    # Cloud Run kept serving 200s from the old one. They read their own image
+    # out of Artifact Registry to settle a discrepancy and confirmed a fix was
+    # present -- in the image that BUILT, not the one SERVING. I spent part of
+    # today reading `listed_empty` off a revision that predated the fix and
+    # concluding the fix had not worked.
+    "MOBIUS_IMAGE_TAG=${IMAGE_TAG}"
     # MOBIUS_V2_STEER: the governor names ONE gap in the round context
     # (governor-react closure contract, Direction 1). v2 arm only. Empty =
     # the governor decides and says nothing, which is what it did for its
@@ -516,6 +529,45 @@ elif [[ "${SKIP_SMOKE}" -eq 1 ]]; then
 elif [[ -z "${SERVICE_URL}" ]]; then
     echo "⚠ Could not resolve service URL; skipping post-deploy smoke."
 else
+    # ── DID THE DEPLOY ACTUALLY LAND? ──────────────────────────────────
+    #
+    # 🔴 RUN THIS BEFORE THE SMOKE, NOT AFTER, AND NEVER INSTEAD OF IT.
+    #
+    # A smoke probe answers "is something healthy at this URL", which the
+    # PREVIOUS revision answers just as well. Every green smoke in this script
+    # is compatible with the new revision having failed to start and Cloud Run
+    # continuing to serve the old one -- which is exactly what happened to Tool
+    # Manifest on 2026-09-15 for six consecutive revisions, and what had me
+    # reading a diagnostic off pre-fix code and concluding the fix had failed.
+    #
+    # Asks the SERVING PROCESS what image it is, rather than asking Cloud Run
+    # what we requested. `gcloud run services describe` is PERMISSION_DENIED
+    # for this account, so the outside-in check is not available here -- and
+    # the inside-out one is the better question anyway: not "what did we ask
+    # for" but "what is answering".
+    echo "── Verifying the deploy landed ──"
+    _SERVING_IMAGE="$(curl -s -m 30 "${SERVICE_URL}/diag/build" 2>/dev/null \
+                      | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("image") or "")' 2>/dev/null || echo "")"
+    if [[ -z "${_SERVING_IMAGE}" ]]; then
+        # An older revision predates /diag/build, so absence is not proof of
+        # failure -- but it IS proof we cannot tell, and saying so is the whole
+        # point of this block.
+        echo "⚠ Serving process did not report an image (/diag/build absent or"
+        echo "  unreachable). CANNOT VERIFY the deploy landed — treat the smoke"
+        echo "  result below as unattributed until this endpoint is live."
+    elif [[ "${_SERVING_IMAGE}" != "${IMAGE_TAG}" ]]; then
+        echo >&2
+        echo "✗ DEPLOY DID NOT LAND. The new revision is not serving traffic." >&2
+        echo "    serving: ${_SERVING_IMAGE}" >&2
+        echo "    wanted:  ${IMAGE_TAG}" >&2
+        echo "  The revision most likely failed to start; Cloud Run keeps the" >&2
+        echo "  previous one serving, so health checks stay green. Check the" >&2
+        echo "  revision's startup logs before re-running." >&2
+        exit 73
+    else
+        echo "  ✓ serving ${_SERVING_IMAGE}"
+    fi
+
     echo "── Running post-deploy smoke ──"
     if "${SCRIPT_DIR}/post_deploy_smoke.sh" "${SERVICE_URL}"; then
         :  # pass — smoke script prints its own summary
