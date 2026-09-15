@@ -45,6 +45,7 @@ turn."""
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass, replace
 from typing import Any
@@ -168,6 +169,96 @@ def _extract_markdown_table(text: str) -> dict[str, Any] | None:
         if rows:
             return {"headers": headers, "rows": rows}
     return None
+
+
+# ── raw structured payloads ────────────────────────────────────────────────
+# A tool result shipped verbatim as the answer. react's fast path does this for
+# non-rag tools ("Non-rag tools already gate their own quality via success"),
+# and live (2026-09-15) a CMHC org lookup reached the user as
+#
+#     [{"org_entity_id": "9127...", "org_name": "DAVID LAWRENCE CENTER", ...}]
+#
+# v1 handled this by routing the turn to the LLM integrator to rewrite the JSON
+# as prose. That works and it is backwards: it spends a model call to DESTROY
+# structure that is already perfect. A list of records with shared keys is a
+# table -- it is the single most table-shaped thing that can arrive here, and
+# the ladder has had a rule for it since the first commit.
+#
+# So this parses rather than guards. The shape rules then apply unchanged:
+# several records become a table, one record becomes its fields as pairs,
+# scalars become a list.
+
+_JSON_START = re.compile(r"^\s*[\[{]")
+
+
+def _flatten_json_value(value: Any) -> str:
+    """One cell's worth of text. Lists join, objects compact, null shows as a
+    dash -- an empty cell and a null are different facts and only one of them
+    should look deliberate."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple)):
+        return "; ".join(_flatten_json_value(v) for v in value) if value else "—"
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _json_payload(text: str) -> ContentPayload | None:
+    """A raw JSON tool payload as typed content, or None if this is not one.
+
+    Deliberately narrow, same bar as react_loop's _looks_like_raw_structured_
+    blob: the text must START with a bracket and must actually parse. Real
+    prose essentially never satisfies both, so a false positive on a genuine
+    synthesized answer is not a live concern.
+
+    NOTHING IS DROPPED. Every key on every record reaches the card, including
+    ids and hashes that a human might not want. Deciding which fields matter
+    is an editorial judgement about the user's question, and this module does
+    not have the question -- inventing the judgement is how a formatter starts
+    hiding data it finds ugly.
+    """
+    raw = (text or "").strip()
+    if not raw or not _JSON_START.match(raw):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list) or not parsed:
+        return None
+
+    records = [r for r in parsed if isinstance(r, dict)]
+    if not records:
+        # A list of scalars is a list.
+        items = tuple(Item(label=_flatten_json_value(v)) for v in parsed)
+        return ContentPayload(items=items, explicit_list=True, contiguous=True) if items else None
+
+    # Column order: first-seen across records, so the tool's own field order
+    # survives instead of being alphabetised into something it never chose.
+    headers: list[str] = []
+    for record in records:
+        for key in record:
+            if key not in headers:
+                headers.append(key)
+
+    if len(records) == 1:
+        # One record is not a one-row table -- a table of twelve columns and a
+        # single row is unreadable, and its fields ARE label/value pairs. The
+        # ladder routes those to stats or to an Item/Detail table on its own.
+        pairs = tuple((k, _flatten_json_value(records[0].get(k))) for k in headers)
+        return ContentPayload(pairs=pairs, contiguous=True)
+
+    rows = tuple(
+        tuple(_flatten_json_value(r.get(h)) for h in headers) for r in records
+    )
+    return ContentPayload(
+        table=TableData(headers=tuple(headers), rows=rows), contiguous=True)
 
 
 _BULLET_LINE_RE = re.compile(r"^[-*]\s+(.+)$")
@@ -318,6 +409,10 @@ def extract_payload(text: str) -> ContentPayload:
     the first hit, because the ladder needs the full shape picture to make --
     and to trace -- its decision.
     """
+    payload = _json_payload(text)
+    if payload is not None:
+        return payload
+
     md_table = _extract_markdown_table(text)
     bullets = _extract_bullets(text)
     steps = _extract_steps(text)
@@ -485,6 +580,12 @@ def segment_draft(text: str) -> Segmentation:
     pattern is structure by construction, which is what lets the pairs
     ceiling lift.
     """
+    payload = _json_payload(text)
+    if payload is not None:
+        lines = (text or "").split("\n")
+        return Segmentation(blocks=(payload,), lines=tuple(lines),
+                            spans=((0, len(lines)),))
+
     lines = (text or "").split("\n")
     blocks: list[ContentPayload] = []
     spans: list[tuple[int, int]] = []
@@ -791,5 +892,12 @@ def _direct_answer_for(
     # table renderer had already cleaned. Duplicated AND uglier than nothing.
     # Every unit test passed; it took putting the card on a screen to see it.
     if _MD_TABLE_ANY_RE.search(text):
+        return ""
+    # A raw JSON payload, for the same reason and more so: it is not prose in
+    # any sense, and it now renders in full as the card above. Live
+    # (2026-09-15) an org lookup shipped its entire payload as the answer --
+    # `[{"org_entity_id": "9127...", ...}]` — which is what prompted parsing
+    # it at all.
+    if _json_payload(text) is not None:
         return ""
     return bolded

@@ -16,6 +16,8 @@ fail on a re-worded good one.
 """
 from __future__ import annotations
 
+import json
+
 import app.responder.envelope_classifier as ec
 from app.responder.deterministic_format import deterministic_format
 
@@ -261,3 +263,94 @@ class TestTheAnswerLineNeverShowsRawMarkup:
             "Here are the deadlines.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nThat is all.")
         assert "Here are the deadlines." in card["direct_answer"]
         assert "| A |" not in card["direct_answer"]
+
+
+class TestRawToolPayloadsBecomeTables:
+    """A tool result shipped verbatim as the answer.
+
+    react's fast path does this for non-rag tools, and live on 2026-09-15 a
+    CMHC org lookup reached the user as its entire JSON payload:
+
+        [{"org_entity_id": "9127...", "org_name": "DAVID LAWRENCE CENTER", ...}]
+
+    v1 handled it by routing the turn to the LLM integrator to rewrite the
+    JSON as prose. That works and it is backwards — it spends a model call to
+    DESTROY structure that is already perfect. A list of records with shared
+    keys is the single most table-shaped thing that can arrive here.
+    """
+
+    LIVE = (
+        '[{"org_entity_id": "9127414240976b712796f4a912cb40e3", '
+        '"org_name": "DAVID LAWRENCE CENTER", "org_type": "CMHC", '
+        '"market_tier": "sparse", "orgs_in_market": 2, "billing_npi_count": 1, '
+        '"billing_npis": ["1033883731"], "bene_count": 4199, '
+        '"revenue": 1219170.73}]'
+    )
+
+    def test_the_live_payload_becomes_a_table(self):
+        card = deterministic_format(self.LIVE)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+
+    def test_the_raw_json_never_reaches_the_answer_line(self):
+        """It is not prose in any sense, and it now renders in full above."""
+        assert deterministic_format(self.LIVE)["direct_answer"] == ""
+
+    def test_one_record_becomes_its_FIELDS_not_a_one_row_table(self):
+        """Twelve columns and a single row is unreadable, and the fields ARE
+        label/value pairs."""
+        data = deterministic_format(self.LIVE)["sections"][0]["data"]
+        assert data["headers"] == ["Item", "Detail"]
+        assert ["org_name", "DAVID LAWRENCE CENTER"] in data["rows"]
+
+    def test_several_records_become_a_real_table(self):
+        draft = (
+            '[{"org_name": "DAVID LAWRENCE CENTER", "org_type": "CMHC", "bene_count": 4199},'
+            ' {"org_name": "PARK ROYAL", "org_type": "HOSPITAL", "bene_count": 812}]'
+        )
+        section = deterministic_format(draft)["sections"][0]
+        assert section["data"]["headers"] == ["org_name", "org_type", "bene_count"]
+        assert len(section["data"]["rows"]) == 2
+
+    def test_column_order_is_the_TOOL_s_order(self):
+        """First-seen across records, so the tool's own field order survives
+        instead of being alphabetised into something it never chose."""
+        draft = '[{"zeta": 1, "alpha": 2}, {"alpha": 3, "zeta": 4}]'
+        assert deterministic_format(draft)["sections"][0]["data"]["headers"] == ["zeta", "alpha"]
+
+    def test_nothing_is_dropped(self):
+        """Every key reaches the card, ids and hashes included. Deciding which
+        fields matter is an editorial judgement about the user's question, and
+        this module does not have the question."""
+        rows = deterministic_format(self.LIVE)["sections"][0]["data"]["rows"]
+        assert ["org_entity_id", "9127414240976b712796f4a912cb40e3"] in rows
+
+    def test_nested_values_are_flattened_readably(self):
+        rows = deterministic_format(self.LIVE)["sections"][0]["data"]["rows"]
+        assert ["billing_npis", "1033883731"] in rows
+
+    def test_null_reads_as_a_dash_not_as_blank(self):
+        """An empty cell and a null are different facts, and only one of them
+        should look deliberate.
+
+        Asserted on the VALUES rather than on a table, because two short pairs
+        is a stats card — the ladder decides the envelope from the content and
+        this is a test about flattening, not about shape."""
+        card = deterministic_format('[{"a": null, "b": 1}]')
+        # Read the structure, not a JSON dump of it — json.dumps escapes the
+        # em-dash to \u2014 and the assertion silently tests the encoder.
+        values = [i["value"] for i in card["sections"][0]["data"]["items"]]
+        assert "—" in values
+
+    def test_a_list_of_scalars_is_a_list(self):
+        card = deterministic_format('["first item", "second item", "third item"]')
+        assert card["sections"][0]["format"] == "bullets"
+
+    def test_prose_is_never_mistaken_for_json(self):
+        """Narrow by design: must START with a bracket AND parse."""
+        for draft in (
+            "Sunshine Health requires claims within 180 days of service. " * 5,
+            "The answer is [see the table above] for the filing deadlines. " * 4,
+            "{not actually json at all, just a brace} " * 6,
+        ):
+            assert deterministic_format(draft)["sections"] == [] or \
+                   deterministic_format(draft)["sections"][0]["format"] != "table"
