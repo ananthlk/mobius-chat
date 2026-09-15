@@ -429,7 +429,12 @@ def _list_tools_from_url(url: str) -> list[dict[str, Any]]:
                             {
                                 "name":        t.name,
                                 "description": getattr(t, "description", ""),
-                                "inputSchema": getattr(t, "inputSchema", {}) or {},
+                                # Either spelling — mcp 2.x renamed this and a
+                                # bare getattr returns {} silently, stripping
+                                # every tool's schema. See mcp_manager._mcp_attr.
+                                "inputSchema": (
+                                    getattr(t, "input_schema", None)
+                                    or getattr(t, "inputSchema", None) or {}),
                             }
                             for t in (result.tools or [])
                         ]

@@ -80,6 +80,57 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+# 🔴 THE mcp SDK RENAMED A FAMILY OF ATTRIBUTES AT 2.0, AND ONE RENAME IS SILENT.
+#
+#     1.26                      2.x                    how it fails
+#     streamablehttp_client  -> streamable_http_client  ImportError, loud
+#     Tool.inputSchema       -> Tool.input_schema       AttributeError, loud
+#     CallToolResult.isError -> CallToolResult.is_error getattr(...) -> False
+#
+# The third is the dangerous one BECAUSE it was already read defensively:
+# `getattr(result, "isError", False)` does not raise on 2.x — it reports every
+# tool-reported error as NOT an error, and the tool's own diagnostic text flows
+# onward as evidence. It would never have crashed; it would have shipped.
+#
+# Found 2026-09-15 by Tool Manifest after the transport rename broke loudly and
+# they went looking for its siblings rather than fixing the one symbol they
+# already knew about. chat had all three.
+#
+# These read EITHER spelling so a pinned-back SDK still works, and so the
+# failure mode is never "silently False".
+
+def _mcp_attr(obj, *names, default=None):
+    """First present attribute among `names`, else `default`.
+
+    Deliberately takes several spellings rather than one: pinning the new name
+    would break on an older SDK exactly as the old name broke on the new one.
+    """
+    for n in names:
+        if hasattr(obj, n):
+            v = getattr(obj, n)
+            if v is not None:
+                return v
+    return default
+
+
+def mcp_is_error(result, *, default=False) -> bool:
+    """Did the tool report an error? Reads is_error (2.x) or isError (1.x).
+
+    `default` is False only because a result with NEITHER attribute is a shape
+    we do not recognise, and treating an unknown shape as an error would fail
+    every call on a future SDK. The point of this function is that the ANSWER
+    is never silently False because of a rename.
+    """
+    v = _mcp_attr(result, "is_error", "isError", default=None)
+    return bool(default if v is None else v)
+
+
+def mcp_input_schema(tool) -> dict:
+    """The tool's JSON-Schema, under either spelling. Always a dict."""
+    schema = _mcp_attr(tool, "input_schema", "inputSchema", default=None) or {}
+    return schema if isinstance(schema, dict) else {}
+
+
 async def _call_mcp_tool_async(
     tool_name: str,
     arguments: dict[str, Any],
@@ -124,7 +175,7 @@ async def _call_mcp_tool_async(
                             text = "\n\n".join(parts) if parts else ""
                         else:
                             text = str(content)
-                        if getattr(result, "isError", False):
+                        if mcp_is_error(result):
                             logger.warning("MCP tool %s returned error", tool_name)
                             return (text or "Tool returned an error", False)
                         logger.info("MCP tool %s completed", tool_name)
@@ -201,9 +252,7 @@ async def _list_mcp_tools_async() -> list[dict[str, Any]]:
                     result = await session.list_tools()
                     tools = []
                     for t in result.tools:
-                        schema = getattr(t, "inputSchema", None) or {}
-                        if not isinstance(schema, dict):
-                            schema = {}
+                        schema = mcp_input_schema(t)
                         tools.append({
                             "name": t.name,
                             "description": getattr(t, "description", "") or "",
