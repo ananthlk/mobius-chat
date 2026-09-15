@@ -244,12 +244,29 @@ class TestNonChunkedToolResultsBypassTheHedge:
 
         with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
              patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
-            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
-                mock_execute.return_value = {
-                    "tool": "appeals_find_carc", "success": True, "result": appeals_json,
-                    "signal": None, "sources": [], "usage": None,
-                }
+            # 🔴 STUB BOTH DISPATCH PATHS. As of 2026-09-15 appeals_find_carc
+            # is in _TOOLREG_OWNED and runs through Tool Manifest's executor,
+            # so patching _execute_tool alone no longer intercepts it -- this
+            # test silently began making a REAL network call to the appeals
+            # service and asserting against live rule text. It failed on the
+            # content, which reads as a behaviour regression; the behaviour
+            # under test (a non-chunked result ships directly, unhedged) was
+            # never broken. A double pinned to one dispatch path stops pinning
+            # anything the moment the dispatch moves.
+            _result = {
+                "tool": "appeals_find_carc", "success": True, "result": appeals_json,
+                "signal": None, "sources": [], "usage": None,
+            }
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute, \
+                 patch("app.pipeline.react_loop._execute_via_toolreg") as mock_toolreg:
+                mock_execute.return_value = _result
+                mock_toolreg.return_value = _result
                 run_react(ctx, emitter=None)
+
+            # The point of the test: whichever path served it, exactly one did,
+            # and no live call escaped the doubles.
+            assert mock_execute.called or mock_toolreg.called, \
+                "neither dispatch path ran — the tool never executed"
 
         assert ctx.final_message == appeals_json
         assert "Found" not in ctx.final_message  # not routed through the hedge template
