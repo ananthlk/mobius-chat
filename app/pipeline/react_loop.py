@@ -5465,6 +5465,82 @@ _RAG_COULD_NOT_RUN_STATUSES = frozenset({"timeout", "filled_no_synthesis"})
 _MAX_AUTO_RETRY_SLEEP_S = 30
 
 
+
+# ── Per-round execution through Tool Manifest (first cut: appeals) ──────
+#
+# APPEALS FIRST BECAUSE A FAILURE WOULD BE UNAMBIGUOUS. All five are MCP-served,
+# all five are declared by their owner after a handler-body audit (toolreg
+# migration 114), and all five were invoked live through toolreg.v2 on
+# 2026-09-15 at 166-360ms. No other group has every member reachable, declared
+# AND measured, so any regression here is the change rather than the tool.
+#
+# NOT read from toolreg's catalogue at import time, on purpose. Routing must not
+# depend on a database being reachable: if the catalogue were down, chat would
+# silently fall back to its own branches and the A/B would compare two things
+# that were never distinguished. An explicit literal is reviewable in a diff.
+_TOOLREG_OWNED: frozenset[str] = frozenset({
+    "appeals_find_carc",
+    "appeals_get_playbook",
+    "appeals_lookup_rules",
+    "appeals_validate_claim",
+    "appeals_assemble_letter",
+})
+
+
+def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn) -> dict:
+    """Run one tool through toolreg.v2 and return react's result shape.
+
+    🔴 THE THREE OUTCOMES DO NOT COLLAPSE INTO success=True/False.
+
+    toolreg distinguishes `evidence` (the tool answered), `empty` (a claim about
+    the CORPUS, earned) and `could_not_run` (a claim about OUR CODE). React's
+    dict has one boolean, so the distinction has to survive in `signal` and
+    `error` instead:
+
+        evidence       success=True,  signal=None
+        empty          success=False, signal=NO_SOURCES   -- an earned absence
+        could_not_run  success=False, signal=None + error -- NOT an absence
+
+    Giving could_not_run the no-sources signal would tell react the corpus is
+    silent when the truth is that the call failed, which is the exact confusion
+    this executor exists to prevent.
+    """
+    import json as _json
+    from toolreg.v2 import execute_tool as _tr_exec
+
+    r = _tr_exec(tool, inputs or {}, speculative=False)
+    payload = r.payload
+    body = payload if isinstance(payload, str) else _json.dumps(payload or {})
+
+    if r.outcome == "evidence":
+        return {"tool": tool, "success": True, "result": body,
+                "signal": None, "sources": list(r.sources or [])}
+
+    if r.outcome == "empty":
+        return {"tool": tool, "success": False, "result": body,
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": []}
+
+    # could_not_run. An error envelope is attached ONLY when the failure is
+    # genuinely recoverable, because _execute_tool_with_retry retries anything
+    # carrying a recoverable error_code -- and retrying "missing required
+    # argument" or a consequence refusal spends the promise to fail identically.
+    reason = str(r.reason or "")
+    low = reason.lower()
+    code = ("timeout" if ("timeout" in low or "timed out" in low)
+            else "provider_error" if ("http 5" in low or "mcp call failed" in low)
+            else None)
+    out: dict = {
+        "tool": tool, "success": False,
+        "result": f"[{tool}] COULD NOT RUN — {reason[:400]}",
+        "signal": None, "sources": [],
+    }
+    if code:
+        out["error"] = {"schema_name": "error_envelope", "error_code": code,
+                        "tool": tool, "user_facing_message": out["result"],
+                        "retry_after_seconds": None}
+    emit_fn(f"  ⊘ {tool} could not run: {reason[:120]}")
+    return out
+
 def _execute_tool_with_retry(
     tool: str,
     inputs: dict,
@@ -5579,8 +5655,24 @@ def _execute_tool_with_retry(
         # skip the capture -- which is precisely how this feature died four
         # times already: correct code attached to a path that was not taken.
         try:
-            out = _execute_tool(tool, inputs, ctx, tool_emitter,
-                                open_gaps=open_gaps)
+            # 🔴 THE FIRST CUT OF PER-ROUND EXECUTION THROUGH TOOL MANIFEST.
+            #
+            # Ananth: "react names the tool, I execute it, I own retries."
+            # Preload and verify already route through toolreg.v2; this is the
+            # per-round loop, where the tool calls actually happen.
+            #
+            # DELIBERATELY INSIDE _run_once AND NOT AT THE :9025 CALL SITE.
+            # Intercepting before _execute_tool_with_retry would take the
+            # execution AND silently drop the retry, the promise-fit guard,
+            # _capture_rendered and the exception->typed-envelope path. Layer A
+            # (retries) is a separate migration by agreement with the Governor,
+            # precisely so a failure in either can be attributed. Here only the
+            # CALL changes; everything wrapped around it is untouched.
+            if tool in _TOOLREG_OWNED:
+                out = _execute_via_toolreg(tool, inputs, ctx, emit_fn)
+            else:
+                out = _execute_tool(tool, inputs, ctx, tool_emitter,
+                                    open_gaps=open_gaps)
         except Exception as exc:
             out = tool_result_from_exception(exc, tool=tool, round=round_num)
             emit_fn(f"  ⊘ {out['result']}")
