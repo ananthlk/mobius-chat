@@ -30,14 +30,22 @@ _DEFAULT_RATES: dict[tuple[str, str], tuple[float, float]] = {
     ("groq", "meta-llama/llama-prompt-guard-2-22m"):       (0.000030, 0.000030),
 
     # ── ANTHROPIC ─────────────────────────────────────────────────────────────
+    # Verified 2026-09-15 against Anthropic's live pricing page. The
+    # claude-opus-4-8 and claude-fable-5-1 rows were missing entirely --
+    # get_rates()'s prefix fallback only matches a KNOWN key that is a
+    # prefix of the requested model, so neither of those two model_ids had
+    # ANY entry that could match, and every real call to them was silently
+    # priced at $0.00 (the (0.0, 0.0) fallback), with no error or log line.
     ("anthropic", "claude-sonnet-5"):            (0.002000, 0.010000),
     ("anthropic", "claude-sonnet-4-6"):          (0.003000, 0.015000),
     ("anthropic", "claude-haiku-4-5"):           (0.001000, 0.005000),
     ("anthropic", "claude-haiku-4-5-20251001"):  (0.001000, 0.005000),
     ("anthropic", "claude-opus-5"):              (0.005000, 0.025000),
+    ("anthropic", "claude-opus-4-8"):            (0.005000, 0.025000),
     ("anthropic", "claude-opus-4-7"):            (0.005000, 0.025000),
     ("anthropic", "claude-opus-4-6"):            (0.005000, 0.025000),
     ("anthropic", "claude-opus-4-5"):            (0.005000, 0.025000),
+    ("anthropic", "claude-fable-5-1"):           (0.010000, 0.050000),
 
     # ── PERPLEXITY (per-request search fee not modeled — token rates only) ────
     ("perplexity", "sonar-pro"):                 (0.003000, 0.015000),

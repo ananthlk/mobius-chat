@@ -84,6 +84,24 @@ def test_pricing_matches_current_anthropic_rates():
     assert MODEL_ROSTER["claude-fable-5-1"].spec_output_per_1m_usd == 50.00
 
 
+def test_pricing_matches_current_anthropic_rates_older_opus_and_haiku():
+    # Ananth, 2026-09-15: "many of the claude model prior costs etc are
+    # missing" -- the models covered by test_pricing_matches_current_anthropic_rates
+    # above were correct, but claude-opus-4-7/4-6/4-5-20251101 carried a
+    # stale $15.00/$75.00 (3x too high) and claude-haiku-4-5-20251001
+    # carried a stale $0.80/$4.00. Verified directly against Anthropic's
+    # live pricing page (claude.com/pricing, fetched 2026-09-15): the
+    # entire Opus 4.5+ lineage (4.5, 4.6, 4.7, 4.8, 5) is uniformly
+    # $5.00/$25.00 per MTok -- Opus 5's own docs call it "a drop-in
+    # upgrade at Opus 4.8's pricing."
+    for model_id in ["claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5-20251101"]:
+        assert MODEL_ROSTER[model_id].spec_input_per_1m_usd == 5.00, model_id
+        assert MODEL_ROSTER[model_id].spec_output_per_1m_usd == 25.00, model_id
+
+    assert MODEL_ROSTER["claude-haiku-4-5-20251001"].spec_input_per_1m_usd == 1.00
+    assert MODEL_ROSTER["claude-haiku-4-5-20251001"].spec_output_per_1m_usd == 5.00
+
+
 def test_fable_has_own_apex_category_excluded_from_copilot():
     assert MODEL_ROSTER["claude-fable-5-1"].benchmark_category == "frontier_apex"
     assert "frontier_apex" in COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES

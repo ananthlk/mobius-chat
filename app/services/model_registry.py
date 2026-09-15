@@ -1360,12 +1360,14 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify"],
         spec_tokens_per_sec=300.0,
         spec_context_k=200,
-        spec_input_per_1m_usd=0.80,
-        spec_output_per_1m_usd=4.00,
+        # 2026-09-15: was $0.80/$4.00 -- stale. Verified against Anthropic's
+        # live pricing page: Claude Haiku 4.5 is $1.00/$5.00 per MTok.
+        spec_input_per_1m_usd=1.00,
+        spec_output_per_1m_usd=5.00,
         benchmark_category="frontier_fast",
         ema_quality=0.80,
         ema_latency_ms=1200.0,
-        ema_cost_usd=0.005,
+        ema_cost_usd=0.00625,                      # scaled with the corrected price (x1.25)
     ),
 
     # ── ANTHROPIC OPUS (premium reasoning tier) ───────────────────────────────
@@ -1402,12 +1404,17 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         eligible_stages=list(CORE_REASONING_STAGES),
         spec_tokens_per_sec=70.0,
         spec_context_k=200,
-        spec_input_per_1m_usd=15.00,
-        spec_output_per_1m_usd=75.00,
+        # 2026-09-15: was $15.00/$75.00 -- stale, 3x too high. Verified
+        # against Anthropic's live pricing page: the entire Opus 4.5+
+        # lineage (4.5, 4.6, 4.7, 4.8, 5) is uniformly $5.00/$25.00 per
+        # MTok -- Opus 5's own docs call it "a drop-in upgrade at Opus
+        # 4.8's pricing," and 4.5/4.6/4.7 share that same rate.
+        spec_input_per_1m_usd=5.00,
+        spec_output_per_1m_usd=25.00,
         benchmark_category="frontier_reasoning_premium",
         ema_quality=0.94,
         ema_latency_ms=5500.0,
-        ema_cost_usd=0.075,
+        ema_cost_usd=0.025,                        # matches claude-opus-5's prior at the same verified price
     ),
 
     "claude-opus-4-6": ModelSpec(
@@ -1419,12 +1426,14 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         eligible_stages=list(CORE_REASONING_STAGES),
         spec_tokens_per_sec=70.0,
         spec_context_k=200,
-        spec_input_per_1m_usd=15.00,
-        spec_output_per_1m_usd=75.00,
+        # 2026-09-15: was $15.00/$75.00 -- stale, 3x too high; see the
+        # claude-opus-4-7 comment above for the verified $5/$25 source.
+        spec_input_per_1m_usd=5.00,
+        spec_output_per_1m_usd=25.00,
         benchmark_category="frontier_reasoning_premium",
         ema_quality=0.93,
         ema_latency_ms=5800.0,
-        ema_cost_usd=0.075,
+        ema_cost_usd=0.025,
     ),
 
     "claude-opus-4-5-20251101": ModelSpec(
@@ -1436,12 +1445,14 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         eligible_stages=list(CORE_REASONING_STAGES),
         spec_tokens_per_sec=70.0,
         spec_context_k=200,
-        spec_input_per_1m_usd=15.00,
-        spec_output_per_1m_usd=75.00,
+        # 2026-09-15: was $15.00/$75.00 -- stale, 3x too high; see the
+        # claude-opus-4-7 comment above for the verified $5/$25 source.
+        spec_input_per_1m_usd=5.00,
+        spec_output_per_1m_usd=25.00,
         benchmark_category="frontier_reasoning_premium",
         ema_quality=0.91,
         ema_latency_ms=6000.0,
-        ema_cost_usd=0.075,
+        ema_cost_usd=0.025,
     ),
 
     # ── ANTHROPIC — current-generation models (2026-08-17, Ananth directive:
