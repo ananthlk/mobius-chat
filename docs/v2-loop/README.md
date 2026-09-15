@@ -168,6 +168,40 @@ the Tool Manifest migration; one is a constant that belongs in
 ## Known-unfixed, carried openly
 
 - **The judge does not reproduce.** Mean |delta| **0.241**, max 0.621 on identical text — wider than any effect measured this week. Every quality claim in this repo is currently unfalsifiable in both directions. Temperature pinned to 0 today; **not re-measured**.
+- **The `confidence=None` floor — MECHANISM RESOLVED, STILL UNFIXED.**
+  Tool Manifest's conclusion holds; their stated mechanism does not — and they
+  flagged the risk themselves: *"I am reading a formatted log line, not
+  assignment sites... grep the WRITERS."*
+
+  Grepping the writers by AST finds **two, not zero**:
+
+  | site | state |
+  |---|---|
+  | `react_loop.py:5568` | `proposes_complete=False, self_reported_confidence=None` — the PRE-round probe |
+  | `react_loop.py:7290` | `proposes_complete=True, self_reported_confidence=decision.get("confidence")` — POST |
+
+  So confidence IS written, and the 40/40 line is the PRE probe, where `None`
+  is correct — the model has not spoken yet. The probe is also **not a
+  constant**: it varies with the clock and the round counters.
+
+  **The conclusion survives anyway.** Because the two MERIT fields are literals
+  there, no combination of the varying inputs reaches a merits-based finish.
+  Swept across all three promises, 392 input combinations
+  (`scripts/diag/pre_round_directive.py`): **every** `finalize` the pre-probe
+  can emit is `budget exhausted`. Zero on the merits, on all three.
+
+  Load-bearing rather than cosmetic because the pre-directive is not advisory —
+  `react_loop.py:6043` and `:6092` use it to select the agent role /
+  composition and the reasoning depth. Every round is prompted as though the
+  bar has not been met, including a round following one where the model
+  proposed complete **with** a confidence: that value is written at 7290 and
+  never carried into the next round's pre-state.
+
+  **Not mine to fix** — v1's loop, which stays pure for the A/B, and not this
+  seat's file. v2 does not share it: v2's `RoundState` has no confidence field
+  at all, by a decision already recorded at `posture.py:502` (*"self-reported
+  confidence is the one signal produced by the thing being judged"*).
+
 - **`confidence=None` on 40/40 turns** in the SHARED loop: the pre-round state hardcodes it, the gate reads absent as "bar not met", and round 1 is `search` on every turn. A structural floor of two rounds. v2's loop does not have this; v1's does.
 - **Empty-completed turns** — `status=completed`, zero thinking entries, empty message. Intermittent, unexplained, not the answer cache.
 - **Local suite hides 8 red as green-ish.** `tests/test_v2_toolreg_bridge.py`
