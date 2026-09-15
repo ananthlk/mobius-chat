@@ -96,6 +96,7 @@ async def generate(
     latency_budget_ms: int | None = None,
     attachments: list[dict] | None = None,
     response_schema: dict | None = None,
+    temperature: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
@@ -185,6 +186,20 @@ async def generate(
         # structure gets it where it exists and plain prose elsewhere; the
         # extractor's own retry and repair already handle the plain case.
         _extra_kw["response_schema"] = response_schema
+    # 🔴 A SCORER MUST NOT BE CREATIVE.
+    #
+    # Every provider adapter defaults to temperature 0.1 and `generate` had no
+    # way to ask for anything else -- so the adjudicator, the judge whose score
+    # gates every quality claim in this repo, has always graded with sampling
+    # on. Measured: re-scoring IDENTICAL text gives mean |delta| 0.241, max
+    # 0.621 (n=8), wider than the v1-vs-v2 difference it is used to decide. A
+    # number that cannot reproduce cannot falsify anything.
+    #
+    # Applied ONLY when a caller asks. Generation stages keep their 0.1 and
+    # this must not become a global default: prose written at temperature 0 is
+    # a different and worse trade. Grading is not composing.
+    if temperature is not None:
+        _extra_kw["temperature"] = float(temperature)
     try:
         text, usage = await provider.generate_with_usage(
             prompt, max_tokens=max_tokens, stage=stage, **_extra_kw

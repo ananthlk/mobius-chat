@@ -86,6 +86,9 @@ async def adjudicate_full_async(
                 thread_id=thread_id,
                 parser=False,
                 phi_detected=False,
+                # The judge grades, it does not compose. Sampling here is pure
+                # measurement error: mean |delta| 0.241 on identical text.
+                temperature=0.0,
             )
             last_llm_text = text or ""
             adjudicator_usage = dict(usage) if isinstance(usage, dict) else None
