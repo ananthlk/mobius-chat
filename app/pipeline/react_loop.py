@@ -5487,7 +5487,8 @@ _TOOLREG_OWNED: frozenset[str] = frozenset({
 })
 
 
-def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn) -> dict:
+def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn,
+                         *, skip_retry: bool = False) -> dict:
     """Run one tool through toolreg.v2 and return react's result shape.
 
     🔴 THE THREE OUTCOMES DO NOT COLLAPSE INTO success=True/False.
@@ -5508,7 +5509,16 @@ def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn) -> dict:
     import json as _json
     from toolreg.v2 import execute_tool as _tr_exec
 
-    r = _tr_exec(tool, inputs or {}, speculative=False)
+    # 🔴 THE PROMISE FLAG HAS TO CROSS THE SEAM OR IT GOVERNS HALF THE TURN.
+    #
+    # Tool Manifest threads `skip_retry` through to run_mcp's TRANSPORT retry
+    # (toolreg v2.py:113 resolves it to 0 attempts), which closed a real gap:
+    # `retries: int = 2` meant three attempts against a dead transport, and
+    # chat's skip_retry never reached it. But a parameter nobody passes is the
+    # producer-without-a-consumer defect, and their fix is inert until this
+    # line sends the flag. skip_retry is a parameter of the enclosing
+    # _execute_tool_with_retry and was already in scope here, unused.
+    r = _tr_exec(tool, inputs or {}, speculative=False, skip_retry=skip_retry)
     payload = r.payload
     body = payload if isinstance(payload, str) else _json.dumps(payload or {})
 
@@ -5669,7 +5679,8 @@ def _execute_tool_with_retry(
             # precisely so a failure in either can be attributed. Here only the
             # CALL changes; everything wrapped around it is untouched.
             if tool in _TOOLREG_OWNED:
-                out = _execute_via_toolreg(tool, inputs, ctx, emit_fn)
+                out = _execute_via_toolreg(tool, inputs, ctx, emit_fn,
+                                           skip_retry=skip_retry)
             else:
                 out = _execute_tool(tool, inputs, ctx, tool_emitter,
                                     open_gaps=open_gaps)
