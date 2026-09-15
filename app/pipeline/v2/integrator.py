@@ -88,6 +88,10 @@ class Integration:
     critique: tuple[PartVerdict, ...] = ()
     critique_summary: str = ""
     next_steps: tuple[str, ...] = ()
+    # Ananth, 2026-09-15: "we need a next steps and follow up questions which
+    # is missing.. these are important.. USER first". Follow-ups did not exist
+    # as a field at all — the capability was absent, not broken.
+    follow_up_questions: tuple[str, ...] = ()
     # ── what actually happened ───────────────────────────────────────────
     ran: dict = field(default_factory=dict)      # section -> ok | skipped | failed
     prompt_sources: dict = field(default_factory=dict)
@@ -318,12 +322,31 @@ _CRITIC_FALLBACK = (
     "If the answer is sound, say so — do not invent a criticism to look useful."
 )
 
+# 🔴 ALWAYS PRODUCES BOTH. The previous prompt ended "nothing if the answer is
+# complete", so a good turn returned an empty list and the user got no onward
+# route at all — which is exactly the turn where a follow-up is most useful.
+# Ananth: "lets start with producing this every time".
+#
+# The two are NOT the same thing and the prompt says so, because the earlier
+# version collapsed them: a STEP is work the person does away from this screen;
+# a QUESTION is something they can ask us next and we could answer now.
 _NEXT_FALLBACK = (
-    "Say what would actually close what is still open on this question.\n"
-    "Return JSON only: {\"next_steps\": [\"<specific step>\", ...]}\n"
-    "Name the document, payer or question to go after. At most three. "
-    "Only steps this answer's own gaps call for — no generic advice, and "
-    "nothing if the answer is complete."
+    "You are writing what comes after an answer the user just read.\n\n"
+    "Return JSON only:\n"
+    '{"next_steps": ["<step>", ...], '
+    '"follow_up_questions": ["<question>", ...]}\n\n'
+    "next_steps — what the PERSON does next, away from this screen. Name the "
+    "document, payer, form or portal to go to. Concrete enough to act on "
+    "without re-reading the answer. At most three.\n\n"
+    "follow_up_questions — what they could sensibly ASK US next, written in "
+    "their voice as a question. Each must be answerable from the same kind of "
+    "material this answer came from — never a question only the user can "
+    "answer about their own claim. At most three.\n\n"
+    "BOTH LISTS ARE ALWAYS NON-EMPTY. A complete answer still has a next "
+    "action and an obvious next question; that is the turn where they are "
+    "most useful, not the one where they are unnecessary.\n"
+    "No generic advice. Nothing that restates the answer. If the answer left "
+    "something open, the first next_step closes THAT."
 )
 
 
@@ -420,12 +443,20 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
             pool.submit(_call, runner, sys_p, user_p,
                         NEXT_STEPS_MAX_TOKENS, "v2_next_steps"),
             "next_steps", ran, problems)
-    steps = _parse_next_steps(next_raw, problems)
+    steps, follow_ups = _parse_next_steps(next_raw, problems)
+    if not steps or not follow_ups:
+        # SAY WHICH HALF IS MISSING. "next_steps: ok" with an empty list is the
+        # shape that let this go unnoticed for weeks.
+        problems.append(
+            "next_steps returned "
+            f"{len(steps)} step(s) and {len(follow_ups)} question(s) — "
+            "the prompt asks for both to be non-empty")
 
     return Integration(
         coverage=base.coverage, citations=base.citations,
         unsupported_claims=base.unsupported_claims, open_gaps=base.open_gaps,
         critique=critique, critique_summary=summary, next_steps=steps,
+        follow_up_questions=follow_ups,
         ran=ran, prompt_sources=dict(PROMPT_SOURCES), problems=tuple(problems))
 
 
@@ -524,6 +555,18 @@ def _parse_next_steps(raw, problems) -> tuple[str, ...]:
                 f"NEXT_STEPS_MAX_TOKENS (currently {NEXT_STEPS_MAX_TOKENS})")
         elif raw:
             problems.append("next_steps was not JSON")
-        return ()
-    return tuple(str(s).strip() for s in (d.get("next_steps") or [])
-                 if str(s).strip())[:3]
+        # BOTH halves on every exit. Changing only the success return left the
+        # failure path yielding a bare (), which raised
+        # "not enough values to unpack" at the one call site — a parse failure
+        # turned into a crash in the code that handles parse failures.
+        return (), ()
+    return (
+        tuple(str(s).strip() for s in (d.get("next_steps") or [])
+              if str(s).strip())[:3],
+        # `follow_ups` accepted as an alias: the model reaches for the shorter
+        # name often enough that rejecting it would silently drop a list the
+        # model DID produce, which is the failure this whole change is about.
+        tuple(str(q).strip() for q in (d.get("follow_up_questions")
+                                       or d.get("follow_ups") or [])
+              if str(q).strip())[:3],
+    )

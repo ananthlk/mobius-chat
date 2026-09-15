@@ -1965,6 +1965,31 @@ def run_integrate(
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # 🔴 v2's INTEGRATOR ALREADY PRODUCED THESE, AND NOTHING READ THEM.
+    #
+    # `next_steps` and `next_questions_for_user` are filled ONLY from the
+    # composer's answer-card JSON above. v2 runs a dedicated call that produces
+    # both — and its output reached no consumer, so a v2 turn showed neither
+    # block. Measured live 2026-09-15 (cid 36aa6171): the integrator reported
+    # `next_steps: ok` and the envelope carried no next-steps block at all.
+    #
+    # v1 IS UNTOUCHED: this only fills what the card left EMPTY, and only from
+    # v2's own integration, which v1 turns do not have. A card that supplied
+    # its own keeps them.
+    _v2i = getattr(ctx, "v2_integration", None)
+    if isinstance(_v2i, dict):
+        if not next_steps:
+            _ns = [x for x in (_v2i.get("next_steps") or []) if str(x).strip()]
+            if _ns:
+                next_steps = normalize_followup_line_list(
+                    _ns, default_clickable=False)
+        if not next_questions_for_user:
+            _fq = [x for x in (_v2i.get("follow_up_questions") or [])
+                   if str(x).strip()]
+            if _fq:
+                next_questions_for_user = normalize_followup_line_list(
+                    _fq, default_clickable=True)
+
     next_steps, next_questions_for_user = filter_next_steps_and_questions(
         next_steps,
         next_questions_for_user,

@@ -217,7 +217,11 @@ def test_a_resolver_that_raises_still_yields_a_usable_prompt(monkeypatch):
     monkeypatch.setattr("app.pipeline.v2.statement_text.resolve", boom)
     from app.pipeline.v2.integrator import _next_steps_prompt
     system, _ = _next_steps_prompt("q", "a", ())
-    assert "close what is still open" in system
+    # ASSERT THE PROPERTY, NOT THE PHRASING. This matched a sentence of the
+    # prompt's prose and broke the moment the prompt was rewritten to ask for
+    # follow-up questions too — while the thing it meant to protect (a usable
+    # prompt survives a resolver that raises) was never in question.
+    assert '"next_steps"' in system and '"follow_up_questions"' in system
 
 
 def test_coverage_checks_every_part_the_turn_named_not_just_the_open_ones():
