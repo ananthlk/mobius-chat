@@ -116,6 +116,11 @@ _PREWARM_REPORT: dict = {"state": "not_run"}
 # an API-only process never runs it, a server can answer with nothing, and a
 # connection can fail. Those three were one silence until 2026-09-15.
 _MCP_REGISTER_REPORT: dict = {"state": "not_run", "tools": 0, "names": [], "error": None}
+
+# What the ADAPTER saw, before its own skipping. `_MCP_REGISTER_REPORT` says
+# what survived; this says what arrived. Zero-discovered and
+# many-discovered-all-skipped are opposite problems with the same symptom.
+_MCP_DISCOVERY: dict = {"discovered": None, "registered": None, "skipped": []}
 try:
     import vertexai  # noqa: F401
     from vertexai.generative_models import GenerativeModel  # noqa: F401
@@ -3169,8 +3174,13 @@ def diag_mcp():
       listed        tools were discovered — `tools` is how many
       listed_empty  a server ANSWERED and offered nothing
       failed        the listing raised — `error` carries type and message
+
+    `discovery` is what the adapter SAW before its own filtering:
+    `discovered` tools arrived, `registered` survived, `skipped` says why the
+    rest did not. Zero discovered and everything-skipped are opposite problems
+    that both end as `listed_empty`.
     """
-    return _MCP_REGISTER_REPORT
+    return {**_MCP_REGISTER_REPORT, "discovery": _MCP_DISCOVERY}
 
 
 @app.get("/diag/prewarm")

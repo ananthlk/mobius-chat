@@ -511,14 +511,34 @@ def register_mcp_skills(
             else:
                 logger.info("register_mcp_skills: no tools from extra MCP server %s (down or empty)", extra_url)
 
+    # 🔴 RECORD WHAT WAS DISCOVERED BEFORE ANY SKIPPING. Ananth: "put emits so
+    # that i can track". This function returns [] for at least three different
+    # reasons — the server was unreachable, it answered with nothing, or every
+    # tool it offered was skipped (non-dict entry, bad descriptor, name
+    # collision with a builtin). Callers see one empty list and the boot log
+    # says "no tools discovered" for all of them.
+    #
+    # On 2026-09-15 /diag/mcp reported `listed_empty` for hours and that was
+    # STILL ambiguous: the listing returning zero and the listing returning 29
+    # that were all skipped are opposite problems with opposite fixes, and the
+    # same three words. Recorded per-server so the next reader can tell.
+    try:
+        from app import main as _m
+        _m._MCP_DISCOVERY = {"discovered": len(discovered or []),
+                             "registered": 0, "skipped": []}
+    except Exception:
+        pass
+
     if not discovered:
         logger.info("register_mcp_skills: no MCP tools discovered")
         return []
 
     registered: list[str] = []
+    _skipped: list[str] = []
     for t in discovered:
         if not isinstance(t, dict):
             logger.debug("register_mcp_skills: skipping non-dict tool entry: %r", t)
+            _skipped.append(f"non-dict:{type(t).__name__}")
             continue
 
         spec = _spec_from_mcp_tool(t)
@@ -547,4 +567,12 @@ def register_mcp_skills(
             len(registered),
             ", ".join(registered),
         )
+    # The counts that distinguish "nothing offered" from "everything skipped".
+    try:
+        from app import main as _m
+        _m._MCP_DISCOVERY = {"discovered": len(discovered or []),
+                             "registered": len(registered),
+                             "skipped": _skipped[:40]}
+    except Exception:
+        pass
     return registered
