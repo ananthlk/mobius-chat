@@ -674,6 +674,19 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
     vertex_project = (llm_d.get("vertex_project_id") or "").strip() or None
     if not vertex_project:
         vertex_project = (_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or "mobiusos-new").strip() or "mobiusos-new"
+    # 2026-09-15: vertex_location had NO env-var fallback here, unlike
+    # vertex_project_id right above it -- it silently defaulted to the
+    # hardcoded "us-central1" whenever prompts_llm.yaml/DB config didn't
+    # set it, ignoring VERTEX_LOCATION entirely. Invisible until today,
+    # because VERTEX_LOCATION was never changed from that same default
+    # before. Found live in production: switching VERTEX_LOCATION to
+    # "global" (required for the new Gemini 3.x models) had no effect on
+    # requests built through THIS path, and every draw of a 3.x model
+    # 404'd against us-central1 while the Cloud Run env var correctly
+    # showed "global".
+    vertex_location = (llm_d.get("vertex_location") or "").strip() or None
+    if not vertex_location:
+        vertex_location = (_env("CHAT_VERTEX_LOCATION") or get_env_or("VERTEX_LOCATION", "us-central1") or "us-central1").strip() or "us-central1"
     ds_yaml = _str(llm_d, "vertex_ai_search_datastore")
     ds_env = _env("VERTEX_AI_SEARCH_DATASTORE")
     llm = ChatLLMConfig(
@@ -681,7 +694,7 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
         model=_str(llm_d, "model") or "gemini-2.5-flash",
         temperature=_float(llm_d, "temperature", 0.1),
         vertex_project_id=vertex_project or None,
-        vertex_location=_str(llm_d, "vertex_location") or "us-central1",
+        vertex_location=vertex_location,
         vertex_model=_str(llm_d, "vertex_model") or "gemini-2.5-flash",
         vertex_ai_search_datastore=(ds_yaml or ds_env),
         ollama_base_url=_str(llm_d, "ollama_base_url") or "http://localhost:11434",

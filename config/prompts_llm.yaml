@@ -6,7 +6,7 @@ llm:
   model: gemini-2.5-pro
   temperature: 0.1
   vertex_project_id: null
-  vertex_location: us-central1
+  vertex_location: global
   vertex_model: gemini-2.5-pro
   ollama_base_url: http://localhost:11434
   ollama_model: llama3.1:8b
