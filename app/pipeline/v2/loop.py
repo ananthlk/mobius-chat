@@ -156,6 +156,127 @@ V2_BUDGET_FRACTION = 1.0
 # nothing stops one already running. This is the wall-clock backstop, checked
 # at the top of every round against the turn's own clock rather than against
 # the governor's arithmetic.
+def _record_contract(ctx, decision_json: dict, preloaded, tool_results) -> None:
+    """Parse this round into the v2 contract and hang it on ctx.
+
+    🔴 WHY THIS EXISTS. `ctx._v2_last_contract` was set in exactly ONE place —
+    react_loop.py:7832, inside v1's loop. The governor loop never set it, so on
+    our own loop:
+
+        _v2_last_contract is None -> facts = () -> grounded_parts = 0
+        -> the integrator has nothing to check -> `thin`
+        -> abstain.thin_evidence -> THE ANSWER CARD IS FLATTENED TO TEXT
+
+    Measured live 2026-09-15 (cid 311c9175): twelve sources, a correct answer,
+    rendered as unformatted text saying "no supporting sources".
+
+    Calls v2's own contract module rather than reproducing v1's block: two
+    parsers of one response are two readings that can disagree.
+
+    Document ids are attached from the sources IN HAND, because the verifier
+    scopes by id — unscoped is 144s against 0.5s scoped. ctx.sources is still
+    empty at this point (it is populated by _finalize_response, after every
+    round), so the pool is preload plus what this turn's tools returned.
+    """
+    try:
+        from app.pipeline.v2 import contract as _v2c
+
+        resp = _v2c.parse(decision_json if isinstance(decision_json, dict)
+                          else None)
+        pool = []
+        for group in (preloaded or [], tool_results or []):
+            for r in group:
+                if isinstance(r, dict):
+                    pool.extend(r.get("sources") or [])
+        id_by_name = {}
+        for src in pool:
+            name = (src.get("document_name") if isinstance(src, dict)
+                    else getattr(src, "document_name", None))
+            doc_id = (src.get("document_id") if isinstance(src, dict)
+                      else getattr(src, "document_id", None))
+            if name and doc_id and name not in id_by_name:
+                id_by_name[name] = doc_id
+        if id_by_name:
+            resp = _v2c.with_document_ids(resp, id_by_name)
+        ctx._v2_last_contract = resp
+    except Exception:      # a contract parse must never end a turn
+        logger.warning("[v2.loop] contract parse failed", exc_info=True)
+
+
+def _verify_answer(ctx, emitter, step) -> None:
+    """Check every fact against the page it cites, before the person reads it.
+
+    Ananth: "if the critique is really found anything then we go back to react,
+    else we move on.. this is a quality control, and we add good emits for it"
+    — and, on seeing the governor loop run: "are we still running the
+    deterministic critique in the post processing? we should emit that too."
+
+    ANSWER: it ran, and NOT HERE. The block lives inside run_react() (v1's
+    loop), so a turn on the governor loop was never checked at all and emitted
+    nothing. Same seam as the contract above.
+
+    ONCE PER TURN: react can propose complete on several rounds and the facts
+    are cumulative, so paying for each proposal would tax reconsidering.
+    """
+    if getattr(ctx, "_v2_verified_once", False):
+        return
+    ctx._v2_verified_once = True
+    try:
+        import os
+
+        from app.pipeline.react_loop import _preload_runner_toolreg
+        from app.pipeline.v2 import verify as _v2v
+
+        facts = tuple(getattr(getattr(ctx, "_v2_last_contract", None),
+                              "facts", ()) or ())
+        vr = _v2v.verify(
+            facts,
+            lambda t, i: _preload_runner_toolreg(
+                t, i, ctx, speculative=False, emitter=emitter))
+        ctx._v2_verify = vr
+
+        # WHICH OF THE THREE HAPPENED — "we could not check" must never read as
+        # "we checked and it is fine". The story, not the machine: whether the
+        # answer was checked, and what follows.
+        if vr.skipped:
+            head = ("⊘ I could not check these claims against their sources — "
+                    "the answer stands unverified")
+        elif vr.findings:
+            head = (f"⚠ {len(vr.findings)} claim(s) do not match the page they "
+                    "cite — going back to correct them")
+        else:
+            head = (f"✓ Checked {vr.supported} claim(s) against the page each "
+                    "one cites — all confirmed"
+                    + (f" ({vr.unverifiable} could not be checked)"
+                       if vr.unverifiable else ""))
+        detail = [_trace.kv("from", "verify_claims (Tool Manifest) — "
+                                    "deterministic, not an LLM opinion"),
+                  _trace.kv("bar", f"{vr.bar} — ours, passed explicitly; we "
+                                   "DELETE on not_supported so a low bar "
+                                   "loses fewer true claims"),
+                  _trace.kv("facts", len(facts)),
+                  _trace.kv("took", f"{vr.duration_ms}ms")]
+        for f in vr.findings[:4]:
+            detail.append(_trace.item(str(f)[:200], "✗"))
+        for pb in vr.problems:
+            detail.append(_trace.kv("not checked", pb))
+        step(_trace.Step("verify", head, tuple(detail),
+                         {"findings": len(vr.findings), "checked": vr.checked,
+                          "supported": vr.supported,
+                          "unverifiable": vr.unverifiable,
+                          "skipped": vr.skipped, "bar": vr.bar},
+                         "verify_claims", "verify", "done"))
+        logger.info("[v2.loop] cid=%s verify checked=%d supported=%d "
+                    "unverifiable=%d findings=%d ms=%d skipped=%s",
+                    (getattr(ctx, "correlation_id", "") or "")[:8],
+                    vr.checked, vr.supported, vr.unverifiable,
+                    len(vr.findings), vr.duration_ms, vr.skipped[:60] or "-")
+        if vr.reopen:
+            ctx._v2_verified_findings = tuple(f.repair() for f in vr.findings)
+    except Exception:      # pragma: no cover — never fail a turn on a check
+        logger.warning("[v2.loop] verify failed", exc_info=True)
+
+
 def _upgrade_signal(current: str, result) -> str:
     """The retrieval signal, upgraded from a tool result. v1's rule, exactly.
 
@@ -645,6 +766,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # -object extraction; reimplementing it would be a second parser to
         # drift.
         decision_json = _parse_react_decision_json(raw) or {}
+        _record_contract(ctx, decision_json, _preloaded, tool_results)
         tool = (decision_json.get("tool") or "").strip() or None
         answer = (decision_json.get("answer") or "").strip()
 
@@ -654,6 +776,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             # is the entire reason this loop exists. The governor gets the next
             # round to disagree, and on the three-payer question it would have.
             res.answer = answer
+            _verify_answer(ctx, emitter, step)
             step(_announce.model_replied(
                 round=rn, proposes_complete=True, answer_chars=len(answer),
                 elapsed_s=_llm_s,

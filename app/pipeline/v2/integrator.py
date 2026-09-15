@@ -431,8 +431,31 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
         for f in (verified_findings or ()))
     summary = (f"{len(critique)} claim(s) the cited page does not support"
                if critique else "")
-    ran["critique"] = ("deterministic (verify_claims)" if verified_findings
-                       else "deterministic (verify_claims) — nothing flagged")
+    # 🔴 "NOTHING FLAGGED" OVER AN EMPTY FACT LIST IS NOT A VERDICT.
+    #
+    # This reported the same wording whether verify_claims had checked facts
+    # and found them clean, or had no facts to check at all. v2_adapter's
+    # _critic_ran asks "did a critic actually check anything?" and read both as
+    # yes, which made the turn `conclusive`; with grounded_parts == 0 and no
+    # citations that is `thin`, which is `abstain.thin_evidence`, which flattens
+    # the answer card into plain text.
+    #
+    # So a turn where we COULD NOT CHECK was rendered as a turn we HAD checked
+    # and found ungrounded — the could-not-check / checked-false confusion,
+    # reaching the user as a suppressed card. Measured live 2026-09-15
+    # (cid 311c9175): 12 sources, a correct answer, shown as unformatted text
+    # with "no supporting sources".
+    #
+    # The function two lines above already appends the honest statement to
+    # `problems` — "an empty fact list cannot make a claim unsupported, only
+    # unverifiable". It just was not said in the field the adapter reads.
+    # "skipped" is the existing vocabulary for that (v2_adapter._RAN_NOT_OK),
+    # and the REASON stays in problems where it was already written.
+    if not _grounded:
+        ran["critique"] = "skipped"
+    else:
+        ran["critique"] = ("deterministic (verify_claims)" if verified_findings
+                           else "deterministic (verify_claims) — nothing flagged")
 
     # One call now, so no pool. _settle's contract is a future; this is the
     # same degrade-never-fabricate handling for a direct call, and it reuses

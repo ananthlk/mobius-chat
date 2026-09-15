@@ -100,3 +100,123 @@ def test_the_card_still_wins_so_v1_is_untouched():
         assert f"if not {name}" in body, (
             f"{name} is filled from v2 without first checking the card left "
             "it empty — that would overwrite the composer on shared turns")
+
+
+# ── could-not-check must not read as checked-false ──────────────────────────
+
+def test_a_critique_over_zero_facts_does_not_read_as_a_verdict():
+    """THE DEFECT, traced live (cid 311c9175): 12 sources, a correct answer,
+    rendered as unformatted text saying "no supporting sources".
+
+    The chain:
+        no grounded facts
+        -> ran["critique"] = "deterministic (verify_claims) — nothing flagged"
+        -> v2_adapter._critic_ran reads that as a real verdict
+        -> Grounding.conclusive = True
+        -> conclusive AND grounded_parts == 0 AND no citations = thin
+        -> abstain.thin_evidence
+        -> the answer card is flattened into plain text
+
+    A turn we COULD NOT check was rendered as one we HAD checked and found
+    ungrounded. v2_adapter's own docstring says the opposite is required:
+    "CONCLUSIVE, so 'we could not tell' never suppresses a card".
+
+    Asserts the two ends agree — the integrator's wording and the adapter's
+    reading of it — rather than either one alone.
+    """
+    from app.responder.v2_adapter import _critic_ran
+
+    out = I.run(question="q", answer="a", facts=(), open_gaps=("g",),
+                decision=_AlwaysRun(), runner=_null_runner)
+    assert not _critic_ran(out.ran, out.critique), (
+        f'ran["critique"]={out.ran.get("critique")!r} reads as a real verdict '
+        "over zero facts — the turn will be called thin and its card "
+        "suppressed")
+    assert any("unverifiable" in p for p in out.problems), (
+        "the reason must still be stated, not merely suppressed")
+
+
+class _AlwaysRun:
+    runs_anything = True
+    why = ""
+
+
+def _null_runner(system, user, *, max_tokens=None, stage=None, **kw):
+    return '{"next_steps":["step"],"follow_up_questions":["q?"]}'
+
+
+# ── the two things only v1's loop did ───────────────────────────────────────
+
+def test_the_governor_loop_records_the_contract_and_verifies():
+    """Ananth: "are we still running the deterministic critique in the post
+    processing? we should emit that too."
+
+    It ran, and NOT on our loop. BOTH of these lived inside run_react() —
+    v1's loop — so a turn on the governor loop:
+
+      * never set ctx._v2_last_contract, so the integrator got zero facts,
+        which made every turn `thin` and flattened its card to text; and
+      * never ran verify_claims at all, and emitted nothing about it.
+
+    Asserts both are called from run_react_v2, over the AST.
+    """
+    import ast as _ast
+    import inspect as _inspect
+
+    from app.pipeline.v2 import loop as L2
+
+    tree = _ast.parse(_inspect.getsource(L2))
+    fn = next(f for f in _ast.walk(tree)
+              if isinstance(f, _ast.FunctionDef) and f.name == "run_react_v2")
+    called = {n.func.id for n in _ast.walk(fn)
+              if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)}
+    for name in ("_record_contract", "_verify_answer"):
+        assert name in called, (
+            f"{name} is never called from the governor loop — the behaviour "
+            "stays v1-only and our turns silently skip it")
+
+
+def test_the_verify_step_distinguishes_could_not_check_from_clean():
+    """Three outcomes, three different sentences — "we could not check" must
+    never render as "we checked and it is fine".
+
+    EXERCISES the function against a stubbed verifier instead of reading its
+    source. My first version grepped the source text for the phrases, which is
+    matching prose, not program: it would pass on a function whose branches
+    were unreachable and fail on a reworded one that worked.
+    """
+    from types import SimpleNamespace
+
+    from app.pipeline.v2 import loop as L2
+
+    def result(**kw):
+        base = dict(skipped="", findings=[], supported=0, unverifiable=0,
+                    checked=0, bar=0.62, duration_ms=5, problems=(),
+                    reopen=False)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    cases = {
+        "skipped": result(skipped="tool unavailable"),
+        "findings": result(findings=["claim A"], checked=1),
+        "clean": result(supported=3, checked=3),
+    }
+    heads = {}
+    for name, vr in cases.items():
+        captured = []
+        ctx = SimpleNamespace(correlation_id="c", thread_id="t")
+        import app.pipeline.v2.verify as _v
+        real = _v.verify
+        _v.verify = lambda *a, **k: vr
+        try:
+            L2._verify_answer(ctx, object(), lambda st: captured.append(st))
+        finally:
+            _v.verify = real
+        assert captured, f"{name}: emitted nothing at all"
+        heads[name] = captured[0].headline
+
+    assert len({*heads.values()}) == 3, (
+        f"the three outcomes do not produce three different headlines: {heads}")
+    assert "could not check" in heads["skipped"].lower()
+    assert "confirmed" in heads["clean"].lower()
+    assert "do not match" in heads["findings"].lower()
