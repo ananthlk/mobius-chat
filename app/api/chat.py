@@ -113,6 +113,25 @@ class ChatRequest(BaseModel):
     substituted-decision build verified all day; a v2 arm on v2's loop is the
     governor deciding its own sequence."""
 
+    ab_shadow_profile: str | None = None
+    """HARNESS ONLY — run the SHADOW arm on a different model profile.
+
+    The fork copies the served turn's payload to the shadow, so both arms
+    inherit one `model_profile` and a fork can only ever compare
+    orchestrators, never models. That was fine while there was one usable
+    provider; it stopped being fine the moment the anthropic roster came back.
+
+    With this, a fork can hold the QUESTION, the SECONDS and the corpus
+    constant and vary the model: served arm on one profile, shadow on
+    another. That is the only comparison shape that survives a shared dev
+    instance, where sequential runs are confounded by whatever else is
+    touching the database (measured 2026-09-14: a 3.5x spread on an identical
+    query shape from an unrelated maintenance sweep).
+
+    Honoured only when MOBIUS_V2_AB_FORK=1, same gate and same reason as
+    `ab_arm`: a caller that can pick its model per question can hand back a
+    comparison that is really a selection."""
+
     ab_arm: Literal["v1", "v2"] | None = None
     """HARNESS ONLY — pins this turn to one orchestrator instead of letting
     routing.assign() decide from MOBIUS_V2_PCT.
@@ -557,6 +576,13 @@ def post_chat(
                 # every real question, which is the correct priority for work
                 # nobody is waiting for.
                 _p["ab_shadow"] = True
+                # PER-ARM MODEL. Applied to the shadow copy only -- the served
+                # turn keeps whatever the caller asked for, because changing
+                # what the person actually receives is never the harness's job.
+                if body.ab_shadow_profile:
+                    _sp = body.ab_shadow_profile.strip().lower()
+                    if _sp:
+                        _p["model_profile"] = _sp
                 # The promise is re-opened for the shadow turn rather than
                 # reused: an attestation keyed on the thread turn's promise
                 # would report two deliveries against one contract.
