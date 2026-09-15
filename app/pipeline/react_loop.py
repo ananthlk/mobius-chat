@@ -1869,12 +1869,31 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, *, speculative: bool,
         # prompt summary but nothing logged it, so a preload that refused
         # everything looked identical to one that found nothing — which is the
         # distinction this module spent the night building everywhere else.
+        # 🔴 DO NOT TRUNCATE A FAILURE REASON TO 120 CHARACTERS.
+        #
+        # Three separate diagnoses were blocked by this line on 2026-09-15.
+        # The reason string is built as "<url>: <exception>", so a 71-char
+        # service URL owns the head and the actual cause sits past the cut:
+        #
+        #   ...: ImportError: cannot import name 'streamablehttp_client'   <- cut
+        #   ...: ExceptionGroup: unhandled errors in a TaskGroup           <- cut
+        #
+        # Each time I had to spend a deploy cycle, or ask another seat to read
+        # a log I have no access to, to recover a string the process already
+        # held. The emit IS the diagnostic channel here -- gcloud logging is
+        # PERMISSION_DENIED for this account, so `logger.info` is written to
+        # nowhere I can read.
+        #
+        # 900 characters, not unbounded: a stack trace in a thinking log is
+        # its own problem. Enough for "<url>: <Type>: <message>" with room for
+        # a chained cause, which is the shape these actually take.
+        _reason_full = str(r.get("reason") or "")
         logger.info("[v2.toolreg] cid=%s tool=%s COULD_NOT_RUN route=%s: %s",
                     (getattr(ctx, "correlation_id", "") or "")[:8], tool,
-                    r.get("route"), str(r.get("reason") or "")[:200])
+                    r.get("route"), _reason_full[:900])
         return {"tool": tool, "ok": False, "payload": "", "sources": [],
                 "asked": _asked,
-                "summary": f"COULD NOT RUN — {str(r.get('reason') or '')[:120]} "
+                "summary": f"COULD NOT RUN — {_reason_full[:900]} "
                            "(no lookup was performed)"}
 
     # Same four-part summary the chat-side runner built: what came back, across
@@ -5611,7 +5630,10 @@ def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn,
         out["error"] = {"schema_name": "error_envelope", "error_code": code,
                         "tool": tool, "user_facing_message": out["result"],
                         "retry_after_seconds": None}
-    emit_fn(f"  ⊘ {tool} could not run: {reason[:120]}")
+    # Same reason as the preload bridge above: the cause sits past a 120-char
+    # cut because the string is "<url>: <exception>", and this emit is the only
+    # diagnostic channel a reader without log access actually sees.
+    emit_fn(f"  ⊘ {tool} could not run: {reason[:900]}")
     return out
 
 def _execute_tool_with_retry(
