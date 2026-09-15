@@ -5101,6 +5101,7 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
         import time as _int_time
 
         from app.pipeline.v2 import enrich as _v2en
+        from app.pipeline.v2 import ahead as _v2_ahead
         from app.pipeline.v2 import integrator as _v2int
         from app.pipeline.v2 import trace as _v2tr
 
@@ -5171,7 +5172,15 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
                          # for a second opinion on our own answer.
                          verified_findings=tuple(
                              getattr(ctx, "_v2_verified_findings", ()) or ()),
-                         runner=_v2int.default_runner(ctx))
+                         runner=_v2int.default_runner(ctx),
+                         # THE CALL MAY ALREADY BE IN FLIGHT. v2/ahead.py
+                         # starts it the first round the governor can see the
+                         # end coming, so this usually awaits a reply rather
+                         # than opening a round trip the person waits through.
+                         # None on every turn that never predicted, which is
+                         # the behaviour that was here before.
+                         prefetched=_v2_ahead.take(ctx))
+        _v2_ahead.shutdown(ctx)
         ctx.v2_integration = out.to_dict()
         ctx.v2_enrich_decision = {"why": decision.why,
                                   "criteria": decision.criteria,

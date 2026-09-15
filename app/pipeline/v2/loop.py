@@ -156,6 +156,33 @@ V2_BUDGET_FRACTION = 1.0
 # nothing stops one already running. This is the wall-clock backstop, checked
 # at the top of every round against the turn's own clock rather than against
 # the governor's arithmetic.
+def _start_next_steps_ahead(ctx, state, step) -> None:
+    """Start the next-steps call the first round the end is in sight."""
+    try:
+        from app.pipeline.v2 import ahead as _ahead
+
+        if not _ahead.predicted(state):
+            return
+        answer = _best_running_answer(ctx) or ""
+        from app.pipeline.v2.integrator import default_runner
+        if _ahead.start(ctx, question=getattr(ctx, "message", "") or "",
+                        answer_so_far=answer,
+                        open_gaps=_open_gap_texts(state),
+                        runner=default_runner(ctx)):
+            step(_trace.Step(
+                "ahead",
+                "Asking what comes next — while the answer is still forming",
+                (_trace.kv("why", "the governor can see the end: few gaps, the "
+                                  "count is not rising, and evidence came back"),
+                 _trace.kv("what", "next steps + follow-up questions"),
+                 _trace.kv("instead of", "a blocking call after the answer is "
+                                         "written, which the person waits through")),
+                {"gaps_open": len(_open_gap_texts(state))},
+                "v2 governor (converging)", "v2.ahead", "running"))
+    except Exception:      # a prefetch must never end a turn
+        logger.debug("[v2.loop] ahead start failed", exc_info=True)
+
+
 def _record_contract(ctx, decision_json: dict, preloaded, tool_results) -> None:
     """Parse this round into the v2 contract and hang it on ctx.
 
@@ -623,6 +650,18 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             gaps_open=_open_gap_texts(state),
             has_answer=bool(_best_running_answer(ctx)),
             targeting=_gap_text(state, decision.gap_targeted)))
+
+        # 🔴 ASK FOR THE NEXT STEPS WHILE THE LOOP IS STILL RUNNING.
+        #
+        # Ananth: "predict when we are near an answer and ask the next steps
+        # and asks prompt right then". posture.converging() already computes
+        # that prediction every round and, until now, only one caller read it —
+        # to decide whether a turn may overrun its budget.
+        #
+        # Fired here, the call overlaps the rounds that remain instead of
+        # becoming a blocking tail after the answer is written. Wrong
+        # predictions cost one discarded call and never a wrong answer.
+        _start_next_steps_ahead(ctx, state, step)
 
         logger.info(
             "[v2.loop] cid=%s round=%s branch=%s posture=%s -> %s gaps=%d "

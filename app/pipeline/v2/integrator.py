@@ -361,7 +361,7 @@ _NEXT_FALLBACK = (
 
 def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
         verified_findings=(),
-        decision, runner) -> Integration:
+        decision, runner, prefetched=None) -> Integration:
     """Assemble, then critique and plan next steps CONCURRENTLY.
 
     `runner(system, user, *, max_tokens) -> str` is injected so this is
@@ -460,12 +460,27 @@ def run(*, question: str, answer: str, facts=(), open_gaps=(), all_parts=(),
     # One call now, so no pool. _settle's contract is a future; this is the
     # same degrade-never-fabricate handling for a direct call, and it reuses
     # _settle rather than growing a second convention for one call site.
-    sys_p, user_p = _next_steps_prompt(question, answer, open_gaps)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        next_raw = _settle(
-            pool.submit(_call, runner, sys_p, user_p,
-                        NEXT_STEPS_MAX_TOKENS, "v2_next_steps"),
-            "next_steps", ran, problems)
+    # 🔴 THE CALL MAY ALREADY BE IN FLIGHT.
+    #
+    # Ananth: "the trick is to predict when we are near an answer and ask the
+    # next steps and asks prompt right then .. there is always intelligence
+    # which is better than just throwing things in the kitchen table".
+    #
+    # v2/ahead.py starts this the first round the governor can see the end
+    # coming (posture.converging — few gaps, count not rising, evidence coming
+    # back). If it did, we await a future here instead of opening a round trip
+    # the person is sitting through. Same prompt, same consumer, earlier.
+    if prefetched is not None:
+        ran["next_steps_started"] = "early (predicted near the answer)"
+        next_raw = _settle(prefetched, "next_steps", ran, problems)
+    else:
+        ran["next_steps_started"] = "at finalisation (no prediction fired)"
+        sys_p, user_p = _next_steps_prompt(question, answer, open_gaps)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            next_raw = _settle(
+                pool.submit(_call, runner, sys_p, user_p,
+                            NEXT_STEPS_MAX_TOKENS, "v2_next_steps"),
+                "next_steps", ran, problems)
     steps, follow_ups = _parse_next_steps(next_raw, problems)
     if not steps or not follow_ups:
         # SAY WHICH HALF IS MISSING. "next_steps: ok" with an empty list is the
