@@ -1,0 +1,537 @@
+[
+  {
+    "id": 1,
+    "group": "A",
+    "mode": "quick",
+    "cids": {
+      "v2": "3ca9c7c6-fb17-468f-9636-34b0417fce77",
+      "v1": "1198fe3d-87dd-463d-ade1-7387b5c91269"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 27.2,
+        "pipeline_s": 11.8,
+        "model": "gemini-2.5-flash",
+        "cost": 0.006609,
+        "rounds": 1,
+        "score": 0.43,
+        "verdict": "FAIL",
+        "chars": 985,
+        "sources": 15,
+        "passed": false
+      },
+      "v2": {
+        "status": "clarification",
+        "wall_s": 32.5,
+        "pipeline_s": 16.4,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.033257,
+        "rounds": 1,
+        "score": null,
+        "verdict": null,
+        "chars": 2025,
+        "sources": 11
+      }
+    }
+  },
+  {
+    "id": 2,
+    "group": "A",
+    "mode": "quick",
+    "cids": {
+      "v2": "9415ab63-df4c-4087-bcbc-c602a4633fa4",
+      "v1": "9a4f7bfd-4f7a-4c69-8351-6c791724e54a"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 27.1,
+        "pipeline_s": 13.2,
+        "model": "gemini-2.5-flash",
+        "cost": 0.006062,
+        "rounds": 1,
+        "score": 1.0,
+        "verdict": "PASS",
+        "chars": 2086,
+        "sources": 15,
+        "passed": true
+      },
+      "v2": {
+        "status": "completed",
+        "wall_s": 37.6,
+        "pipeline_s": 19.3,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.154777,
+        "rounds": 1,
+        "score": 0.718,
+        "verdict": "PARTIAL",
+        "chars": 3550,
+        "sources": 18,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 3,
+    "group": "A",
+    "mode": "quick",
+    "cids": {
+      "v2": "8447a99b-3310-4174-aeea-6eb641f6ac15",
+      "v1": "fc981180-e217-41df-beb9-8108260763fe"
+    },
+    "arms": {
+      "v2": {
+        "status": "completed",
+        "wall_s": 40.5,
+        "pipeline_s": 9.0,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.024361,
+        "rounds": 1,
+        "score": 0.589,
+        "verdict": "PARTIAL",
+        "chars": 2050,
+        "sources": 0,
+        "passed": true
+      },
+      "v1": {
+        "status": "completed",
+        "wall_s": 67.6,
+        "pipeline_s": 21.1,
+        "model": "gemini-2.5-flash",
+        "cost": 0.007522,
+        "rounds": 2,
+        "score": 0.597,
+        "verdict": "PARTIAL",
+        "chars": 2340,
+        "sources": 0,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 4,
+    "group": "B",
+    "mode": "copilot",
+    "cids": {
+      "v2": "7ba58217-5fb2-428c-9906-e125ec2971e3",
+      "v1": "2b22b01c-1767-46e2-a049-28f32e9f32e6"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 32.4,
+        "pipeline_s": 17.3,
+        "model": "gemini-2.5-flash",
+        "cost": 0.010203,
+        "rounds": 2,
+        "score": 0.79,
+        "verdict": "PASS",
+        "chars": 3599,
+        "sources": 10,
+        "passed": true
+      },
+      "v2": {
+        "status": "completed",
+        "wall_s": 59.8,
+        "pipeline_s": 39.4,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.073465,
+        "rounds": 2,
+        "score": 0.91,
+        "verdict": "PASS",
+        "chars": 9251,
+        "sources": 9,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 5,
+    "group": "B",
+    "mode": "copilot",
+    "cids": {
+      "v2": "4901b41c-5474-4f81-83ad-d96bf2d9c7ef",
+      "v1": "e1e420f1-fad9-4adf-93c0-221174fed52b"
+    },
+    "arms": {
+      "v2": {
+        "status": "clarification",
+        "wall_s": 54.2,
+        "pipeline_s": 38.6,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.112509,
+        "rounds": 3,
+        "score": null,
+        "verdict": null,
+        "chars": 5455,
+        "sources": 31
+      },
+      "v1": {
+        "status": "completed",
+        "wall_s": 92.2,
+        "pipeline_s": 63.5,
+        "model": "gemini-2.5-flash",
+        "cost": 0.012713,
+        "rounds": 2,
+        "score": 0.867,
+        "verdict": "PASS",
+        "chars": 5537,
+        "sources": 40,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 6,
+    "group": "B",
+    "mode": "copilot",
+    "cids": {
+      "v2": "47c8883d-7e95-4472-abe0-95bffab736b7",
+      "v1": "a4f9b70e-85b8-4234-85f9-21104145d46d"
+    },
+    "arms": {
+      "v2": {
+        "status": "completed",
+        "wall_s": 53.6,
+        "pipeline_s": 25.3,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.075905,
+        "rounds": 3,
+        "score": 0.589,
+        "verdict": "PARTIAL",
+        "chars": 4636,
+        "sources": 2,
+        "passed": true
+      },
+      "v1": {
+        "status": "completed",
+        "wall_s": 75.4,
+        "pipeline_s": 43.2,
+        "model": "gemini-2.5-flash",
+        "cost": 0.013098,
+        "rounds": 2,
+        "score": 0.755,
+        "verdict": "PASS",
+        "chars": 4634,
+        "sources": 15,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 7,
+    "group": "C",
+    "mode": "copilot",
+    "cids": {
+      "v2": "5db605f7-81a3-4969-8baa-7e38af22bac5",
+      "v1": "12ecbca3-497d-4023-91df-6abfa9a5d930"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 21.6,
+        "pipeline_s": 7.4,
+        "model": "gemini-2.5-flash",
+        "cost": 0.009305,
+        "rounds": 2,
+        "score": 0.486,
+        "verdict": "PARTIAL",
+        "chars": 1847,
+        "sources": 14,
+        "passed": true
+      },
+      "v2": {
+        "status": "clarification",
+        "wall_s": 53.8,
+        "pipeline_s": 38.8,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.099869,
+        "rounds": 3,
+        "score": null,
+        "verdict": null,
+        "chars": 4827,
+        "sources": 14
+      }
+    }
+  },
+  {
+    "id": 8,
+    "group": "C",
+    "mode": "copilot",
+    "cids": {
+      "v2": "cf778e0c-d6c8-4f86-bf78-c538fd928195",
+      "v1": "68d7ca4e-416a-4d48-86ee-18b086649dd9"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 26.9,
+        "pipeline_s": 14.9,
+        "model": "gemini-2.5-flash",
+        "cost": 0.012318,
+        "rounds": 2,
+        "score": 0.813,
+        "verdict": "PASS",
+        "chars": 2828,
+        "sources": 15,
+        "passed": true
+      },
+      "v2": {
+        "status": "completed",
+        "wall_s": 43.0,
+        "pipeline_s": 30.0,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.074345,
+        "rounds": 2,
+        "score": 0.97,
+        "verdict": "PASS",
+        "chars": 6000,
+        "sources": 9,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 9,
+    "group": "C",
+    "mode": "copilot",
+    "cids": {
+      "v2": "ac21168d-ca96-4af2-acb1-cf8d0d5907a8",
+      "v1": "1fffdbb0-9ff1-4466-8fe8-6e1d1d9532e8"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 39.8,
+        "pipeline_s": 18.4,
+        "model": "gemini-2.5-flash",
+        "cost": 0.013283,
+        "rounds": 3,
+        "score": 1.0,
+        "verdict": "PASS",
+        "chars": 3789,
+        "sources": 14,
+        "passed": true
+      },
+      "v2": {
+        "status": "completed",
+        "wall_s": 98.9,
+        "pipeline_s": 64.6,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.11799,
+        "rounds": 3,
+        "score": 0.967,
+        "verdict": "PASS",
+        "chars": 12622,
+        "sources": 12,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 10,
+    "group": "D",
+    "mode": "copilot",
+    "cids": {
+      "v2": "62e27114-7113-48f1-b731-66434f15cb60",
+      "v1": "726af58a-ac39-4303-afd2-5410ac9c9596"
+    },
+    "arms": {
+      "v2": {
+        "status": "completed",
+        "wall_s": 70.5,
+        "pipeline_s": 48.9,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.129235,
+        "rounds": 3,
+        "score": 0.955,
+        "verdict": "PASS",
+        "chars": 8391,
+        "sources": 33,
+        "passed": true
+      },
+      "v1": {
+        "status": "completed",
+        "wall_s": 87.2,
+        "pipeline_s": 50.4,
+        "model": "gemini-2.5-flash",
+        "cost": 0.013031,
+        "rounds": 2,
+        "score": 0.955,
+        "verdict": "PASS",
+        "chars": 6386,
+        "sources": 40,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 11,
+    "group": "D",
+    "mode": "copilot",
+    "cids": {
+      "v2": "3fb3cad8-9fb4-4f83-98bb-4227603eda11",
+      "v1": "101b9170-7e5e-4050-a084-674cd356c4ff"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 49.3,
+        "pipeline_s": 38.6,
+        "model": "gemini-2.5-flash",
+        "cost": 0.014181,
+        "rounds": 2,
+        "score": 0.855,
+        "verdict": "PASS",
+        "chars": 5736,
+        "sources": 12,
+        "passed": true
+      },
+      "v2": {
+        "status": "completed",
+        "wall_s": 65.5,
+        "pipeline_s": 28.4,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.122926,
+        "rounds": 3,
+        "score": 1.0,
+        "verdict": "PASS",
+        "chars": 4242,
+        "sources": 19,
+        "passed": true
+      }
+    }
+  },
+  {
+    "id": 12,
+    "group": "D",
+    "mode": "copilot",
+    "cids": {
+      "v2": "95a1b08c-7a9f-4550-8527-c66a83a28ecd",
+      "v1": "1f1c658d-1d7c-44a1-97f6-7ed41952b1ab"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 48.6,
+        "pipeline_s": 45.2,
+        "model": "gemini-2.5-flash",
+        "cost": 0.030393,
+        "rounds": 3,
+        "score": 1.0,
+        "verdict": "PASS",
+        "chars": 8510,
+        "sources": 20,
+        "passed": true
+      },
+      "v2": {
+        "status": "clarification",
+        "wall_s": 53.8,
+        "pipeline_s": 31.8,
+        "model": "claude-haiku-4-5-20251001",
+        "cost": 0.117606,
+        "rounds": 3,
+        "score": null,
+        "verdict": null,
+        "chars": 4121,
+        "sources": 23
+      }
+    }
+  },
+  {
+    "id": 13,
+    "group": "E",
+    "mode": "agentic",
+    "cids": {
+      "v2": "f3c15adb-8009-4042-ada3-fde6e5889557",
+      "v1": "5645b442-09ec-4217-84f7-1775dd1f63dd"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 118.8,
+        "pipeline_s": 128.4,
+        "model": "gemini-2.5-flash",
+        "cost": 0.095042,
+        "rounds": 9,
+        "score": 0.665,
+        "verdict": "PARTIAL",
+        "chars": 12253,
+        "sources": 16,
+        "passed": true
+      },
+      "v2": {
+        "status": "failed",
+        "wall_s": 303.6,
+        "pipeline_s": null,
+        "model": null,
+        "cost": null,
+        "rounds": null,
+        "score": null,
+        "verdict": null,
+        "chars": 126,
+        "sources": 0
+      }
+    }
+  },
+  {
+    "id": 14,
+    "group": "E",
+    "mode": "agentic",
+    "cids": {
+      "v2": "c84f5802-d103-4e0d-81b3-3c9a141a3e8a",
+      "v1": "d9b33a01-ffb7-4c6a-b7ba-15ff54aff8c4"
+    },
+    "arms": {
+      "v1": {
+        "status": "completed",
+        "wall_s": 189.5,
+        "pipeline_s": 171.8,
+        "model": "gemini-2.5-flash",
+        "cost": 0.287365,
+        "rounds": 10,
+        "score": 0.878,
+        "verdict": "PASS",
+        "chars": 26166,
+        "sources": 38,
+        "passed": true
+      },
+      "v2": {
+        "status": "failed",
+        "wall_s": 301.9,
+        "pipeline_s": null,
+        "model": null,
+        "cost": null,
+        "rounds": null,
+        "score": null,
+        "verdict": null,
+        "chars": 126,
+        "sources": 0
+      }
+    }
+  },
+  {
+    "id": 15,
+    "group": "E",
+    "mode": "agentic",
+    "cids": {
+      "v2": "afde2884-33f0-45d7-b2e9-29ed0e3de61e",
+      "v1": "a441fe97-d47c-4ed1-b034-9f88c6b1d31d"
+    },
+    "arms": {
+      "v2": {
+        "status": "failed",
+        "wall_s": 301.1,
+        "pipeline_s": null,
+        "model": null,
+        "cost": null,
+        "rounds": null,
+        "score": null,
+        "verdict": null,
+        "chars": 126,
+        "sources": 0
+      }
+    }
+  }
+]
