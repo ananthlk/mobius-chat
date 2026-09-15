@@ -157,7 +157,16 @@ class TestSharedHelpersConsolidated:
         """Exactly one ``def task_manager_base_url`` definition in the repo."""
         defs = []
         for py in CHAT_REPO_ROOT.rglob("*.py"):
-            if ".venv" in py.parts or "__pycache__" in py.parts:
+            # 🔴 SKIP NESTED WORKTREES. Sibling sessions create git worktrees
+            # under .claude/worktrees/, each a FULL COPY of this repo. Walking
+            # into one makes every "defined exactly once" gate in this file
+            # report a duplicate that does not exist -- and it fails for
+            # whoever happens to have a worktree open, not for whoever wrote
+            # the duplicate. Measured 2026-09-15: this gate reported
+            # task_manager_base_url in two places, one of which was another
+            # seat's checkout of the same file.
+            if any(part in (".venv", "__pycache__", ".claude", "node_modules")
+                   for part in py.parts):
                 continue
             text = py.read_text(errors="ignore")
             for line in text.splitlines():
