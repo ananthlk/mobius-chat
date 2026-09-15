@@ -5479,7 +5479,13 @@ _MAX_AUTO_RETRY_SLEEP_S = 30
 # silently fall back to its own branches and the A/B would compare two things
 # that were never distinguished. An explicit literal is reviewable in a diff.
 _TOOLREG_OWNED: frozenset[str] = frozenset({
-    "appeals_find_carc",
+    # appeals_find_carc REMOVED 2026-09-15. Live in dev it returned "no
+    # executable route declared" from the deployed catalogue, while the same
+    # call resolves a route locally -- so the container's catalogue and the
+    # authoring one disagree, which is Tool Manifest's to reconcile. Until it
+    # does, this tool goes back through chat's own branch, where it worked.
+    # Removed rather than left failing: a tool that cannot run is worse than a
+    # tool routed the old way, and react loses a capability either way.
     "appeals_get_playbook",
     "appeals_lookup_rules",
     "appeals_validate_claim",
@@ -5678,7 +5684,20 @@ def _execute_tool_with_retry(
             # (retries) is a separate migration by agreement with the Governor,
             # precisely so a failure in either can be attributed. Here only the
             # CALL changes; everything wrapped around it is untouched.
-            if tool in _TOOLREG_OWNED:
+            # 🔴 THE NEW PATH NEEDS THE SAME KILL SWITCH AS THE OLD ONES.
+            #
+            # MOBIUS_V2_TOOLREG_EXEC gates preload (:6124) and verify (:8036)
+            # and did NOT gate this branch. I reviewed the appeals cut, checked
+            # that it preserved the retry, the promise guard, _capture_rendered
+            # and the exception path -- and never checked that the revert I had
+            # spent a commit making deployable actually covered it. The one
+            # thing I had proven mattered, unchecked on the change that needed
+            # it. Confirmed live 2026-09-15: appeals_find_carc came back "no
+            # executable route declared" and there was no way to turn the new
+            # path off short of a redeploy.
+            if (tool in _TOOLREG_OWNED
+                    and os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
+                    not in ("0", "false", "no")):
                 out = _execute_via_toolreg(tool, inputs, ctx, emit_fn,
                                            skip_retry=skip_retry)
             else:
