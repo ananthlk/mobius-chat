@@ -133,6 +133,34 @@ the DB and silently substituted.
 caller does not. That is the defect class this fleet has spent the week
 removing, sitting on the seam I own. Mine to fix, next.
 
+## 🔴 TWO VERIFIERS, ONE OWNER SHORT — for Tool Manifest and Deep Research
+
+Ananth asked whether chat and Deep Research use the same deterministic
+validator, and said "it should be in tools manifest". Checked:
+
+| | ours | Deep Research's |
+|---|---|---|
+| where | `verify_claims` — **Tool Manifest** (`toolreg/execute.py`, migration 096) | `mobius-skills/deep-research/deep_research/verify_source.py` |
+| we call it | yes, `app/pipeline/v2/verify.py` — call, never copy | — |
+| calls `verify_claims` | — | **no references at all** |
+| method | scores each claim against its cited page, bar 0.62; numbers put as phrases so a near-quote with a changed number fails closed | opens the document, checks the **hard tokens** the claim is made of — procedure code, modifier, numbers |
+
+Chat is in the right place: Ananth stopped me lifting Deep Research's verifier
+into chat ("no dont lift.. i have asked tools manifest to own .. so it can
+benefit and not duplicate") and it is now called, not copied.
+
+**Deep Research's did not make the same trip.** The two checks are
+complementary rather than redundant — token presence is not semantic support,
+and theirs caught a certified fact quoting "for procedure code H2000, the HP
+modifier represents a physician" against a document containing no H2000, no HP
+and no "physician". That is an argument for the manifest owning BOTH checks,
+not for two homes.
+
+**Not mine to move.** Raising it because the drift the ruling was meant to
+prevent is still live, just in the other direction. Tool Manifest and Deep
+Research: whose call, and do you want the hard-token check registered as a
+second tool or folded into `verify_claims`?
+
 ## Open, by seat
 
 ### Tool Manifest
