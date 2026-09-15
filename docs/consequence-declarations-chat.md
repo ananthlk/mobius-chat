@@ -248,3 +248,56 @@ is a pure `get_state(tid)` read — no INSERT/UPDATE/commit — and it raises 50
 unreadable state rather than returning an empty list, so it does not conflate
 "couldn't read" with "no uploads". `inward` / `true` holds for both, on separate
 evidence.
+
+### Correction to the addendum — `list_thread_uploads` is reachable in source only
+
+The table above says `list_thread_uploads` is "reachable over MCP: yes". **That
+was wrong**, and it was wrong in a way worth naming: I read the tool's
+implementation in the `mobius-skills-mcp` repo and reported reachability. A
+commit is not a deployment.
+
+Checked against the running fleet (2026-09-14, `gcloud run services list` across
+all three projects — `mobius-os-dev`, `mobiusos-new`, `mobius-staging-mobius`):
+
+**`mobius-skills-mcp` is not deployed in any of them.** The only near-name
+matches are `mobius-skills-scraper` / `-worker`, which are a different service.
+Nothing serves `list_thread_uploads`.
+
+And chat's MCP configuration is not what the name `CHAT_SKILLS_MCP_URL` suggests.
+On the deployed service:
+
+```
+CHAT_SKILLS_MCP_URL = https://mobius-provider-roster-credentialing-...run.app/mcp
+EXTRA_MCP_URLS      = https://mobius-appeals-prototype-...run.app
+```
+
+Queried both with chat's own `list_mcp_tools()` rather than a hand-rolled
+handshake:
+
+| server | tools |
+|---|---|
+| provider-roster-credentialing (primary) | 29 — market / org / rate / `check_provider_credentialing` / `lookup_npi` |
+| appeals-prototype (extra) | 5 — `appeals_lookup_rules`, `_get_playbook`, `_find_carc`, `_validate_claim`, `_assemble_letter` |
+| **total chat can reach** | **34** |
+
+`list_thread_uploads` is in neither.
+
+Two notes on how this was measured, because both nearly produced a false
+statement:
+
+1. My first attempt mutated `os.environ["CHAT_SKILLS_MCP_URL"]` mid-script to
+   poll the extra server and got **the same 29 tools back for both**. The
+   mutation did not take; the "extra" line was the primary re-read. Polling each
+   URL as the sole primary in its own process gave 29 and 5. If two servers
+   return identical tool lists, suspect the client before believing the
+   coincidence.
+2. Three earlier `gcloud` calls were wrapped in `timeout`, which does not exist
+   on macOS. They failed with "command not found" and produced empty output that
+   reads exactly like "no MCP env vars are configured." Empty output from a
+   command that never ran is not a negative result.
+
+**So the corrected row:** `list_thread_uploads` — implemented, unreachable,
+served by no running process. The chat builtin
+`list_thread_document_uploads` remains in-process by design. The capability has
+no MCP surface today in any environment, and the declaration table above should
+be read as describing what the MCP tool *would* be if the server were deployed.
