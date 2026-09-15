@@ -450,6 +450,7 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 _react_reasoning_system,
                 allowed_tools=getattr(ctx, "allowed_tools", None),
                 agent_role=_agent_role_for(decision.posture),
+                posture=decision.posture,
             )
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
@@ -692,6 +693,53 @@ def _best_running_answer(ctx: Any) -> str:
 V2_MODULE_KEY = "react.v2_governor"
 
 
+def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
+                      v1_builder, allowed_tools=None,
+                      agent_role: str = "explore",
+                      posture=None) -> tuple[str, dict]:
+    """The composed prompt, plus THIS ROUND'S POSTURE.
+
+    🔴 WRAPPED, NOT PATCHED AT EACH RETURN. The builder below has THREE exits
+    — the v2 composition, react's real composition, and the legacy builder —
+    and appending the posture block at each one is three places to forget it.
+    A prompt that silently loses the posture is the defect this whole module
+    exists to remove: the governor picks a posture and the model never learns
+    which one it is in.
+
+    WHAT THE BASE ALREADY CARRIES, so this does not restate it: response
+    shape, format rules, the tool manifest and user preferences all come from
+    the composition unchanged (the LLM seat's scoping, 2026-09-11 —
+    react.v2_governor replaces only the identity and critical-rules framing).
+    The posture block says what THIS ROUND IS FOR and nothing else.
+
+    INTERIM BY DESIGN. Ananth: "the objective is to move this to prompt
+    manager and dynamically create it." The posture text is a Python constant
+    today and belongs in the prompt DB as its own block, selected by posture
+    the way the mode block is selected by mode. Appending here is what makes
+    it TWEAKABLE now — "until we plug it in we cannot tweak" — not where it
+    should live.
+    """
+    base, source = _v2_system_prompt_base(
+        max_rounds, mode, user_profile, v1_builder,
+        allowed_tools=allowed_tools, agent_role=agent_role)
+    try:
+        from app.pipeline.v2.posture_prompts import POSTURE_PROMPTS
+        block = POSTURE_PROMPTS.get(posture) if posture is not None else None
+    except Exception:
+        block = None
+    if not block:
+        # COMMUNICATE is deliberately None pending the Deterministic UX seat,
+        # and an unknown posture is a real state. Either way the base prompt
+        # is complete on its own — say which posture had no block rather than
+        # implying one was applied.
+        source = {**source, "posture_block": None,
+                  "posture": getattr(posture, "value", None)}
+        return base, source
+    return (f"{base}\n\nTHIS ROUND\n{block}",
+            {**source, "posture_block": "applied",
+             "posture": getattr(posture, "value", None)})
+
+
 def _agent_role_for(posture) -> str:
     """Which react composition this posture wants.
 
@@ -707,7 +755,7 @@ def _agent_role_for(posture) -> str:
     }.get(getattr(posture, "value", str(posture)), "explore")
 
 
-def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
+def _v2_system_prompt_base(max_rounds: int, mode: str, user_profile: dict | None,
                       v1_builder, *, allowed_tools=None,
                       agent_role: str = "explore") -> tuple[str, dict]:
     """(prompt, provenance). `provenance` names the composition, not a flag.

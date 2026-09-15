@@ -292,7 +292,12 @@ def test_prompt_provenance_names_the_COMPOSITION_not_a_binary_flag():
     """
     import ast
     fn = next(f for f in ast.walk(ast.parse(_src()))
-              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt")
+              # 🔴 _base, not the wrapper. _v2_system_prompt was split on
+              # 2026-09-15: a thin wrapper appends the posture block at a
+              # single exit, and the composition logic these tests protect
+              # lives in _v2_system_prompt_base. Inspecting the wrapper found
+              # none of it and read as "the composition is never read".
+              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt_base")
     src = ast.unparse(fn)
     for field in ("composition_id", "composition_hash", "blocks", "variant_id"):
         assert field in src, f"provenance omits {field}"
@@ -313,7 +318,12 @@ def test_the_composition_is_read_off_the_REAL_attribute():
     from app.services.prompt_manager import RenderedComposition
     assert "system_prompt" in RenderedComposition.__dataclass_fields__
     fn = next(f for f in ast.walk(ast.parse(_src()))
-              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt")
+              # 🔴 _base, not the wrapper. _v2_system_prompt was split on
+              # 2026-09-15: a thin wrapper appends the posture block at a
+              # single exit, and the composition logic these tests protect
+              # lives in _v2_system_prompt_base. Inspecting the wrapper found
+              # none of it and read as "the composition is never read".
+              if isinstance(f, ast.FunctionDef) and f.name == "_v2_system_prompt_base")
 
     # PRESENCE IS NOT ENOUGH. A first version asserted "rc.system_prompt" was
     # somewhere in the source — and a mutation that broke the GUARD
