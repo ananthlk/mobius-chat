@@ -225,6 +225,33 @@ the Tool Manifest migration; one is a constant that belongs in
 
 - **`confidence=None` on 40/40 turns** in the SHARED loop: the pre-round state hardcodes it, the gate reads absent as "bar not met", and round 1 is `search` on every turn. A structural floor of two rounds. v2's loop does not have this; v1's does.
 - **Empty-completed turns** — `status=completed`, zero thinking entries, empty message. Intermittent, unexplained, not the answer cache.
+- **The full suite is 7 red, and none of it is anyone's recent work.**
+  Measured twice, identically: `7 failed, 3971 passed, 5 skipped` (~15 min).
+  Attributed in a temp worktree at the pre-session commit — never by checking
+  out this shared tree:
+
+  | failing | verdict |
+  |---|---|
+  | `test_refactor_gate::test_swallow_count_has_not_risen` | **pre-existing** — fails at `be874c8` too. react_loop.py log-and-continue handlers: baseline 21, actual 33 |
+  | `test_api_hygiene_guard::test_main_py_loc_under_ceiling` | **pre-existing** |
+  | `test_react_split_phase_1i::test_react_loop_loc_under_ceiling` | **pre-existing** |
+  | `test_logging_config::test_filter_stamps_empty_strings_when_no_context` | **order-dependent** |
+  | `test_promise_step1::test_context_is_set_during_the_turn_and_reset_after` | **order-dependent** |
+  | `test_promise_step1::test_context_is_reset_even_when_the_turn_raises` | **order-dependent** |
+  | `test_gemini_3x_models::test_quality_priors_stepped_by_generation` | **order-dependent** |
+
+  The last four **pass alone and pass together** (68 passed) — pass-alone,
+  fail-together is a fixture leak, not flakiness. The suite log carries the
+  signature: `I/O operation on closed file` from inside logging, i.e. a handler
+  still bound to a stream pytest has already closed. There is no random-order
+  plugin, so this is reproducible, not luck.
+
+  **Culprit not yet named.** The five test files that reconfigure logging are
+  not it — each was run ahead of the four and all passed. Narrowing further
+  means bisecting a 15-minute suite; I stopped rather than spend that without
+  asking. Whoever owns the harness: this masks real signal in both directions,
+  and three of the seven are ratchets that have simply been left red.
+
 - **Local suite hides 8 red as green-ish.** `tests/test_v2_toolreg_bridge.py`
   fails 8/10 with `ModuleNotFoundError: No module named 'toolreg'` unless Tool
   Manifest's repo is pip-installed editable (`pip install -e
