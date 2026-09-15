@@ -884,6 +884,37 @@ def _append_tool_llm_usage(ctx: PipelineContext, tool: str, result: dict) -> Non
 # Adding an alias: append to the appropriate set below. Document it in
 # tool_manifest.py too so the planner sees it in the prompt.
 
+# 🔴 THE ALIAS MAP AND THE MANIFEST DISAGREED, AND THE MANIFEST WON.
+#
+# tool_manifest.py retired both prompt blocks --
+#     _RECALL_SEARCH_BLOCK    = ""  # merged into search_corpus(mode="recall")
+#     _PRECISION_SEARCH_BLOCK = ""  # merged into search_corpus(mode="precision")
+# -- and promises "rag: the ONE retrieval tool". The alias map was not
+# updated with them, so THIRTEEN aliases still routed into the retired
+# single-arm branches: lookup, exact, exact_match, keyword_search, bm25,
+# bm25_search -> precision_search (BM25 only); broad, explore,
+# explore_search, broad_search, vector_search, semantic_search,
+# lazy_corpus_search -> recall_search (vector only).
+#
+# Not a hallucinated name hitting nothing -- a PLAUSIBLE name hitting a real
+# branch nobody is told exists. `lookup` especially: an LLM reaches for that
+# word constantly. The effect was a silent downgrade from the documented
+# hybrid portfolio to one arm, with no error and nothing in the trace saying
+# a narrower search had been substituted.
+#
+# The inverse of the defect this fleet has been hunting all night. We kept
+# finding "branch exists, branch not reached". This was "branch not offered,
+# branch still reachable" -- invisible from the manifest precisely BECAUSE
+# the manifest entry is what was removed. Found by Tool Manifest auditing my
+# dispatch against their catalogue; I had checked the analytics map, seen
+# recall_search -> rag, and wrongly called the branches dead.
+#
+# Measured before changing: ZERO of 30 live turns dispatched either branch,
+# so this was latent, not active. Repointed rather than deleted -- the
+# branches still work and stay reachable by their exact canonical names for
+# any internal caller. tests/test_tool_alias_manifest_agreement.py fails if
+# the two maps diverge again.
+
 _TOOL_ALIASES: dict[str, str] = {
     # search_corpus aliases (hybrid is the default — many ways to ask for it)
     "corpus":                "search_corpus",
@@ -900,21 +931,21 @@ _TOOL_ALIASES: dict[str, str] = {
     # empty returns" rather than "the broader-semantic-net tool").
     # "explore" is the everyday-English signal for "scan widely,
     # find what's out there."
-    "explore_search":        "recall_search",   # new prompt-facing name
-    "explore":               "recall_search",
-    "lazy_corpus_search":    "recall_search",   # back-compat: oldest name
-    "broad":                 "recall_search",
-    "broad_search":          "recall_search",
-    "vector_search":         "recall_search",
-    "semantic_search":       "recall_search",
+    "explore_search":        "search_corpus",   # was recall_search — see note above   # new prompt-facing name
+    "explore":               "search_corpus",   # was recall_search — see note above
+    "lazy_corpus_search":    "search_corpus",   # was recall_search — see note above   # back-compat: oldest name
+    "broad":                 "search_corpus",   # was recall_search — see note above
+    "broad_search":          "search_corpus",   # was recall_search — see note above
+    "vector_search":         "search_corpus",   # was recall_search — see note above
+    "semantic_search":       "search_corpus",   # was recall_search — see note above
 
     # precision_search aliases (BM25-only)
-    "exact":                 "precision_search",
-    "exact_match":           "precision_search",
-    "keyword_search":        "precision_search",
-    "bm25_search":           "precision_search",
-    "bm25":                  "precision_search",
-    "lookup":                "precision_search",
+    "exact":                 "search_corpus",   # was precision_search — see note above
+    "exact_match":           "search_corpus",   # was precision_search — see note above
+    "keyword_search":        "search_corpus",   # was precision_search — see note above
+    "bm25_search":           "search_corpus",   # was precision_search — see note above
+    "bm25":                  "search_corpus",   # was precision_search — see note above
+    "lookup":                "search_corpus",   # was precision_search — see note above
 }
 
 
