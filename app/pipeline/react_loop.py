@@ -1155,6 +1155,37 @@ def _requests_explicit_presentation_format(message: str) -> bool:
     return bool(_EXPLICIT_FORMAT_REQUEST_RE.search(message or ""))
 
 
+def _deterministic_handles_json(ctx) -> bool:
+    """On v2, a raw structured payload belongs to the FORMATTER, not to an LLM.
+
+    _looks_like_raw_structured_blob sends these turns to Call A, and its own
+    docstring gives the reason: "regex has no way to reformat JSON into
+    prose". That premise stopped being true on 2026-09-15 —
+    deterministic_format parses a tool payload into records and the ladder
+    renders them as the table they already are.
+
+    Which makes the old routing actively wrong rather than merely redundant:
+    it spends a model call to turn structure into prose, and Ananth's ruling
+    the same week was "no llm formatter ever ... this is only for v2, not for
+    v1". A raw payload sent to a model TO BE FORMATTED is exactly that.
+
+    Live case (cid on the David Lawrence Center turn): a CMHC org lookup
+    reached the user as its entire JSON payload. The parser that would have
+    tabulated it shipped, and this guard meant it could never run on the one
+    input it was written for.
+
+    v1 keeps the old behaviour: it is the control arm, and its integrator does
+    produce a readable card from a payload — it just pays a model call to do
+    what the ladder now does for free.
+    """
+    try:
+        from app.responder.v2_adapter import is_v2_turn
+
+        return is_v2_turn(ctx)
+    except Exception:
+        return False
+
+
 def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
     """True when react's answer needs no further LLM enhancement:
     - quick-mode round-1 early exit (the existing fast-mode-exit path), OR
@@ -1173,7 +1204,7 @@ def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
     Call A) regardless of which branch below would otherwise say
     sufficient -- only an LLM can satisfy either case."""
     react_draft = getattr(ctx, "react_draft", None) or ""
-    if _looks_like_raw_structured_blob(react_draft):
+    if _looks_like_raw_structured_blob(react_draft) and not _deterministic_handles_json(ctx):
         return False
     if _requests_explicit_presentation_format(getattr(ctx, "message", None) or ""):
         return False
@@ -1768,9 +1799,47 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, *, speculative: bool,
     this turn's state, which toolreg deliberately cannot see.
     """
     from toolreg.v2 import execute_tool as _tr_exec
+    from toolreg.outcomes import to_legacy as _tr_to_legacy, canonical as _tr_canonical
 
-    _r = _tr_exec(tool, inputs or {}, speculative=speculative)
-    r = {"outcome": _r.outcome, "payload": _r.payload, "sources": _r.sources,
+    # 🔴 ASK FOR THE FIVE WORDS, HAND CHAT THE THREE IT WAS DEPLOYED TO READ.
+    #
+    # The default vocabulary is "legacy", which collapses `refused` and
+    # `not_wired` into `could_not_run`. The first version of the emit below
+    # branched on those two names and NEITHER COULD EVER FIRE -- a distinction
+    # written, committed, and unreachable, which is the exact shape I have
+    # spent the day reporting in other people's modules.
+    #
+    # Flipping the vocabulary wholesale is not the fix either: `outcome` is
+    # read further down this module at :1867 ("could_not_run") and :1906
+    # ("empty"), and toolreg's own notes warn that emitting the canonical five
+    # would retire those branches silently. So the bridge asks for canonical,
+    # keeps it for the human-readable line, and projects to legacy for every
+    # machine-readable branch -- chat's logic sees byte-identical values.
+    _r = _tr_exec(tool, inputs or {}, speculative=speculative,
+                  vocabulary="canonical")
+    # 🔴 NORMALISE BEFORE PROJECTING. `outcome` comes from a runner, and a
+    # runner is INJECTABLE -- this module's own fixtures inject one that speaks
+    # the legacy vocabulary. to_legacy() knows canonical keys only, so feeding
+    # it an injected "evidence" raised, and the except below turned a SUCCESS
+    # into could_not_run. Four tests caught it; the loud warning is the only
+    # reason the cause was legible on the first read. toolreg's v2.py does the
+    # same canonical() call first, for the same reason and in the same words.
+    _canonical = _tr_canonical(_r.outcome)
+    try:
+        _legacy = _tr_to_legacy(_canonical)
+    except Exception:
+        # to_legacy raises on an unknown outcome rather than defaulting, which
+        # is right for them and wrong to inherit here: a new word on their side
+        # must not break a user's turn. Degrade to the conservative legacy
+        # value, and say so LOUDLY rather than absorbing it -- an unrecognised
+        # outcome is exactly the event this bridge exists to notice.
+        logger.warning("[v2.toolreg] cid=%s tool=%s UNKNOWN canonical outcome "
+                       "%r -- projecting to could_not_run; chat's branches were "
+                       "not redeployed to know this word",
+                       (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                       _canonical)
+        _legacy = "could_not_run"
+    r = {"outcome": _legacy, "payload": _r.payload, "sources": _r.sources,
          "route": _r.route, "duration_ms": _r.duration_ms, "reason": _r.reason,
          "ctx_effects": _r.effects.get("ctx_effects") or {}}
     outcome = str(r.get("outcome") or "")
@@ -1798,6 +1867,53 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, *, speculative: bool,
     # `sources` after the fact cannot tell the two apart — the first version of
     # the ratchet below did exactly that and fired on every successful call.
     _toolreg_supplied = bool(sources)
+
+    # 🔴 THE PERSON SHOULD KNOW WHOSE EXECUTOR RAN THEIR TOOL.
+    #
+    # This function has accepted `emitter` since the bridge landed and dropped
+    # it on the floor, so every tool that ran through Tool Manifest was SILENT
+    # in the turn's notes while the native path emitted normally. A parameter
+    # taken and never used is the same defect as a column written and never
+    # read -- it looks wired from both ends.
+    #
+    # Attribution is not decoration, because THE TWO PATHS FAIL DIFFERENTLY and
+    # a reader who cannot tell them apart looks for the defect in the wrong
+    # repo. Through toolreg a tool can be `refused` (a consequence declaration
+    # did that, deliberately, and nothing is broken), `not_wired` (no route was
+    # ever declared -- also not a tool failure, and NOT retryable), or
+    # `could_not_run` (it was tried and it broke -- the only one that is a
+    # fault). Collapsing those into "the tool failed" sends someone to chat's
+    # handler to debug a missing row in a route table. That happened: every
+    # chat tool but list_tasks returned could_not_run in directed mode and
+    # looked broken while being merely unrouted.
+    #
+    # Emitted HERE, at toolreg's own result, before the recovery below runs --
+    # the source count is what THEY returned, not what chat reconstructed. Same
+    # reason `_toolreg_supplied` is captured on this line.
+    def _emit_toolreg(msg: str) -> None:
+        if emitter and msg:
+            emitter(str(msg).strip())
+
+    _mode = "speculative" if speculative else "directed"
+    _ms = r.get("duration_ms")
+    _ms_s = f"{int(_ms)}ms" if isinstance(_ms, (int, float)) else "?ms"
+    _why = str(r.get("reason") or "").strip()
+    if _canonical in ("evidence", "answered"):
+        _emit_toolreg(f"\u2713 {tool} \u00b7 via Tool Manifest ({_mode}) \u00b7 "
+                      f"{_ms_s} \u00b7 {len(sources)} source(s)")
+    elif _canonical == "refused":
+        _emit_toolreg(f"\u2298 {tool} \u00b7 Tool Manifest refused it ({_mode})"
+                      + (f" \u2014 {_why[:140]}" if _why else ""))
+    elif _canonical == "not_wired":
+        _emit_toolreg(f"\u2298 {tool} \u00b7 Tool Manifest has no route for it"
+                      + (f" \u2014 {_why[:140]}" if _why else ""))
+    elif _canonical == "empty":
+        _emit_toolreg(f"\u2298 {tool} \u00b7 via Tool Manifest ({_mode}) \u00b7 "
+                      f"{_ms_s} \u00b7 returned nothing")
+    else:
+        _emit_toolreg(f"\u2298 {tool} \u00b7 Tool Manifest could not run it "
+                      f"({_canonical or 'no outcome'})"
+                      + (f" \u2014 {_why[:140]}" if _why else ""))
 
     # 🔴 REVERSE RATCHET, NOT DEAD CODE. toolreg.v2 now returns all three
     # shapes, so this block should never fire again. It is kept — and LOUD —
@@ -5600,15 +5716,44 @@ def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn,
     # producer-without-a-consumer defect, and their fix is inert until this
     # line sends the flag. skip_retry is a parameter of the enclosing
     # _execute_tool_with_retry and was already in scope here, unused.
-    r = _tr_exec(tool, inputs or {}, speculative=False, skip_retry=skip_retry)
+    # Canonical in, legacy out -- same split as the preload bridge above, for
+    # the same reason: the three branches below are what this module was
+    # deployed to read, and the five words are what a person needs to be told.
+    from toolreg.outcomes import to_legacy as _tr_to_legacy, canonical as _tr_canonical
+    r = _tr_exec(tool, inputs or {}, speculative=False, skip_retry=skip_retry,
+                 vocabulary="canonical")
+    # Normalise first -- an injected runner may speak the legacy vocabulary.
+    # See the preload bridge above for what this cost when it was missing.
+    _canon = _tr_canonical(r.outcome)
+    try:
+        _outcome = _tr_to_legacy(_canon)
+    except Exception:
+        logger.warning("[v2.toolreg] cid=%s tool=%s UNKNOWN canonical outcome "
+                       "%r -- projecting to could_not_run",
+                       (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                       _canon)
+        _outcome = "could_not_run"
     payload = r.payload
     body = payload if isinstance(payload, str) else _json.dumps(payload or {})
 
-    if r.outcome == "evidence":
+    # 🔴 SAY WHOSE EXECUTOR RAN IT. The only emit on this path used to be the
+    # failure line, and it read "<tool> could not run" -- which names the tool
+    # and hides the executor, so a refusal Tool Manifest made on a consequence
+    # declaration, a route nobody ever wrote, and a genuine fault all reached
+    # the reader as one sentence about chat's tool.
+    _ms = f"{int(r.duration_ms)}ms" if isinstance(r.duration_ms, (int, float)) else "?ms"
+
+    if _outcome == "evidence":
+        emit_fn(f"  \u2713 {tool} \u00b7 via Tool Manifest \u00b7 {_ms} \u00b7 "
+                f"{len(r.sources or [])} source(s)")
         return {"tool": tool, "success": True, "result": body,
                 "signal": None, "sources": list(r.sources or [])}
 
-    if r.outcome == "empty":
+    if _outcome == "empty":
+        # An EARNED empty: it ran and found nothing. Said differently from a
+        # refusal on purpose -- this one is a finding, not a non-event.
+        emit_fn(f"  \u2298 {tool} \u00b7 via Tool Manifest \u00b7 {_ms} \u00b7 "
+                f"ran and found nothing")
         return {"tool": tool, "success": False, "result": body,
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": []}
 
@@ -5621,6 +5766,14 @@ def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn,
     code = ("timeout" if ("timeout" in low or "timed out" in low)
             else "provider_error" if ("http 5" in low or "mcp call failed" in low)
             else None)
+    # 🔴 `refused` AND `not_wired` ARE NOT RETRYABLE, AND NOW THAT IS ENFORCED
+    # RATHER THAN INCIDENTAL. Neither reason string happens to contain
+    # "timeout" or "http 5" today, so this changes no behaviour -- which is
+    # exactly why it was worth writing down: the guarantee currently rests on
+    # the wording of another module's prose, and a reworded reason would start
+    # retrying a consequence refusal against a promise it cannot satisfy.
+    if _canon in ("refused", "not_wired"):
+        code = None
     out: dict = {
         "tool": tool, "success": False,
         "result": f"[{tool}] COULD NOT RUN — {reason[:400]}",
@@ -5633,7 +5786,14 @@ def _execute_via_toolreg(tool: str, inputs: dict, ctx, emit_fn,
     # Same reason as the preload bridge above: the cause sits past a 120-char
     # cut because the string is "<url>: <exception>", and this emit is the only
     # diagnostic channel a reader without log access actually sees.
-    emit_fn(f"  ⊘ {tool} could not run: {reason[:900]}")
+    if _canon == "refused":
+        emit_fn(f"  \u2298 {tool} \u00b7 Tool Manifest refused it \u2014 {reason[:900]}")
+    elif _canon == "not_wired":
+        emit_fn(f"  \u2298 {tool} \u00b7 Tool Manifest has no route for it "
+                f"\u2014 {reason[:900]}")
+    else:
+        emit_fn(f"  \u2298 {tool} \u00b7 Tool Manifest could not run it "
+                f"\u2014 {reason[:900]}")
     return out
 
 def _execute_tool_with_retry(
