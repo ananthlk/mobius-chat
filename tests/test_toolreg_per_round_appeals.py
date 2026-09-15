@@ -36,12 +36,49 @@ def _run(outcome, **kw):
             "appeals_lookup_rules", {"carc": "197"}, _Ctx(), lambda *_a: None)
 
 
-def test_the_appeals_five_are_the_only_tools_routed():
-    """The cut is deliberately narrow. If this set grows, that is a migration
-    with its own evidence, not a quiet edit."""
-    assert react_loop._TOOLREG_OWNED == frozenset({
-        "appeals_find_carc", "appeals_get_playbook", "appeals_lookup_rules",
-        "appeals_validate_claim", "appeals_assemble_letter"})
+# The appeals group as declared by its owner. The routed set must stay a
+# SUBSET of this: shrinking is an operational decision (a tool whose route is
+# broken in the deployed catalogue belongs back on chat's branch, immediately,
+# without a test change blocking it), while GROWING is a migration that needs
+# its own evidence.
+_APPEALS_GROUP = frozenset({
+    "appeals_find_carc", "appeals_get_playbook", "appeals_lookup_rules",
+    "appeals_validate_claim", "appeals_assemble_letter"})
+
+
+def test_only_appeals_tools_are_routed():
+    """🔴 The cut is deliberately narrow, and the ASYMMETRY is the point.
+
+    The original form pinned the set at exactly five. That is right against a
+    quiet addition and wrong against an urgent removal: on 2026-09-15
+    appeals_find_carc came back "no executable route declared" from the
+    deployed catalogue and had to go back to chat's branch within minutes —
+    and this test failed the fix, not the fault. A gate that blocks the
+    rollback is a gate pointed the wrong way.
+
+    Subset, so pulling a broken tool is never blocked; non-empty, so the cut
+    cannot be silently emptied and read as passing.
+    """
+    routed = react_loop._TOOLREG_OWNED
+    assert routed, "the routed set is empty — the cut is off entirely"
+    extra = routed - _APPEALS_GROUP
+    assert not extra, (
+        f"{sorted(extra)} routed through toolreg but not part of the appeals "
+        f"cut — widening is a migration with its own evidence, not a quiet edit"
+    )
+
+
+def test_a_tool_pulled_for_a_broken_route_is_recorded_not_just_deleted():
+    """A removal must leave a reason in the source. Otherwise the next person
+    re-adds it, hits the same broken route, and rediscovers it live."""
+    import inspect
+    src = inspect.getsource(react_loop)
+    i = src.index("_TOOLREG_OWNED: frozenset[str] = frozenset({")
+    block = src[i:i + 1600]
+    for missing in sorted(_APPEALS_GROUP - react_loop._TOOLREG_OWNED):
+        assert missing in block, (
+            f"{missing} was removed from the cut with no note saying why"
+        )
 
 
 def test_evidence_is_a_success_with_no_absence_signal():
