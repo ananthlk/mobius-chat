@@ -161,17 +161,12 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
 
 
 def _v2_turn(ctx) -> bool:
-    """Did the v2 loop serve this turn?
+    """Moved to app.responder.v2_adapter.is_v2_turn — react_loop needs the
+    same test, and two copies would drift. Kept as a thin alias so this
+    file's call sites read the same as before."""
+    from app.responder.v2_adapter import is_v2_turn
 
-    Read from what the turn HOLDS, not from the env: a percentage rollout
-    means the flag is on while individual turns are still assigned to v1, so
-    the env would re-format the control arm. ctx.v2_integration is set by
-    react_loop when v2's integrator runs, and _v2_last_contract when react
-    answered under the v2 contract — either is proof this turn took the v2
-    path. Neither is present on a v1 turn.
-    """
-    return bool(getattr(ctx, "v2_integration", None)
-                or getattr(ctx, "_v2_last_contract", None))
+    return is_v2_turn(ctx)
 
 
 def _answer_card_json_for_client(

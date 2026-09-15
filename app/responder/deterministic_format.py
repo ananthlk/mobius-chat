@@ -796,7 +796,9 @@ def deterministic_format(
 
     card = {
         "mode": "FACTUAL",
-        "direct_answer": _direct_answer_for(bolded, prose, outcome.sections, text),
+        "direct_answer": _direct_answer_for(
+            bolded, prose, outcome.sections, text,
+            segmentation.blocks[0] if segmentation.blocks else None),
         "sections": outcome.sections,
     }
     _attach_presentation(card, verdicts)
@@ -855,6 +857,7 @@ def _direct_answer_for(
     prose: str,
     sections: list[dict[str, Any]],
     text: str = "",
+    payload_for_lead: "ContentPayload | None" = None,
 ) -> str:
     """What the answer line says once the cards have taken their content.
 
@@ -891,13 +894,36 @@ def _direct_answer_for(
     # above the same content as a real table, with a raw <br> in it that the
     # table renderer had already cleaned. Duplicated AND uglier than nothing.
     # Every unit test passed; it took putting the card on a screen to see it.
-    if _MD_TABLE_ANY_RE.search(text):
-        return ""
-    # A raw JSON payload, for the same reason and more so: it is not prose in
-    # any sense, and it now renders in full as the card above. Live
-    # (2026-09-15) an org lookup shipped its entire payload as the answer --
-    # `[{"org_entity_id": "9127...", ...}]` — which is what prompted parsing
-    # it at all.
-    if _json_payload(text) is not None:
-        return ""
+    # ALL-STRUCTURE DRAFTS GET A LEAD LINE, NOT AN EMPTY STRING.
+    #
+    # An empty direct_answer trips the bleed detector downstream, which
+    # replaces the ENTIRE CARD with "I had trouble formatting the answer.
+    # Please try again." — sections included. So emitting "" does not just
+    # look bare, it destroys the table it was meant to make room for.
+    #
+    # I shipped "" for the pipe-table case and only found this by driving
+    # run_integrate: the unit tests and the render harness both call the
+    # formatter directly and never reach the detector. Same blind spot that
+    # hid the dropped `presentation` key for two days.
+    #
+    # The lead is authored and factual — a count of what the card holds, no
+    # claim about what any of it MEANS, because the formatter does not know
+    # the question.
+    if _MD_TABLE_ANY_RE.search(text) or _json_payload(text) is not None:
+        return _structured_lead(payload_for_lead)
     return bolded
+
+
+def _structured_lead(payload: ContentPayload | None) -> str:
+    """One factual sentence for a draft that is nothing but structure."""
+    if payload is not None:
+        if payload.table and payload.table.rows:
+            n = len(payload.table.rows)
+            return f"{n} row{'' if n == 1 else 's'} — details in the table below."
+        if payload.pairs:
+            n = len(payload.pairs)
+            return f"{n} field{'' if n == 1 else 's'} — details below."
+        if payload.items:
+            n = len(payload.items)
+            return f"{n} item{'' if n == 1 else 's'} — details below."
+    return "Details are in the card below."

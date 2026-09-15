@@ -239,9 +239,15 @@ class TestTheAnswerLineNeverShowsRawMarkup:
         "| Electronic Claims | Institutional (837I): loop 2300.<br>Professional: 2320. | Same |\n"
     )
 
-    def test_a_pure_table_draft_leaves_the_answer_line_empty(self):
+    def test_a_pure_table_draft_gets_a_LEAD_LINE_not_an_empty_one(self):
+        """Corrected 2026-09-15. This asserted == "" and was wrong: an empty
+        direct_answer trips sanitize_direct_answer_string downstream, which
+        replaces the whole card with "I had trouble formatting the answer."
+        The test passed because it calls the formatter directly and never
+        reaches the sanitizer — it was pinning the defect."""
         card = deterministic_format(self.PURE_TABLE)
-        assert card["direct_answer"] == ""
+        assert card["direct_answer"].strip()
+        assert "|" not in card["direct_answer"]
         assert [s["format"] for s in card["sections"]] == ["table"]
 
     def test_the_table_itself_is_unaffected(self):
@@ -292,8 +298,13 @@ class TestRawToolPayloadsBecomeTables:
         assert [s["format"] for s in card["sections"]] == ["table"]
 
     def test_the_raw_json_never_reaches_the_answer_line(self):
-        """It is not prose in any sense, and it now renders in full above."""
-        assert deterministic_format(self.LIVE)["direct_answer"] == ""
+        """It is not prose in any sense, and it renders in full above. The
+        line is a factual count, not empty — an empty one is eaten by the
+        sanitizer along with the card."""
+        answer = deterministic_format(self.LIVE)["direct_answer"]
+        assert answer.strip()
+        assert "org_entity_id" not in answer
+        assert "{" not in answer
 
     def test_one_record_becomes_its_FIELDS_not_a_one_row_table(self):
         """Twelve columns and a single row is unreadable, and the fields ARE

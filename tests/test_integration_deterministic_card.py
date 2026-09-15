@@ -320,3 +320,74 @@ class TestNoLlmFormatterOnV2Only:
         card = _run(ctx)
         assert [s["format"] for s in card["sections"]] == \
                ["table", "steps", "bullets", "bullets"]
+
+
+class TestStructureOnlyDraftsSurviveThePipeline:
+    """An all-structure draft must not publish an EMPTY answer line.
+
+    sanitize_direct_answer_string replaces an empty direct_answer with
+    "I had trouble formatting the answer. Please try rephrasing your
+    question." — so emitting "" does not merely look bare, it can lose the
+    card it was meant to make room for.
+
+    I shipped "" for the pipe-table case and only found this by driving
+    run_integrate. The unit tests and the render harness both call the
+    formatter directly and never reach the sanitizer — the same blind spot
+    that hid the dropped `presentation` key for two days.
+    """
+
+    ORG_PAYLOAD = (
+        '[{"org_entity_id": "9127414240976b712796f4a912cb40e3", '
+        '"org_name": "DAVID LAWRENCE CENTER", "org_type": "CMHC", '
+        '"market_tier": "sparse", "orgs_in_market": 2, "billing_npi_count": 1, '
+        '"billing_npis": ["1033883731"], "bene_count": 4199, "revenue": 1219170.73}]'
+    )
+    PIPE_TABLE = (
+        "| Topic | Requirement | Deadline | Contact |\n| --- | --- | --- | --- |\n"
+        "| Filing COB Claims | Submit after the primary payer's EOP with all data "
+        "| Within 90 days | Availity |\n"
+        "| Electronic Claims | Institutional 837I uses loop 2300 for COB data "
+        "| Same window | Clearinghouse |\n"
+    )
+
+    def _v2(self, draft):
+        return _run(_ctx(draft, v2_integration={
+            "coverage": [], "citations": [], "ran": {"assemble": "ok"}}))
+
+    def test_a_raw_tool_payload_publishes_a_table_on_v2(self):
+        """The live David Lawrence Center turn: the payload reached the user
+        verbatim because the raw-JSON guard routed it to the LLM, so the
+        parser could never run on the one input it was written for."""
+        card = self._v2(self.ORG_PAYLOAD)
+        assert [s["format"] for s in card["sections"]] == ["table"]
+        assert ["org_name", "DAVID LAWRENCE CENTER"] in card["sections"][0]["data"]["rows"]
+
+    def test_neither_structured_case_publishes_an_empty_answer(self):
+        for draft in (self.ORG_PAYLOAD, self.PIPE_TABLE):
+            answer = self._v2(draft)["direct_answer"]
+            assert answer.strip(), "empty answer line — the sanitizer will eat the card"
+            assert "trouble formatting" not in answer
+
+    def test_the_lead_line_is_a_count_and_claims_nothing_else(self):
+        """Authored and factual. The formatter does not have the question, so
+        it cannot say what any of the data MEANS."""
+        assert self._v2(self.PIPE_TABLE)["direct_answer"] == \
+            "2 rows — details in the table below."
+
+    def test_the_raw_payload_never_appears_in_the_answer_line(self):
+        assert "org_entity_id" not in self._v2(self.ORG_PAYLOAD)["direct_answer"]
+
+    def test_v1_is_unchanged_and_still_routes_a_payload_to_the_llm(self):
+        """v1 is the control arm. Its integrator produces a readable card from
+        a payload — it just pays a model call to do what the ladder now does
+        for free, and that trade is not mine to change on the control."""
+        ctx = _ctx(self.ORG_PAYLOAD)
+        with (
+            patch.dict(os.environ, _DETERMINISTIC_ENV),
+            patch("app.stages.integrate.format_response_parallel") as parallel,
+            patch("app.stages.integrate.run_bc_background"),
+        ):
+            parallel.return_value = (
+                '{"mode":"FACTUAL","direct_answer":"llm","sections":[]}', [])
+            run_integrate(ctx)
+            assert parallel.called

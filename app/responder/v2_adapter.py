@@ -450,3 +450,21 @@ def add_fact_sections(card: dict[str, Any], facts: Any) -> dict[str, Any]:
     # sections would now contradict what is on screen.
     card.pop("presentation", None)
     return card
+
+
+def is_v2_turn(ctx: Any) -> bool:
+    """Did the v2 loop serve this turn?
+
+    Read from what the turn HOLDS, never from the env: a percentage rollout
+    means the flag is on while individual turns are still assigned to v1, so
+    an env check would treat control-arm turns as v2. ctx.v2_integration is
+    set by react_loop when v2's integrator runs, and _v2_last_contract when
+    react answered under the v2 contract. Neither is present on a v1 turn.
+
+    Lives here rather than in integrate.py because react_loop needs the same
+    test, and two copies of this expression would drift the first time the
+    posture changed -- which is the argument Governor made for _communicating
+    and it applies identically.
+    """
+    return bool(getattr(ctx, "v2_integration", None)
+                or getattr(ctx, "_v2_last_contract", None))
