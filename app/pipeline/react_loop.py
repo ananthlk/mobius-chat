@@ -1699,14 +1699,57 @@ def _v2_kept_order(ctx, round_index=None) -> list:
             out.extend(r.get("rendered") or [])
     return out
 
-def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
-    """Bridge preload.execute() to Tool Manifest's executor."""
-    from toolreg.execute import runner as _tr_runner
+def _preload_runner_toolreg(tool: str, inputs: dict, ctx, *, speculative: bool,
+                            emitter=None) -> dict:
+    """Bridge preload.execute() to Tool Manifest's v2 surface.
 
-    r = _tr_runner(tool, inputs or {}, speculative=True) or {}
+    🔴 `speculative` HAS NO DEFAULT, AND THAT IS THE POINT OF THIS CHANGE.
+
+    This one bridge serves two call sites with OPPOSITE intent, and it used to
+    hardcode `speculative=True` for both:
+
+        :5918  preload  — speculative: spend that happens BEFORE react decides
+        :7829  verify   — directed:   someone decided to call verify_claims
+
+    The verify call site's own comment says it is "DIRECTED (someone decided to
+    call it), never speculative" — and the code one frame down said True. The
+    comment was the only thing asserting the property, so nothing caught it.
+
+    It is silent today only because verify_claims is one of the 6 tools (of 71)
+    carrying a consequence declaration, so the speculative guard never bites.
+    The moment that guard tightens, or verify_claims' declaration changes,
+    verification refuses every fact and the cause is a hardcoded literal three
+    functions away from the decision it misreports.
+
+    A parameter that decides WHETHER a guard runs gets no default. A default
+    here is what disarmed it.
+
+    WHAT MOVED TO toolreg.v2: the response-shape work. Recovering rag's
+    evidence from `chunks` / `contract.chunks`, and the fact store's
+    provenance from a singular `source`, used to be done BY HAND below —
+    correctly, and only here. Tool Manifest now returns all three shapes from
+    execute_tool itself, proven through that call and not through its helpers
+    (toolreg tests/test_v2_surface_covers_the_bridge.py). Extraction belongs
+    with execution, or every caller writes it again and only one gets it right.
+
+    WHAT STAYED HERE: everything turn-derived — the summary, fair_share
+    numbering, the ctx effect allow-list, the emits and the logging. Those read
+    this turn's state, which toolreg deliberately cannot see.
+    """
+    from toolreg.v2 import execute_tool as _tr_exec
+
+    _r = _tr_exec(tool, inputs or {}, speculative=speculative)
+    r = {"outcome": _r.outcome, "payload": _r.payload, "sources": _r.sources,
+         "route": _r.route, "duration_ms": _r.duration_ms, "reason": _r.reason,
+         "ctx_effects": _r.effects.get("ctx_effects") or {}}
     outcome = str(r.get("outcome") or "")
     payload = r.get("payload")
     sources = r.get("sources") or []
+    # Their notes, our ordering — returned as data so this module decides when
+    # and whether a retry line reaches the person.
+    for _n in (_r.notes or []):
+        logger.info("[v2.toolreg] cid=%s tool=%s note=%s",
+                    (getattr(ctx, "correlation_id", "") or "")[:8], tool, _n)
     # 🔴 rag's EVIDENCE IS `chunks`, NOT `sources`, AND THE IDS LIVE THERE.
     #
     # The executor maps payload["sources"] / payload["matches"]; rag returns
@@ -1720,6 +1763,17 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     # Recovered from the payload rather than asked of the executor: the chunk
     # shape is chat's own knowledge — corpus_search already maps it — and a
     # generic executor should not have to learn one tool's envelope.
+    # What toolreg ITSELF returned, captured before any recovery runs. Reading
+    # `sources` after the fact cannot tell the two apart — the first version of
+    # the ratchet below did exactly that and fired on every successful call.
+    _toolreg_supplied = bool(sources)
+
+    # 🔴 REVERSE RATCHET, NOT DEAD CODE. toolreg.v2 now returns all three
+    # shapes, so this block should never fire again. It is kept — and LOUD —
+    # because "should never" is a claim about another module's behaviour, and
+    # the way to hold them to it is a line in the log that only appears if they
+    # stopped. Delete it when this has been silent in production, not on my
+    # reading of their tests.
     if not sources and isinstance(payload, dict):
         _c = payload.get("chunks")
         if not isinstance(_c, list):
@@ -1731,6 +1785,22 @@ def _preload_runner_toolreg(tool: str, inputs: dict, ctx, emitter=None) -> dict:
     # chunks — surface it so the citation survives and the page is not lost.
     if not sources:
         sources = _fact_store_sources(payload)
+    # 🔴 THE RATCHET FIRES ON WHAT IT RECOVERED, NOT ON AN EMPTY `sources`.
+    #
+    # First live call after this change logged RECOVERY FIRED for
+    # appeals_lookup_rules — which returns RULES, not passages, and correctly
+    # has no provenance rows at all. Warning whenever `sources` is empty makes
+    # every sourceless tool look like a toolreg regression, and a warning that
+    # cries wolf is worse than no warning: it trains the next reader to skip it.
+    #
+    # The only fact that means "toolreg stopped returning what it promised" is
+    # this block FINDING ROWS toolreg did not. That is what is logged.
+    if sources and not _toolreg_supplied:
+        logger.warning("[v2.toolreg] cid=%s tool=%s RECOVERY FIRED — recovered "
+                       "%d source(s) that toolreg.v2 did not return; this block "
+                       "was supposed to be redundant and is not",
+                       (getattr(ctx, "correlation_id", "") or "")[:8], tool,
+                       len(sources))
     _asked = str((inputs or {}).get("query") or "").strip()
 
     # Their effects, our ordering. Unknown keys are IGNORED rather than setattr'd
@@ -5915,7 +5985,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     _plan,
                     # Tool Manifest executes by default now; the flag is the
                     # ~90-second revert, not a design choice deferred.
-                    (lambda _tool, _inputs: _preload_runner_toolreg(_tool, _inputs, ctx, emitter))
+                    (lambda _tool, _inputs: _preload_runner_toolreg(
+                        _tool, _inputs, ctx, speculative=True, emitter=emitter))
                     if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip() not in ("0", "false", "no")
                     else (lambda _tool, _inputs: _preload_runner(_tool, _inputs, ctx, emitter)),
                     _pre_q,
@@ -7826,7 +7897,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _vr = _v2v.verify(
                     tuple(getattr(getattr(ctx, "_v2_last_contract", None),
                                   "facts", ()) or ()),
-                    lambda _t, _i: _preload_runner_toolreg(_t, _i, ctx, emitter)
+                    lambda _t, _i: _preload_runner_toolreg(
+                        _t, _i, ctx, speculative=False, emitter=emitter)
                     if os.environ.get("MOBIUS_V2_TOOLREG_EXEC", "1").strip()
                     not in ("0", "false", "no")
                     else _preload_runner(_t, _i, ctx, emitter))
