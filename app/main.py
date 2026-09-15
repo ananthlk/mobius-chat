@@ -95,6 +95,20 @@ logger = logging.getLogger(__name__)
 # and the actual failure surfaces on the first request as it would
 # have anyway.
 _cold_import_t0 = time.perf_counter()
+
+# 🔴 THE BOOT DIAGNOSTIC EXISTED AND NOBODY COULD READ IT.
+#
+# _prewarm_worker_caches() builds a report -- db_pool=..., react_prompt=...,
+# toolreg_warm=...ms or FAIL(Type: why) -- and writes it to logger.info ONLY.
+# On 2026-09-14 Tool Manifest asked a question that report answers (is
+# toolreg_warm succeeding on the deployed revision?) and neither of us could
+# answer it: gcloud logging is PERMISSION_DENIED for this account, so the one
+# place the answer lives was unreachable from both sides of the question.
+#
+# A diagnostic that only a log can show is a diagnostic only some people have.
+# Kept as a dict so /diag/prewarm can serve it, and STILL logged, because the
+# log is the record and this is the window.
+_PREWARM_REPORT: dict = {"state": "not_run"}
 try:
     import vertexai  # noqa: F401
     from vertexai.generative_models import GenerativeModel  # noqa: F401
@@ -360,9 +374,22 @@ def _prewarm_worker_caches() -> None:
         # it mattered. A degraded path that cannot say what degraded it stops
         # the search before it starts.
         parts.append(f"toolreg_warm=FAIL({type(e).__name__}: {str(e)[:160]})")
+    _elapsed = time.perf_counter() - t0
+    # Recorded BEFORE the log call: if logging is misconfigured the window
+    # still works, which is the whole point of having a second channel.
+    global _PREWARM_REPORT
+    _PREWARM_REPORT = {
+        "state": "ran",
+        "elapsed_s": round(_elapsed, 2),
+        "parts": list(parts),
+        # Parsed so a caller does not have to scrape strings for the one fact
+        # anybody actually asks for.
+        "failures": [p for p in parts if "FAIL(" in p],
+        "at": time.time(),
+    }
     logger.info(
         "worker-prewarm: complete in %.2fs (%s) — first user turn skips this work",
-        time.perf_counter() - t0, " ".join(parts),
+        _elapsed, " ".join(parts),
     )
 
 
@@ -3107,6 +3134,22 @@ from app.api._common import task_manager_base_url as _task_manager_base
 # services all gone, the aggregator has no caller.
 
 # Phase 1f.1: /chat/tasks/* moved to app.api.tasks. Router included below.
+
+
+@app.get("/diag/prewarm")
+def diag_prewarm():
+    """What the boot-time cache warm actually did, for people without log access.
+
+    Deliberately NOT folded into /health: that is a 1Hz liveness probe whose
+    failure kills the container, so it must stay cheap and must not grow a
+    surface that can throw. This is a separate read of a dict already in
+    memory.
+
+    "state": "not_run" is a real answer and distinct from a failure -- the
+    prewarm runs on a worker process, so an API-only process legitimately
+    never ran it. Absence of failures is not evidence of success.
+    """
+    return _PREWARM_REPORT
 
 
 @app.get("/health")
