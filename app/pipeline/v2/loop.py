@@ -696,7 +696,7 @@ V2_MODULE_KEY = "react.v2_governor"
 def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
                       v1_builder, allowed_tools=None,
                       agent_role: str = "explore",
-                      posture=None) -> tuple[str, dict]:
+                      posture=None, failed: bool = False) -> tuple[str, dict]:
     """The composed prompt, plus THIS ROUND'S POSTURE.
 
     🔴 WRAPPED, NOT PATCHED AT EACH RETURN. The builder below has THREE exits
@@ -723,8 +723,23 @@ def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
         max_rounds, mode, user_profile, v1_builder,
         allowed_tools=allowed_tools, agent_role=agent_role)
     try:
-        from app.pipeline.v2.posture_prompts import POSTURE_PROMPTS
+        from app.pipeline.v2.posture_prompts import (
+            COMMUNICATE_FAILURE, POSTURE_PROMPTS,
+        )
         block = POSTURE_PROMPTS.get(posture) if posture is not None else None
+        # 🔴 COMMUNICATE HAS TWO PROMPTS, NOT ONE WITH A BRANCH.
+        #
+        # The Deterministic UX seat's reason is mechanical, not stylistic: the
+        # formatter treats a thin-evidence turn as a REFUSAL and will not fill
+        # it, because a cited bullet list beside an ungrounded answer is the
+        # most confident-looking thing on a screen. A failure that arrives
+        # SHAPED like a success fights the gate that keeps it honest.
+        #
+        # Load-bearing since the v1 fallback was removed: a failed turn now
+        # publishes its own words, so those words are the product.
+        if posture is not None and getattr(posture, "value", "") == "communicate" \
+                and failed:
+            block = COMMUNICATE_FAILURE
     except Exception:
         block = None
     if not block:
@@ -733,11 +748,11 @@ def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
         # is complete on its own — say which posture had no block rather than
         # implying one was applied.
         source = {**source, "posture_block": None,
-                  "posture": getattr(posture, "value", None)}
+                  "posture": getattr(posture, "value", None), "failed": failed}
         return base, source
     return (f"{base}\n\nTHIS ROUND\n{block}",
             {**source, "posture_block": "applied",
-             "posture": getattr(posture, "value", None)})
+             "posture": getattr(posture, "value", None), "failed": failed})
 
 
 def _agent_role_for(posture) -> str:

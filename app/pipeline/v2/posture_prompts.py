@@ -155,16 +155,86 @@ extend, and you may not fetch.
 """
 
 # ── COMMUNICATE ─────────────────────────────────────────────────────────────
-# 🔴 HELD. This posture produces what a person reads, and the Deterministic UX
-# seat owns how it renders. Four questions are with them: where the line falls
-# between content and formatting; which fields the deterministic path needs
-# present; whether the two branches (a complete answer, versus an honest
-# failure) want one prompt or two; and what of v1's `draft` role to drop.
+# From the Deterministic UX seat, docs/COMMUNICATE_PROMPT_UX_INPUT.md (be4772a).
+# Every number below is measured on 32 real A/B drafts, not asserted.
 #
-# The failure branch became load-bearing on 2026-09-15: v2's fallback to v1 was
-# removed, so a failed turn now publishes ITS OWN honest failure rather than v1
-# quietly answering instead.
-COMMUNICATE = None
+# THE LINE: the model says WHAT each thing IS; the classifier decides HOW it
+# renders. Since 26facd1 `format` is DISCARDED on every v2 section and
+# re-decided from content, so anything a prompt says about shape is dead on
+# arrival. Two measurements of why it must be: the model called a label/value
+# list "bullets", and called a SIX-item set "stats" into a renderer that draws
+# four tiles — silently losing two rows every time.
+#
+# THE CEILING IS THE WRITING, NOT A FIELD. 19 of 32 drafts (59%) contain no
+# structural block at all; 9 of 32 (28%) are a single unbroken paragraph. The
+# contract already says "Do NOT write paragraphs" and is not being followed,
+# so restating it in new words would not help. The one demand that moves the
+# number is one assertion per line, labelled.
+#
+# TWO PROMPTS, NOT ONE WITH A BRANCH — their finding and the reason is
+# mechanical, not stylistic: the formatter treats a thin-evidence turn as a
+# REFUSAL and will not fill it, because a cited bullet list beside an
+# ungrounded answer is the most confident-looking thing on a screen. A failure
+# shaped like a success fights the gate that keeps it honest.
+COMMUNICATE = """\
+You have what you are going to have. Write the answer.
+
+MARK WHAT THINGS ARE. Do not decide how they look — that is chosen downstream
+from what you write, and any shape you name is discarded.
+
+  a label     lead a line with the thing it is about: "Initial claims: ..."
+              Measured: on one question the labelled arm led 4 of 4 lines with
+              a label and became a four-row table; the unlabelled arm led 0 of
+              4 and could not, because there is nowhere to split subject from
+              predicate without guessing.
+  an order    if sequence carries meaning, write them as steps. Only you know
+              whether it does.
+  a peer set  things of the same kind go on sibling lines, never merged into
+              one paragraph.
+
+ONE ASSERTION PER LINE. Every distinct thing this answer claims gets its own
+line, with a short label where one exists. This is the single change that
+matters: 19 of 32 real answers contained nothing to structure at all.
+
+KEEP A LINE SCANNABLE. Past roughly 25 words a line stops being readable at a
+glance.
+
+DO NOT OPEN WITH A GREETING. Not "Hey", not "I've got that for you", not "Here
+is what I found". 22 of 32 real answers opened with one, and it is worse than
+noise: the renderer keeps prose BETWEEN structural blocks, so on a
+well-structured answer the greeting is the only prose that survives. Start
+with the answer.
+"""
+
+# 🔴 THE FAILURE BRANCH IS ITS OWN PROMPT, AND IT ASKS FOR NO STRUCTURE.
+#
+# Load-bearing since v2's fallback to v1 was removed on 2026-09-15: a failed
+# turn now publishes ITS OWN words rather than v1 quietly answering instead, so
+# those words are the product.
+#
+# The four failures below are distinguished everywhere else in this system and
+# collapse in the answer into "I could not find...", which is true of all four
+# and useful for none.
+COMMUNICATE_FAILURE = """\
+This turn did not produce an answer. Say so plainly, in prose. Do not write
+labels, lines or sections — a failure shaped like an answer reads as a
+confident one.
+
+SAY WHICH FAILURE IT WAS. These are not the same and the person can act on
+only some of them:
+
+  we did not look        a tool did not run. Nothing was searched, so this
+                         says NOTHING about whether the information exists.
+  we looked, not there   the source was searched and does not carry it.
+  we could not check     we have something, but no way to confirm it.
+  it did not hold up     we checked, and the evidence did not support it.
+
+Then say what would resolve it — a source to consult, a person to ask, a
+question asked differently. If nothing would, say that.
+
+Do not apologise, do not describe the tools, and do not offer a summary of
+what you were unable to do.
+"""
 
 POSTURE_PROMPTS: dict[Posture, str | None] = {
     Posture.FRAME: FRAME,

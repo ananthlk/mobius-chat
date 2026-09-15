@@ -69,3 +69,58 @@ def test_the_posture_prompts_do_not_restate_the_shared_contract():
                 f"{posture.value} restates the shared contract ({phrase!r}) — "
                 f"the composition already carries it"
             )
+
+
+def test_communicate_has_TWO_prompts_and_the_failure_one_asks_for_no_structure():
+    """🔴 The Deterministic UX seat's reason is mechanical, not stylistic.
+
+    Their formatter treats a thin-evidence turn as a REFUSAL and will not fill
+    it — a cited bullet list beside an ungrounded answer is the most
+    confident-looking thing on a screen. So a failure answer that arrives
+    SHAPED like a success fights the gate that keeps it honest.
+
+    Load-bearing since v2's fallback to v1 was removed: a failed turn publishes
+    its own words now, so those words are the product.
+    """
+    from app.pipeline.v2.posture_prompts import COMMUNICATE, COMMUNICATE_FAILURE
+
+    assert COMMUNICATE and COMMUNICATE_FAILURE
+    assert COMMUNICATE is not COMMUNICATE_FAILURE
+
+    # 🔴 INTENT, NOT VOCABULARY. My first version banned the WORD "label" and
+    # failed on "Do not write labels" — a prohibition, which is the opposite of
+    # what it was checking for. A gate that matches a word matches the denial
+    # of that word too.
+    f = COMMUNICATE_FAILURE.lower()
+    assert "do not write labels" in f, (
+        "the failure prompt must explicitly forbid structure, not merely omit "
+        "asking for it — omission leaves the model to guess"
+    )
+    # and it must not carry the success prompt's positive demands
+    for demand in ("one assertion per line", "a peer set", "mark what things are"):
+        assert demand not in f, (
+            f"the failure prompt asks for {demand!r} — structure is what makes "
+            f"a failure read as confident"
+        )
+
+
+def test_the_four_failures_are_named_separately():
+    """could_not_run / no_sources / unobservable / unsupported are tracked
+    apart everywhere else in this system and collapse in the ANSWER into
+    "I could not find...", which is true of all four and useful for none."""
+    from app.pipeline.v2.posture_prompts import COMMUNICATE_FAILURE
+    t = COMMUNICATE_FAILURE.lower()
+    for distinction in ("did not look", "not there", "could not check",
+                        "did not hold up"):
+        assert distinction in t, f"the failure prompt collapses {distinction!r}"
+
+
+def test_the_answer_prompt_never_names_a_FORMAT():
+    """Since 26facd1 `format` is discarded on every v2 section and re-decided
+    from content, so a shape named in the prompt is dead on arrival. Measured
+    why it must be: the model called a six-item set "stats" into a renderer
+    that draws four tiles, losing two rows silently every time."""
+    from app.pipeline.v2.posture_prompts import COMMUNICATE
+    t = COMMUNICATE.lower()
+    for fmt in ("use a table", "use bullets", "bullet points", "heading"):
+        assert fmt not in t, f"the prompt names a format ({fmt!r})"
