@@ -91,7 +91,12 @@ def test_communicate_has_TWO_prompts_and_the_failure_one_asks_for_no_structure()
     # failed on "Do not write labels" — a prohibition, which is the opposite of
     # what it was checking for. A gate that matches a word matches the denial
     # of that word too.
-    f = COMMUNICATE_FAILURE.lower()
+    # 🔴 NORMALISE WHITESPACE BEFORE MATCHING. The prompt wraps as
+    # "Do not write\nlabels, lines or sections", so a substring spanning the
+    # break does not match. Second time in one test: first I matched a word
+    # and caught its denial, then I matched a phrase and caught a line break.
+    # A prompt is prose — any gate over it has to read it as prose.
+    f = " ".join(COMMUNICATE_FAILURE.lower().split())
     assert "do not write labels" in f, (
         "the failure prompt must explicitly forbid structure, not merely omit "
         "asking for it — omission leaves the model to guess"
