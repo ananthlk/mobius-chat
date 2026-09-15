@@ -274,6 +274,21 @@ SET_ENV_VARS=(
     # without a deploy: `gcloud run services update --update-env-vars
     # MOBIUS_V2_FRAME_DECIDES=` takes ~90s. Empty default = observe only.
     "MOBIUS_V2_FRAME_DECIDES=${MOBIUS_V2_FRAME_DECIDES:-}"
+    # 🔴 THE KILL SWITCH HAS TO SURVIVE THE DEPLOY THAT NEEDS KILLING.
+    #
+    # react_loop.py routes every v2 tool call through Tool Manifest's executor
+    # when this is not "0"/"false"/"no", and its comment there calls the flag
+    # "the ~90-second revert". It was not in this ALLOWLIST, and the list is
+    # exclusive -- absent means simply not in the container. So the revert was
+    # a promise made in a comment and not wired to anything:
+    #   * it could not be set to 0 at deploy time at all, and
+    #   * a post-deploy `gcloud run services update --update-env-vars` DID work
+    #     but the next deploy silently wiped it, because --set-env-vars
+    #     REPLACES the environment rather than merging into it.
+    # Which means the first person to reach for the rollback would have found
+    # it, under pressure, during the incident it exists for.
+    # Empty default = unchanged behaviour (executor on).
+    "MOBIUS_V2_TOOLREG_EXEC=${MOBIUS_V2_TOOLREG_EXEC:-}"
     # MOBIUS_V2_STEER: the governor names ONE gap in the round context
     # (governor-react closure contract, Direction 1). v2 arm only. Empty =
     # the governor decides and says nothing, which is what it did for its

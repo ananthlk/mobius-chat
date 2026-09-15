@@ -1,0 +1,31 @@
+{
+  "name": "ab-15-v1v2",
+  "note": "The fixed 15-question A/B bank. Kept on disk, not in a conversation, because it was reconstructed from a session transcript once already and a bank that moves between runs makes every comparison meaningless.",
+  "created_utc": "2026-09-14",
+  "baseline_runs": {
+    "run1": {"v1_avg_quality": 0.823, "v2_avg_quality": 0.950,
+             "v1_p50_latency_s": 51.0, "v2_p50_latency_s": 50.2,
+             "caveat": "quality figures are NOT reliable: the adjudicator does not reproduce (mean |delta| 0.241, max 0.621, n=8 on identical text). Latency is measured and does reproduce."}
+  },
+  "questions": [
+    {"id": 1,  "group": "A", "intent": "single verifiable fact", "mode": "quick",    "q": "What is Molina Healthcare's timely filing deadline for corrected claims in Florida?"},
+    {"id": 2,  "group": "A", "intent": "single verifiable fact", "mode": "quick",    "q": "How many days does Aetna Better Health of Florida have to resolve a standard provider appeal?"},
+    {"id": 3,  "group": "A", "intent": "single verifiable fact", "mode": "quick",    "q": "What is the member cost-share for emergency room visits under Sunshine Health's Florida Medicaid plan?"},
+    {"id": 4,  "group": "B", "intent": "two-entity comparison",  "mode": "copilot",  "q": "Compare the prior authorization requirements for inpatient behavioral health between Sunshine Health and Molina in Florida."},
+    {"id": 5,  "group": "B", "intent": "two-entity comparison",  "mode": "copilot",  "q": "Do Sunshine Health and UnitedHealthcare Community Plan use the same provider credentialing timeline in Florida?"},
+    {"id": 6,  "group": "B", "intent": "two-entity comparison",  "mode": "copilot",  "q": "Which has the longer claims appeal window in Florida Medicaid — Aetna Better Health or Molina?"},
+    {"id": 7,  "group": "C", "intent": "process",                "mode": "copilot",  "q": "What steps must a provider take to request a peer-to-peer review after a Sunshine Health denial?"},
+    {"id": 8,  "group": "C", "intent": "process",                "mode": "copilot",  "q": "How does a provider submit a corrected claim to Aetna Better Health of Florida, and what is the deadline?"},
+    {"id": 9,  "group": "C", "intent": "process",                "mode": "copilot",  "q": "What is the process for a Florida Medicaid provider to dispute a UnitedHealthcare recoupment?"},
+    {"id": 10, "group": "D", "intent": "honest absence",         "mode": "copilot",  "q": "Does Molina Healthcare reimburse Florida providers for telephonic-only care coordination?"},
+    {"id": 11, "group": "D", "intent": "honest absence",         "mode": "copilot",  "q": "What is Sunshine Health's reimbursement rate for CPT 99490 in Florida?"},
+    {"id": 12, "group": "D", "intent": "honest absence",         "mode": "copilot",  "q": "Does Aetna Better Health of Florida cover doula services under Florida Medicaid?"},
+    {"id": 13, "group": "E", "intent": "multi-entity + codes",   "mode": "agentic",  "q": "Which HCPCS codes does Florida Medicaid use for behavioral health assessment, and do Sunshine Health and Molina both follow the state schedule?"},
+    {"id": 14, "group": "E", "intent": "multi-entity + codes",   "mode": "agentic",  "q": "What are the prior authorization requirements and billing codes for peer support services across Sunshine Health, Molina, and UnitedHealthcare in Florida?"},
+    {"id": 15, "group": "E", "intent": "multi-entity + codes",   "mode": "agentic",  "q": "For Florida Medicaid SMI members, what care coordination services are covered and which require prior authorization, by plan?"}
+  ],
+  "reading_notes": {
+    "Q11_Q12": "The honest-absence probes. They test whether the system says 'not found' rather than inventing a rate or a benefit. Grade these hardest.",
+    "group_E": "Every group-E question names 2-3 payors, which is the multi-arm fan-out shape. As of 2026-09-14 that shape was failing at the rag pool's unprotected gather over fanned-out arms — if E fails and A/B/C pass, suspect fan-out before suspecting the orchestrator."
+  }
+}
