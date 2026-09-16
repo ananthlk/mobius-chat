@@ -496,3 +496,61 @@ def is_v2_turn(ctx: Any) -> bool:
     """
     return bool(getattr(ctx, "v2_integration", None)
                 or getattr(ctx, "_v2_last_contract", None))
+
+
+def cited_indices_from_facts(facts: Any, sources: Any) -> list[int]:
+    """Per-claim citations for v2, derived rather than asked for.
+
+    🔴 THE PRODUCER FOR THIS FIELD DOES NOT RUN ON v2.
+
+    `cited_source_indices` is written by the parallel CRITIC (Call B). v2
+    builds its card deterministically -- Ananth, 2026-09-14: "no llm formatter
+    ever ... this is only for v2" -- which skips Call A and Call B together.
+    So the field kept the `[]` that orchestrator.py initialises it to, on
+    every v2 turn, while 13 sources were published beside it. A consumer
+    reading a field nobody fills.
+
+    Re-running an LLM to recover it would undo the thing that made v2 fast and
+    deterministic. It is also unnecessary: a v2 fact ALREADY carries the
+    document it came from, resolved to a corpus id by `with_document_ids`.
+    The citation is not something to ask a model for, it is something we were
+    handed and threw away.
+
+    NO FUZZY MATCHING, the same rule `with_document_ids` states and for the
+    same reason: a claim pointed at the wrong document cites the wrong text,
+    and a confident wrong citation is worse than an honest absent one. Match
+    on `document_id` only -- never on a name that merely looks similar.
+
+    Where a fact carries a page and a source row carries the same page, only
+    those rows are cited. Otherwise every row from that document is, because
+    the honest statement is "this document supports the claim" rather than a
+    guess at which chunk of it did.
+    """
+    out: set[int] = set()
+    rows = [s for s in (sources or []) if isinstance(s, dict)]
+    if not rows:
+        return []
+
+    for f in (facts or ()):
+        did = (getattr(f, "document_id", "") or "").strip()
+        if not did:
+            # A fact whose document never resolved to a corpus id cites
+            # NOTHING. It is not evidence that the document is absent -- it is
+            # evidence we could not point at it, which is not a citation.
+            continue
+        same_doc = [s for s in rows if (s.get("document_id") or "").strip() == did]
+        if not same_doc:
+            continue
+
+        page = getattr(f, "page", None)
+        if isinstance(page, int):
+            on_page = [s for s in same_doc if s.get("page_number") == page]
+            if on_page:
+                same_doc = on_page
+
+        for s in same_doc:
+            idx = s.get("index")
+            if isinstance(idx, int) and idx >= 1:
+                out.add(idx)
+
+    return sorted(out)

@@ -1081,6 +1081,31 @@ def run_integrate(
         except Exception as _sf_e:   # pragma: no cover — never lose the answer
             logger.warning("[integrate] v2 fact-sections failed (%r) — card "
                            "ships with prose only", _sf_e)
+
+        # PER-CLAIM CITATIONS. The critic (Call B) writes
+        # cited_source_indices, and this branch skips Call A and Call B
+        # together, so on v2 the field kept orchestrator.py's `[]` while
+        # thirteen sources shipped beside it.
+        #
+        # Derived, not re-asked: a v2 fact already carries the document it
+        # came from, resolved to a corpus id. Re-running an LLM to recover
+        # what we were handed would undo the thing that made this path
+        # deterministic.
+        try:
+            from app.responder.v2_adapter import cited_indices_from_facts
+
+            _cited = cited_indices_from_facts(
+                getattr(getattr(ctx, "_v2_last_contract", None), "facts", ()) or (),
+                all_sources)
+            if _cited:
+                _det_card["cited_source_indices"] = _cited
+                logger.info("[integrate] v2 cited %d/%d sources from facts cid=%s",
+                            len(_cited), len(all_sources or []),
+                            (getattr(ctx, "correlation_id", "") or "")[:8])
+        except Exception as _ci_e:   # pragma: no cover — never lose the answer
+            logger.warning("[integrate] v2 citation mapping failed (%r) — card "
+                           "ships uncited", _ci_e)
+
         final_message = json.dumps(_det_card)
         integrator_usages = []
         integrator_usage = None
