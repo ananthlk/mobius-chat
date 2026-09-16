@@ -2827,10 +2827,11 @@ function _renderAppealsPlaybook(sec, body) {
       name.className = "ac-appeals-level-name";
       name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
       head2.appendChild(name);
-      if (lv.submission && lv.submission.trim()) {
+      const _sub = Array.isArray(lv.submission) ? lv.submission.filter(Boolean).join(", ") : typeof lv.submission === "string" ? lv.submission : "";
+      if (_sub.trim()) {
         const via = document.createElement("span");
         via.className = "ac-appeals-level-via";
-        via.textContent = "\xB7 " + lv.submission.trim();
+        via.textContent = "\xB7 " + _sub.trim();
         head2.appendChild(via);
       }
       if (typeof lv.deadline_days === "number")
@@ -3288,22 +3289,29 @@ function renderEnvelope(blocks, opts = {}) {
     if (t === "sources") {
       sources = block;
       continue;
-    } else if (t === "mode_badge")
-      el2 = renderModeBadge(block.mode);
-    else if (FORMAT_TYPES.has(t))
-      el2 = renderFormatBlock(block);
-    else if (t === "first_pass")
-      el2 = renderFirstPass(block);
-    else if (t === "direct_answer")
-      el2 = _proseBlock("ac-answer-envelope-body", block.markdown);
-    else if (t === "tldr")
-      el2 = _proseBlock("ac-answer-tldr", block.markdown);
-    else if (t === "markdown_report")
-      el2 = _proseBlock("envelope-markdown-report", block.markdown);
-    else if (t === "detail")
-      el2 = _detailBlock(block);
-    else
-      el2 = opts.renderExtraBlock ? opts.renderExtraBlock(block) : null;
+    }
+    try {
+      if (false) {
+      } else if (t === "mode_badge")
+        el2 = renderModeBadge(block.mode);
+      else if (FORMAT_TYPES.has(t))
+        el2 = renderFormatBlock(block);
+      else if (t === "first_pass")
+        el2 = renderFirstPass(block);
+      else if (t === "direct_answer")
+        el2 = _proseBlock("ac-answer-envelope-body", block.markdown);
+      else if (t === "tldr")
+        el2 = _proseBlock("ac-answer-tldr", block.markdown);
+      else if (t === "markdown_report")
+        el2 = _proseBlock("envelope-markdown-report", block.markdown);
+      else if (t === "detail")
+        el2 = _detailBlock(block);
+      else
+        el2 = opts.renderExtraBlock ? opts.renderExtraBlock(block) : null;
+    } catch (err) {
+      console.warn("[envelope] block threw and was dropped:", t, err);
+      el2 = null;
+    }
     if (el2) {
       answerBody.appendChild(el2);
     } else if (t !== "mode_badge" && t !== "first_pass") {

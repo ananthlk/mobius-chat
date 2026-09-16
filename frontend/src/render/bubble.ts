@@ -531,9 +531,16 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       head.appendChild(name);
       // How to file THIS level, inline next to the name (Appeals Agent 2026-08-10) — answers
       // "how do I file this one", not just its name. Deadline pill stays right-aligned after it.
-      if (lv.submission && lv.submission.trim()) {
+      // `submission` arrives as a STRING from chat's normalised payload and as
+      // a LIST straight from the appeals service. Reading it as a string threw
+      // `lv.submission.trim is not a function` inside renderEnvelope, which
+      // takes the whole answer body with it.
+      const _sub = Array.isArray(lv.submission)
+        ? lv.submission.filter(Boolean).join(", ")
+        : (typeof lv.submission === "string" ? lv.submission : "");
+      if (_sub.trim()) {
         const via = document.createElement("span"); via.className = "ac-appeals-level-via";
-        via.textContent = "· " + lv.submission.trim();
+        via.textContent = "· " + _sub.trim();
         head.appendChild(via);
       }
       if (typeof lv.deadline_days === "number") head.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
@@ -1099,6 +1106,19 @@ export function renderEnvelope(blocks: EnvBlock[], opts: RenderEnvelopeOpts = {}
     let el: HTMLElement | null = null;
 
     if (t === "sources") { sources = block; continue; }        // routed to Sources tab, not the body
+    // 🔴 ONE BAD BLOCK MUST NOT ERASE THE ANSWER.
+    //
+    // renderEnvelope is now the single producer of the answer body, so an
+    // exception in ANY leaf renderer takes the entire turn's content with it —
+    // live on 2026-09-16, `lv.submission.trim is not a function` inside the
+    // appeals card blanked a complete answer with 13 sources behind it.
+    //
+    // A block that cannot draw itself is exactly what `dropped` /
+    // onUnknownBlock already exist to report. This routes a THROWN block down
+    // the same path instead of ending the render: the reader loses one card,
+    // not the answer, and the trace still says which one.
+    try {
+    if (false) { /* unreachable — keeps the else-chain below intact */ }
     else if (t === "mode_badge") el = renderModeBadge(block.mode);
     else if (FORMAT_TYPES.has(t)) el = renderFormatBlock(block as unknown as EnvFormatBlock);
     else if (t === "first_pass") el = renderFirstPass(block as unknown as EnvFirstPassBlock);
@@ -1107,6 +1127,12 @@ export function renderEnvelope(blocks: EnvBlock[], opts: RenderEnvelopeOpts = {}
     else if (t === "markdown_report") el = _proseBlock("envelope-markdown-report", block.markdown);
     else if (t === "detail") el = _detailBlock(block);
     else el = opts.renderExtraBlock ? opts.renderExtraBlock(block) : null;
+
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[envelope] block threw and was dropped:", t, err);
+      el = null;
+    }
 
     if (el) {
       answerBody.appendChild(el);

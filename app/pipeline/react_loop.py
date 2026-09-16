@@ -5624,6 +5624,42 @@ _CARD_LABELS: dict[str, str] = {
 }
 
 
+def _card_payload_shaped(fmt: str, payload: dict) -> dict:
+    """Coerce a raw tool payload into the shape the CARD reads.
+
+    🔴 WHY THIS EXISTS, AND IT IS MY DEFECT. The fitter passed the tool's raw
+    payload straight to the card. chat's REST branch had been normalising it
+    first, and one field differs: the appeals card reads
+    `appeal_levels[].submission` as a STRING (`lv.submission.trim()`,
+    bubble.ts:534) while the service returns a LIST —
+    ["mail","fax","portal","phone","email"].
+
+    Live on deploy 58e1fb8: `TypeError: lv.submission.trim is not a function`,
+    thrown INSIDE renderEnvelope, which takes the whole answer body with it.
+
+    ux_cards.fits() gated on fields being PRESENT and not on their TYPE, and I
+    wrote the warning in that module myself — "a card rendered from a payload
+    missing its load-bearing fields looks authoritative and says nothing".
+    Present-but-wrong-type is the same failure with a crash instead of a blank.
+
+    Kept deliberately small: normalise what the card's own reader requires,
+    and leave everything else alone. A general type-coercer over an unknown
+    schema would paper over the next mismatch instead of surfacing it.
+    """
+    if fmt != "appeals_playbook":
+        return payload
+    levels = payload.get("appeal_levels")
+    if not isinstance(levels, list):
+        return payload
+    shaped = []
+    for lv in levels:
+        if isinstance(lv, dict) and isinstance(lv.get("submission"), list):
+            lv = {**lv, "submission": ", ".join(
+                str(x) for x in lv["submission"] if x)}
+        shaped.append(lv)
+    return {**payload, "appeal_levels": shaped}
+
+
 def _card_hint_for_tool(tr: dict) -> dict | None:
     """A section_hint built from a tool result, when the tool declares a card
     and the payload carries what that card cannot render without.
@@ -5662,6 +5698,7 @@ def _card_hint_for_tool(tr: dict) -> dict | None:
             if _rules:
                 payload = {**payload, "rules": _rules}
 
+        payload = _card_payload_shaped(fmt, payload)
         if not _ux.fits(card, payload):
             logger.info("[ux_card] %s declares %s but the payload is missing %s "
                         "— falling through to prose",
