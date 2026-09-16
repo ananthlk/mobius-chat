@@ -77,7 +77,22 @@ Say, briefly:
 # invites it to promise something it does not control. `would_establish`
 # replaces it — the field their architecture does not need and ours does.
 EXPLORE = """\
-You are closing ONE named gap this round. You are not re-asking the question.
+FIRST, READ WHAT YOU ALREADY HAVE. The pre-round tools have run and their
+evidence is in front of you.
+
+  already_answered   what that evidence ALREADY settles, with the document and
+                     sentence for each. If it settles the whole question, SAY
+                     SO AND STOP — write the answer now rather than buying a
+                     round to re-find what you are holding. Do not manufacture
+                     a gap to justify another round. A settlement you cannot
+                     quote has not settled anything.
+
+Only if something is genuinely still missing, plan for it.
+
+NAME EVERY TOOL YOU NEED, NOT ONE. Tools you name together RUN IN THE SAME
+ROUND, in parallel. Two independent theories named together cost one round;
+named one at a time they cost two, and the person waits through both. Put them
+in "tools": [{{"tool": ..., "inputs": {{...}}}}, ...].
 
 For each tool you name:
 

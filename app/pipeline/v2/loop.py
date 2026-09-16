@@ -538,17 +538,46 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # This is deliberately NOT "could not check" treated as "checked
         # false": we run the plan first and read the result.
         _offer = [t.tool_key for t in (getattr(_off, "tools", None) or [])]
+
+        # 🔴 CARRY THE ARGUMENTS THE MANIFEST ALREADY FILLED.
+        #
+        # I passed plan() the tool KEYS and dropped `ToolOffer.inputs`. With no
+        # inputs supplied, preload.execute falls back to {"query": question}
+        # (preload.py:825) — so both appeals tools were called with the whole
+        # sentence and rejected before calling:
+        #
+        #   ⊘ appeals_get_playbook  missing required ['payor'];
+        #                           unknown argument(s) ['query']
+        #   ⊘ appeals_lookup_rules  missing required ['carc'];
+        #                           unknown argument(s) ['query']
+        #
+        # Measured on the same question, cid ee783367: estimate had ALREADY
+        # resolved the entities and filled them —
+        #   appeals_get_playbook  inputs={'payor': 'sunshine health', 'carc': '22'}
+        #   appeals_lookup_rules  inputs={'carc': '22', 'payor': 'sunshine health'}
+        # both inputs_status=fillable — and react then called them with exactly
+        # those values two and three rounds later, successfully.
+        #
+        # So the arguments existed at round zero and my code discarded them,
+        # costing two rounds to rediscover. I reported this seam as Tool
+        # Manifest's defect earlier today; on this path it is mine.
+        _offer_inputs = {
+            t.tool_key: dict(t.inputs)
+            for t in (getattr(_off, "tools", None) or [])
+            if getattr(t, "inputs", None)
+        }
         _rag_suppressed = ("rag" not in _offer)
         if not _offer:
             _offer = ["rag"]
             _rag_suppressed = False
         if _offer:
-            _plan = _v2pre.plan(_offer)
+            _plan = _v2pre.plan(_offer, inputs=_offer_inputs)
             _preloaded = _v2pre.execute(
                 _plan,
                 lambda _t, _i: _preload_runner_toolreg(
                     _t, _i, ctx, speculative=True, emitter=emitter),
                 _q,
+                inputs=_offer_inputs,
             )
             if _rag_suppressed and not _has_evidence(_preloaded):
                 # Their reason was falsified by their own plan's results.
