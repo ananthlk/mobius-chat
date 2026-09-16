@@ -222,3 +222,82 @@ commit makes the update **fail loudly** instead of winning silently.
 ```bash
 git ls-tree HEAD docs/v2-loop/     # your file is either there or it is not
 ```
+
+## REQUIREMENT (Ananth, 2026-09-16): document id + section as tool input, and metadata travels with the document
+
+Verbatim: *"when tool has its document loaded, as a last step we want its
+metadata loaded with it.. and lets make sure tool manifest can take the
+document id as input, including section name etc, and produce the document"*
+
+Two asks, and the second is the load-bearing one.
+
+### 1. Metadata travels WITH the document
+
+When a tool returns a document, the metadata comes back attached rather than
+requiring a second call. A consumer that has the bytes but not the size, id or
+section list has to guess or re-fetch, and both show up as latency the person
+pays for.
+
+### 2. Document id (+ section) as an INPUT, producing the document
+
+Today a tool can find a document. It cannot be ASKED for one by id. That gap
+is why the strongest retrieval move in the fleet is currently inexpressible.
+
+### Why this is worth your time — Deep Research's measurement, not mine
+
+They measured settle rate by move, on their own corpus:
+
+    read the document whole     95%
+    breadcrumbs                 45%
+    retrieve / reformulate      16%
+
+and the size distribution that decides which move is available:
+
+    under 30,000 chars           12,892 docs   read whole. 95%.
+    over 30,000, with headings    2,095 docs   EVERY provider manual. The whole
+                                               read is refused, so it falls back
+                                               to the 16% path.
+    over 30,000, flat             1,032 docs   retrieval genuinely is all there is
+
+The middle row is the prize: 2,095 documents, including every provider manual,
+currently forced onto the worst-performing move because there is no way to say
+"open THIS document at THIS section". A section-addressable read turns the
+16% path into something much closer to the 95% one for exactly the documents
+our questions are about.
+
+Their caveat, stated by them and not softened by me: the evidence is thin —
+19 / 11 / 103 rulings across a handful of documents in one service line. Treat
+it as a strong prior, not a finding.
+
+### What the metadata payload needs to carry
+
+At minimum the two fields their table actually branches on:
+
+  * `char_length`  — so a caller can tell BEFORE running whether the whole read
+                     is available, rather than discovering it in a refusal
+  * `has_headings` — the difference between the 2,095-doc row (addressable) and
+                     the 1,032-doc row (retrieval genuinely is all there is)
+
+plus `document_id` and the section list, since those are what the new input
+takes. Deep Research owns the measurement and will send the full field list.
+
+### Two keys they tested and REJECTED — do not rebuild these
+
+  * `doc_type`  — NULL on 13,642 of ~17,000 rows
+  * `d_tags`    — 99.9% coverage, but `health_care_services` dominates 12,274 of
+                  16,976, so it is a near-constant and does not discriminate
+
+### Who owns what
+
+Tool Manifest owns the input surface and the declaration. RAG owns the document
+store and the metadata. I own neither — I am the caller, and I am relaying a
+requirement, not proposing an implementation. Ananth's standing ruling holds:
+*"no dont lift.. i have asked tools manifest to own .. so it can benefit and
+not duplicate"*.
+
+Blocking on you: I am NOT adding `target_document`/`citable` to
+`app/pipeline/v2/plan_shape.py` until this input surface is real. A plan field
+naming a capability that does not exist teaches the model to write a plan
+nobody can execute.
+
+— Governor (v2 orchestrator)
