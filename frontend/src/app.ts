@@ -587,22 +587,31 @@ interface SendMessageOpts {
   selection?: { kind: string; id: string; in_reply_to?: string };
 }
 
-// ── A/B compare toggle (chat surface) ─────────────────────────────────────────
-// Persisted per-viewer in localStorage; the server never remembers it, so a doubled-cost
-// fork can't outlive the intent (a closed tab, a handed-off session). Read per turn by the
-// send path, which sets `ab_fork: true` on /chat while it is on.
-const AB_FORK_LS_KEY = "chat:ab_fork";
-function abForkEnabled(): boolean {
-  try { return localStorage.getItem(AB_FORK_LS_KEY) === "1"; } catch { return false; }
+// ── A/B mode selector (chat surface) ──────────────────────────────────────────
+// Ananth wants to pick the orchestrator from the kebab: Auto (routing decides), v1 only,
+// v2 only, or Compare A/B (fork both). Persisted per-viewer in localStorage; the server never
+// remembers it, so a doubled-cost fork can't outlive the intent. Read per turn by the send path,
+// which maps the mode onto the /chat payload: fork → ab_fork:true; v1/v2 → ab_arm; default → nothing.
+type AbMode = "default" | "v1" | "v2" | "fork";
+const AB_MODE_LS_KEY = "chat:ab_mode";
+function getAbMode(): AbMode {
+  try {
+    const m = localStorage.getItem(AB_MODE_LS_KEY);
+    if (m === "default" || m === "v1" || m === "v2" || m === "fork") return m;
+    if (localStorage.getItem("chat:ab_fork") === "1") return "fork";   // migrate the old on/off flag
+  } catch { /* private mode */ }
+  return "default";
 }
-function setAbForkEnabled(on: boolean): void {
-  try { localStorage.setItem(AB_FORK_LS_KEY, on ? "1" : "0"); } catch { /* private mode */ }
+function setAbMode(m: AbMode): void {
+  try { localStorage.setItem(AB_MODE_LS_KEY, m); localStorage.removeItem("chat:ab_fork"); } catch { /* private mode */ }
 }
-/** A persistent composer hint so the doubled-cost mode is visible WHILE typing, not only
- *  in the kebab — Ananth put it in the kebab precisely so forking is a deliberate act. */
-function setAbForkComposerHint(on: boolean): void {
+/** A persistent composer indicator so the active mode is visible WHILE typing, not only in the
+ *  kebab — fork is doubled-cost and a pinned version is a deliberate off-default choice. */
+function setAbModeComposerHint(mode: AbMode): void {
   const composer = document.querySelector(".composer") || document.getElementById("composer");
-  composer?.classList.toggle("composer--ab-fork", on);
+  if (!composer) return;
+  composer.classList.toggle("composer--ab-fork", mode === "fork");
+  composer.setAttribute("data-ab-mode", mode);
 }
 
 /** Sentinel thrown to short-circuit the normal single-bubble render chain for an A/B turn —
@@ -12072,11 +12081,17 @@ function run(): void {
       chat_mode?: "copilot" | "agentic" | "quick";
       model_profile?: string;
       ab_fork?: boolean;
+      ab_arm?: "v1" | "v2";
     } = { message };
     if (currentThreadId) payload.thread_id = currentThreadId;
-    // A/B compare: run both orchestrators on THIS turn. The served answer is the thread's
-    // arm (comparison.thread_arm); the shadow runs on a fresh thread and is never served.
-    if (abForkEnabled()) payload.ab_fork = true;
+    // A/B mode → payload. fork: run BOTH orchestrators (the served answer is the thread's arm,
+    // the shadow runs on a fresh thread, never served). v1/v2: pin that orchestrator for this
+    // turn. default: send nothing and let routing decide.
+    {
+      const _abMode = getAbMode();
+      if (_abMode === "fork") payload.ab_fork = true;
+      else if (_abMode === "v1" || _abMode === "v2") payload.ab_arm = _abMode;
+    }
     if (opts?.credentialing_options) {
       payload.credentialing_options = opts.credentialing_options;
     }
@@ -14171,23 +14186,28 @@ function run(): void {
   function setupComposerOptionsMenu(): void {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
-    // A/B compare toggle (Ananth: on the CHAT surface, in the kebab, "persists until
-    // switched off"). Client-side only — the server deliberately does NOT remember it, so
-    // doubled spend can't outlive the tab (Governor). We reflect the persisted state onto
-    // the menu item; the send path reads abForkEnabled() per turn.
-    const abItem = document.getElementById("composerOptionAbFork");
-    function reflectAbFork(): void {
-      const on = abForkEnabled();
-      abItem?.setAttribute("aria-checked", on ? "true" : "false");
-      abItem?.classList.toggle("composer-option-item--on", on);
-      setAbForkComposerHint(on);
+    // A/B mode selector (Ananth: pick the orchestrator from the kebab — Auto / v1 / v2 / A/B).
+    // Client-side only — the server never remembers it, so doubled spend can't outlive the tab.
+    // The send path reads getAbMode() per turn; a radio group reflects the persisted choice.
+    const modeItems = Array.from(optionsMenu?.querySelectorAll<HTMLElement>("[data-ab-mode]") ?? []);
+    function reflectAbMode(): void {
+      const mode = getAbMode();
+      for (const it of modeItems) {
+        const on = it.getAttribute("data-ab-mode") === mode;
+        it.setAttribute("aria-checked", on ? "true" : "false");
+        it.classList.toggle("composer-option-item--on", on);
+      }
+      setAbModeComposerHint(mode);
     }
-    abItem?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setAbForkEnabled(!abForkEnabled());
-      reflectAbFork();
-    });
-    reflectAbFork();
+    for (const it of modeItems) {
+      it.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setAbMode((it.getAttribute("data-ab-mode") as AbMode) || "default");
+        reflectAbMode();
+        hideOptionsMenu();
+      });
+    }
+    reflectAbMode();
     function hideOptionsMenu(): void {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");

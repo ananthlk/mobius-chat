@@ -2161,6 +2161,7 @@ function simpleMarkdownToHtml(text) {
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = unnestBold(out);
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = renderLists(out);
   out = out.replace(/\n\n+/g, "</p><p>");
@@ -2169,6 +2170,17 @@ function simpleMarkdownToHtml(text) {
 }
 function unwrapBlocks(html) {
   return html.replace(/<p>\s*(<[uo]l>)/g, "$1").replace(/(<\/[uo]l>)\s*<\/p>/g, "$1").replace(/<p>\s*<\/p>/g, "").replace(/(<\/[uo]l>)\s*<br>\s*/g, "$1");
+}
+function unnestBold(text) {
+  return text.split("\n").map((line) => {
+    const t = line.trim();
+    if (!t.startsWith("**") || !t.endsWith("**") || t.length < 8)
+      return line;
+    const inner = t.slice(2, -2);
+    if (!inner.includes("**"))
+      return line;
+    return line.replace(t, inner);
+  }).join("\n");
 }
 function renderLists(text) {
   const lines = text.split("\n");
@@ -2215,6 +2227,7 @@ function simpleMarkdownToHtmlInner(text) {
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = unnestBold(out);
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/^- (.+)$/gm, "<li>$1</li>");
   out = out.replace(/\n\n+/g, "</p><p>");
@@ -3992,23 +4005,31 @@ function normalizeFollowupLineList(raw, defaultClickable) {
   }
   return out;
 }
-var AB_FORK_LS_KEY = "chat:ab_fork";
-function abForkEnabled() {
+var AB_MODE_LS_KEY = "chat:ab_mode";
+function getAbMode() {
   try {
-    return localStorage.getItem(AB_FORK_LS_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function setAbForkEnabled(on) {
-  try {
-    localStorage.setItem(AB_FORK_LS_KEY, on ? "1" : "0");
+    const m = localStorage.getItem(AB_MODE_LS_KEY);
+    if (m === "default" || m === "v1" || m === "v2" || m === "fork")
+      return m;
+    if (localStorage.getItem("chat:ab_fork") === "1")
+      return "fork";
   } catch {
   }
+  return "default";
 }
-function setAbForkComposerHint(on) {
+function setAbMode(m) {
+  try {
+    localStorage.setItem(AB_MODE_LS_KEY, m);
+    localStorage.removeItem("chat:ab_fork");
+  } catch {
+  }
+}
+function setAbModeComposerHint(mode) {
   const composer = document.querySelector(".composer") || document.getElementById("composer");
-  composer?.classList.toggle("composer--ab-fork", on);
+  if (!composer)
+    return;
+  composer.classList.toggle("composer--ab-fork", mode === "fork");
+  composer.setAttribute("data-ab-mode", mode);
 }
 var AB_SPLIT_SENTINEL = { __abSplit: true };
 function _abTierWindowMs(tier) {
@@ -13836,8 +13857,13 @@ ${message}`;
     const payload = { message };
     if (currentThreadId)
       payload.thread_id = currentThreadId;
-    if (abForkEnabled())
-      payload.ab_fork = true;
+    {
+      const _abMode = getAbMode();
+      if (_abMode === "fork")
+        payload.ab_fork = true;
+      else if (_abMode === "v1" || _abMode === "v2")
+        payload.ab_arm = _abMode;
+    }
     if (opts?.credentialing_options) {
       payload.credentialing_options = opts.credentialing_options;
     }
@@ -15438,19 +15464,25 @@ ${message}`;
   function setupComposerOptionsMenu() {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
-    const abItem = document.getElementById("composerOptionAbFork");
-    function reflectAbFork() {
-      const on = abForkEnabled();
-      abItem?.setAttribute("aria-checked", on ? "true" : "false");
-      abItem?.classList.toggle("composer-option-item--on", on);
-      setAbForkComposerHint(on);
+    const modeItems = Array.from(optionsMenu?.querySelectorAll("[data-ab-mode]") ?? []);
+    function reflectAbMode() {
+      const mode = getAbMode();
+      for (const it of modeItems) {
+        const on = it.getAttribute("data-ab-mode") === mode;
+        it.setAttribute("aria-checked", on ? "true" : "false");
+        it.classList.toggle("composer-option-item--on", on);
+      }
+      setAbModeComposerHint(mode);
     }
-    abItem?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setAbForkEnabled(!abForkEnabled());
-      reflectAbFork();
-    });
-    reflectAbFork();
+    for (const it of modeItems) {
+      it.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setAbMode(it.getAttribute("data-ab-mode") || "default");
+        reflectAbMode();
+        hideOptionsMenu();
+      });
+    }
+    reflectAbMode();
     function hideOptionsMenu() {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");

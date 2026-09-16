@@ -6623,12 +6623,21 @@ body.landing-state .composer-landing-chips {
   background: var(--thinking-bg);
   color: var(--accent);
 }
+/* Anchor the dropdown to the ⋯ button, not the viewport — the button + menu live in a
+   position:relative wrapper (the mode-pill pattern), so bottom:100%/right:0 resolves to the
+   button's box instead of escaping to <body> (it was floating at the top-right of the screen). */
+.composer-options-wrap { position: relative; display: flex; flex-shrink: 0; }
+.composer-options-heading {
+  font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+  color: var(--sidebar-text-muted); padding: 8px 12px 4px;
+}
+.composer-options-divider { height: 1px; background: var(--border); margin: 4px 0; }
 .composer-options-menu {
   position: absolute;
   bottom: 100%;
   right: 0;
   margin-bottom: 6px;
-  min-width: 180px;
+  min-width: 190px;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -6679,9 +6688,11 @@ body.landing-state .composer-landing-chips {
 }
 .composer-option-sub { color: var(--mobius-text-muted, #94a3b8); font-size: 11px; }
 
-/* A/B on indicator — a subtle ring ONLY. Never a text strip: Ananth 2026-09-11, the
-   disclaimer was eating the message-box width. The cost warning lives in the kebab item. */
+/* Mode indicator — a subtle ring ONLY. Never a text strip: Ananth 2026-09-11, the disclaimer
+   was eating the message-box width. Which mode is active reads from the kebab's checked item.
+   fork = violet ring (doubled cost); a pinned v1/v2 = a fainter ring so off-default is visible. */
 .composer--ab-fork { box-shadow: inset 0 0 0 1.5px #c4b5fd; border-radius: 12px; }
+.composer[data-ab-mode="v1"], .composer[data-ab-mode="v2"] { box-shadow: inset 0 0 0 1.5px #cbd5e1; }
 
 /* In-chat A/B SPLIT (Ananth 2026-09-11: "simultaneous, really split, everything identical").
    Two equal columns side by side, both streaming their own trace + draft + answer at once. */
