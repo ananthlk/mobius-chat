@@ -94,6 +94,7 @@ export function simpleMarkdownToHtml(text: string): string {
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = unnestBold(out);
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = renderLists(out);
   out = out.replace(/\n\n+/g, "</p><p>");
@@ -134,6 +135,34 @@ function unwrapBlocks(html: string): string {
  * Emits list HTML as its own line so the paragraph pass below cannot wrap a
  * `<ul>` in a `<p>` or insert `<br>` between items.
  */
+/**
+ * Markdown has no nested bold, but models emit it: a whole sentence wrapped in
+ * `**` that ALSO bolds a number inside it. The bold pass is non-greedy, so the
+ * outer pair closes at the inner one and the emphasis INVERTS -- the number,
+ * the one fact worth bolding, becomes the only text that is not bold:
+ *
+ *   **Submit within **90 days** of the date.**
+ *   -> <strong>Submit within </strong>90 days<strong> of the date.</strong>
+ *
+ * When a line is wrapped end-to-end in `**` and carries more `**` inside, the
+ * outer pair is the one the author meant least (a bolded paragraph is not
+ * emphasis anyway). Drop it and let the inner marks do their job.
+ */
+function unnestBold(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      if (!t.startsWith("**") || !t.endsWith("**") || t.length < 8) return line;
+      const inner = t.slice(2, -2);
+      // Only an OUTER wrapper is dropped -- a line that is simply one bold
+      // phrase (no inner marks) is left exactly as written.
+      if (!inner.includes("**")) return line;
+      return line.replace(t, inner);
+    })
+    .join("\n");
+}
+
 function renderLists(text: string): string {
   const lines = text.split("\n");
   const out: string[] = [];
@@ -183,6 +212,7 @@ export function simpleMarkdownToHtmlInner(text: string): string {
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = unnestBold(out);
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/^- (.+)$/gm, "<li>$1</li>");
   out = out.replace(/\n\n+/g, "</p><p>");

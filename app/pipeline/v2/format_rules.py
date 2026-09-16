@@ -46,7 +46,13 @@ V2_FORMAT_RULES_TEXT = """\
 FORMAT RULES for the "answer" field (USER PREFERENCES appended later take FINAL
 AUTHORITY over all of this, including length):
 
-• Start with ONE bold sentence giving the direct bottom line: **The answer.**
+• Start with ONE short sentence giving the direct bottom line. Bold the
+  OPERATIVE FACTS INSIDE that sentence — the deadline, the code, the form —
+  not the whole sentence. Markdown has no nested bold: wrapping the sentence
+  in ** AND bolding a number inside it closes the outer pair early, and the
+  number ends up the ONLY text that is not bold.
+  Write:     Submit the **Provider Claim Adjustment Request Form** within **90 days**.
+  Not this:  **Submit the form within **90 days** of the determination.**
 
 • THEN CHOOSE THE SHAPE THE CONTENT ACTUALLY IS. Do not default to bullets.
   Write whichever of these the evidence fits, and write it in plain markdown —
