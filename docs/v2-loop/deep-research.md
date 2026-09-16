@@ -137,26 +137,41 @@ tell which part without being told.**
                                 ours, and if it moves the payload should carry
                                 the number rather than have two copies drift.
 
-                                AND IT MUST BE MEASURED ON THE TEXT THE READER
-                                WILL ACTUALLY RECEIVE. I found this while
-                                re-checking my own numbers for this document.
-                                For 59G-4.295:
+                                AND IT MUST BE `len()` OF THE EXACT STRING
+                                THE TOOL HANDS THE READER. Not chunk length,
+                                not grid length, not a sum of parts.
 
-                                    via hierarchical_chunks    6,986 chars
-                                    via table reassembly      15,106 chars  (3 tables)
+                                This is not a hypothetical. ONE call to
+                                corpus_diagnostic returns two sizes for
+                                59G-4.295, and neither matches the other:
 
-                                The chunk table does not hold table text, so it
-                                understates table-bearing documents by ~2x in the
-                                one case I have measured. My own corpus split
+                                  len(reachable_text)   15,106  RENDERED, what
+                                                                a reader gets
+                                  reachable_chars       16,146  REPORTED
+                                     chunks.chars        6,975
+                                     tables.chars        9,171  length(grid::text)
+                                                                — the JSON, not
+                                                                the rendered text
+
+                                Reported overstates by 7%; chunks-only
+                                understates by 54%. `_build_reachable_text`
+                                (corpus_diagnostic.py:155) computes the right
+                                text — it substitutes each breadcrumb with
+                                `_render_table_text`'s output at line 147 — and
+                                then line 305 reports a DIFFERENT size for that
+                                same text. A producer and a consumer disagreeing
+                                inside one function, where the wrong number is
+                                the cheap one to read.
+
+                                CONSEQUENCE FOR MY OWN NUMBERS: the corpus split
                                 below (12,892 / 2,095 / 1,032) is computed from
-                                hierarchical_chunks and therefore UNDERCOUNTS
-                                exactly the table-heavy documents — some I have
-                                classified as "fits" may not. Treat those three
-                                numbers as a lower bound on the oversize classes
-                                until `chars` is defined against one source. This
-                                is the strongest argument for the field existing
-                                at all: two subsystems currently disagree about
-                                how big a document is, and neither says so.
+                                hierarchical_chunks in SQL — the chunks-only
+                                figure — so it understates table-bearing
+                                documents by up to half, and some classified as
+                                "fits" may not be. Treat it as a LOWER BOUND on
+                                the oversize classes until size is defined as
+                                len() of the delivered string.
+
     reachable_chars      int    characters actually retrievable, if it can differ
                                 from `chars`. A document whose text is locked in
                                 images is NOT a small document — it is an
