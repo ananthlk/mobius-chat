@@ -14163,7 +14163,7 @@ ${message}`;
         if (useEnvelope && existingBubble) {
           const _hasTabs = !!(fullCard && (fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0));
           const _suppressedChrome = new Set(
-            _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
+            _hasTabs ? ["tool_attribution", "detail", "callout", "correction"] : []
           );
           const cardFormatsRendered = /* @__PURE__ */ new Set();
           for (const s of fullCard?.sections ?? []) {

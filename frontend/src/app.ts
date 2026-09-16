@@ -12601,8 +12601,28 @@ function run(): void {
               _extractedNextStepTasks.length > 0 ||
               nextQuestions.length > 0
             ));
+            // 🔴 next_steps REMOVED FROM THIS LIST, 2026-09-15.
+            //
+            // Ananth, on a live card: "many information is missing... when
+            // there is a tool and a preferred UX we should just use it".
+            //
+            // next_steps was suppressed inline and filed into the hidden Tasks
+            // tab, while suggested_questions — the same kind of content —
+            // rendered inline as chips. Measured on that card: three next_steps
+            // emitted, three showing as the "Tasks 3" badge, and nothing the
+            // reader could see. The person got an answer with no onward route
+            // unless they thought to open a tab.
+            //
+            // The Tasks panel keeps them: that panel is for ASSIGNING an item,
+            // which is a different job from reading it. This restores the
+            // block's own rendering, which is what the envelope emitted it for.
+            //
+            // The other four stay suppressed — the card genuinely redraws those
+            // (tool_attribution as the chip, detail/callout/correction as tab
+            // chrome), so rendering them here is the duplicate-print this guard
+            // was built to stop.
             const _suppressedChrome = new Set(
-              _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
+              _hasTabs ? ["tool_attribution", "detail", "callout", "correction"] : []
             );
             // DUAL-READ GUARD (Ananth 2026-08-10 "cards are duplicated"): when the card rendered the
             // body above (fullCard present), the envelope carries the SAME content as blocks, so
