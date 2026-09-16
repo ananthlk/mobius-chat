@@ -838,7 +838,7 @@ function renderFirstPass(block) {
     n: typeof r?.round === "number" ? r.round : i + 1,
     ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
     isThought: !(r?.running_answer ?? "").trim() && !!(r?.learned ?? "").trim()
-  })).filter((r) => r.ans.length > 0);
+  })).filter((r) => r.ans.length > 0).filter((r, i, all) => i === 0 || r.ans !== all[i - 1].ans);
   if (!draft && rounds.length === 0)
     return null;
   const fp = document.createElement("div");
@@ -849,6 +849,7 @@ function renderFirstPass(block) {
   sum.textContent = rounds.length > 1 ? `First pass \xB7 ${rounds.length} rounds` : "First pass";
   const fpBody = document.createElement("div");
   fpBody.className = "ac-first-pass-body";
+  const _startCollapsed = block.collapsed_default !== false;
   if (rounds.length > 0) {
     rounds.forEach((r) => {
       const step = document.createElement("div");
@@ -865,6 +866,11 @@ function renderFirstPass(block) {
     });
   } else {
     fpBody.innerHTML = simpleMarkdownToHtml(draft);
+  }
+  if (_startCollapsed) {
+    fpBody.style.maxHeight = "0px";
+  } else {
+    fp.classList.add("ac-first-pass--open");
   }
   sum.addEventListener("click", () => {
     const opening = !fp.classList.contains("ac-first-pass--open");

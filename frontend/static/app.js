@@ -2361,6 +2361,23 @@ function renderQcAuditBadge(_qc) {
   return wrap;
 }
 
+// src/render/lift-block.ts
+function liftBlockElements(root) {
+  if (!root)
+    return null;
+  const msgEl = root.querySelector(".message") ?? root;
+  const holder = document.createElement("div");
+  holder.className = "envelope-extra-block";
+  for (const child of Array.from(msgEl.children)) {
+    if (child.classList.contains("message-bubble")) {
+      Array.from(child.children).forEach((c) => holder.appendChild(c));
+    } else {
+      holder.appendChild(child);
+    }
+  }
+  return holder.children.length > 0 ? holder : null;
+}
+
 // src/card-render-model.ts
 var TAB_ORDER = ["summary", "answer", "citations", "corrections", "follow-up", "tasks", "diagnostics"];
 
@@ -3114,7 +3131,7 @@ function renderFirstPass(block) {
     n: typeof r?.round === "number" ? r.round : i + 1,
     ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
     isThought: !(r?.running_answer ?? "").trim() && !!(r?.learned ?? "").trim()
-  })).filter((r) => r.ans.length > 0);
+  })).filter((r) => r.ans.length > 0).filter((r, i, all) => i === 0 || r.ans !== all[i - 1].ans);
   if (!draft && rounds.length === 0)
     return null;
   const fp = document.createElement("div");
@@ -3125,6 +3142,7 @@ function renderFirstPass(block) {
   sum.textContent = rounds.length > 1 ? `First pass \xB7 ${rounds.length} rounds` : "First pass";
   const fpBody = document.createElement("div");
   fpBody.className = "ac-first-pass-body";
+  const _startCollapsed = block.collapsed_default !== false;
   if (rounds.length > 0) {
     rounds.forEach((r) => {
       const step = document.createElement("div");
@@ -3141,6 +3159,11 @@ function renderFirstPass(block) {
     });
   } else {
     fpBody.innerHTML = simpleMarkdownToHtml(draft);
+  }
+  if (_startCollapsed) {
+    fpBody.style.maxHeight = "0px";
+  } else {
+    fp.classList.add("ac-first-pass--open");
   }
   sum.addEventListener("click", () => {
     const opening = !fp.classList.contains("ac-first-pass--open");
@@ -14017,13 +14040,7 @@ ${message}`;
                     threadId: data.thread_id ?? currentThreadId ?? null
                   }
                 );
-                const inner = one.querySelector(".message-bubble");
-                if (!inner || inner.children.length === 0)
-                  return null;
-                const holder = document.createElement("div");
-                holder.className = "envelope-extra-block";
-                Array.from(inner.children).forEach((c) => holder.appendChild(c));
-                return holder;
+                return liftBlockElements(one);
               } catch {
                 return null;
               }

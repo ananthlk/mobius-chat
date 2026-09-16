@@ -886,7 +886,18 @@ export function renderFirstPass(block: EnvFirstPassBlock): HTMLElement | null {
       ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
       isThought: !((r?.running_answer ?? "").trim()) && !!(r?.learned ?? "").trim(),
     }))
-    .filter((r) => r.ans.length > 0);
+    .filter((r) => r.ans.length > 0)
+    // 🔴 A ROUND THAT DID NOT MOVE THE ANSWER IS NOT A ROUND WORTH SHOWING.
+    //
+    // The ledger records every round; consecutive rounds often carry the SAME
+    // running_answer because the later one added evidence without changing
+    // the wording. Printing both shows the reader the identical paragraph
+    // twice under different labels — measured on a live card: rd-2 and rd-3
+    // byte-identical. Ananth: "IT STILL FEELS BADLY FORMATTED".
+    //
+    // Collapsing consecutive duplicates keeps the PROGRESSION (which is the
+    // point of showing rounds at all) and drops the repetition.
+    .filter((r, i, all) => i === 0 || r.ans !== all[i - 1].ans);
   if (!draft && rounds.length === 0) return null;
 
   const fp = document.createElement("div");
@@ -897,6 +908,11 @@ export function renderFirstPass(block: EnvFirstPassBlock): HTMLElement | null {
   sum.textContent = rounds.length > 1 ? `First pass · ${rounds.length} rounds` : "First pass";
   const fpBody = document.createElement("div");
   fpBody.className = "ac-first-pass-body";
+  // 🔴 collapsed_default WAS NEVER READ. The block has carried it all along
+  // and this renderer ignored it, and never set an initial max-height either —
+  // so the working notes rendered OPEN, above the answer, and the first thing
+  // a reader met was the model's reasoning rather than their answer.
+  const _startCollapsed = block.collapsed_default !== false;
   if (rounds.length > 0) {
     rounds.forEach((r) => {
       const step = document.createElement("div");
@@ -913,6 +929,11 @@ export function renderFirstPass(block: EnvFirstPassBlock): HTMLElement | null {
     });
   } else {
     fpBody.innerHTML = simpleMarkdownToHtml(draft);
+  }
+  if (_startCollapsed) {
+    fpBody.style.maxHeight = "0px";
+  } else {
+    fp.classList.add("ac-first-pass--open");
   }
   sum.addEventListener("click", () => {
     const opening = !fp.classList.contains("ac-first-pass--open");

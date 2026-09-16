@@ -1042,6 +1042,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
+import { liftBlockElements } from "./render/lift-block";
 import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, renderEnvelope, type EnvBlock, type CertifiedAnswerBlock } from "./render/bubble";
 import { abColumns, type AbComparison } from "./ab-fork";
 
@@ -12415,12 +12416,7 @@ function run(): void {
                       threadId: data.thread_id ?? currentThreadId ?? null,
                     },
                   );
-                  const inner = one.querySelector(".message-bubble");
-                  if (!inner || inner.children.length === 0) return null;
-                  const holder = document.createElement("div");
-                  holder.className = "envelope-extra-block";
-                  Array.from(inner.children).forEach((c) => holder.appendChild(c));
-                  return holder;
+                  return liftBlockElements(one);
                 } catch {
                   return null;
                 }
