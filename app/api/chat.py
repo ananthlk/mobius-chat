@@ -320,10 +320,29 @@ def _phi_check_message(
     re-run is the authoritative enforcement layer.
     """
     import httpx
-    try:
-        with httpx.Client(timeout=4.0) as client:
-            r = client.post(
-                f"{_PHI_GATE_URL}/message-check",
+
+    # 🔴 ONE RETRY, BECAUSE THE FAILURE IS A COLD START AND THE COST IS A
+    # FALSE ACCUSATION.
+    #
+    # Measured 2026-09-16: the classifier answers in 0.15s (five probes,
+    # 0.136-0.230s) and the budget here is 4.0s — but Cloud Run scales it to
+    # zero, and a cold start blew past that three times in an hour. Each one
+    # refused a legitimate billing question ("how do i appeal a CARC 22 denial
+    # for sunshine health?") and told the person their message contained
+    # patient data.
+    #
+    # The retry does NOT weaken the gate: both attempts must fail to block, and
+    # a classifier that is genuinely down still blocks. It costs nothing on the
+    # happy path — it only fires after a transport error, which is the case
+    # that was producing the false positive. A service with a 0.15s p50 almost
+    # always answers the second time, because the first attempt is what warmed
+    # it.
+    _last_exc: Exception | None = None
+    for _attempt in (1, 2):
+        try:
+            with httpx.Client(timeout=4.0) as client:
+                r = client.post(
+                    f"{_PHI_GATE_URL}/message-check",
                 # correlation_id (2026-09-09): the classifier accepts it
                 # (models.py:66), honours it (main.py:99) and forwards it to
                 # /internal/skill-llm (classifier.py:301) — chat simply wasn't
@@ -333,20 +352,36 @@ def _phi_check_message(
                 # belonging to nothing. Do NOT widen this payload further:
                 # the classifier receives raw clinical text, and a UUID is the
                 # only safe thing to add.
-                json={
-                    "text": text,
-                    "thread_id": thread_id,
-                    "correlation_id": correlation_id,
-                },
-            )
-            if r.status_code == 200:
-                return r.json()
-            logger.warning("[phi-gate] /message-check returned %s — blocking (fail-closed)", r.status_code)
-    except Exception as exc:
-        logger.warning("[phi-gate] /message-check unreachable (%s) — blocking (fail-closed)", exc)
+                    json={
+                        "text": text,
+                        "thread_id": thread_id,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                if r.status_code == 200:
+                    if _attempt == 2:
+                        logger.info("[phi-gate] answered on retry — the first "
+                                    "attempt was a cold start, not PHI")
+                    return r.json()
+                # A non-200 is the service ANSWERING badly, not a cold start.
+                # Retrying it would just double the wait before the same block.
+                logger.warning("[phi-gate] /message-check returned %s — blocking "
+                               "(fail-closed)", r.status_code)
+                break
+        except Exception as exc:
+            _last_exc = exc
+            logger.warning("[phi-gate] /message-check unreachable on attempt %s "
+                           "(%s)%s", _attempt, exc,
+                           " — retrying once" if _attempt == 1
+                           else " — blocking (fail-closed)")
     # Fail-closed sentinel: block=True, gate='indeterminate' distinguishes
-    # "classifier said PHI" from "classifier couldn't be reached".
-    return {"block": True, "gate": "indeterminate", "phi_flag": False, "_check_error": True}
+    # "classifier said PHI" from "classifier couldn't be reached". THE CALLER
+    # MUST NOT COLLAPSE THOSE TWO — see the 422 below, which used to tell a
+    # person their message contained PHI when the honest statement was that we
+    # could not check it.
+    return {"block": True, "gate": "indeterminate", "phi_flag": False,
+            "_check_error": True,
+            "_error": type(_last_exc).__name__ if _last_exc else "non_200"}
 
 
 def _log_phi_msg_gate(
@@ -468,13 +503,43 @@ def post_chat(
     if _phi.get("block"):
         if not body.phi_override:
             _log_phi_msg_gate(correlation_id, thread_id, user_id, "blocked", _phi)
+            # 🔴 "WE COULD NOT CHECK" IS NOT "YOUR MESSAGE CONTAINS PHI".
+            #
+            # Both block — the fail-closed policy is correct and unchanged; a
+            # gate bypassable by taking the classifier offline is not a gate.
+            # But they are different FACTS and the person is owed the true one.
+            #
+            # Live, 2026-09-16: "how do i appeal a CARC 22 denial for sunshine
+            # health?" was refused with "Message contains PHI — remove or
+            # override to proceed." The gate had returned gate='indeterminate',
+            # phi_flag=False, evidence=[] — it had timed out on a cold start.
+            # We accused a person of sending patient data because our
+            # classifier was asleep, and handed them an empty evidence list to
+            # argue with.
+            #
+            # `indeterminate` was already in the payload and discarded here.
+            _indeterminate = (_phi.get("gate") == "indeterminate"
+                              or bool(_phi.get("_check_error")))
             raise HTTPException(
                 status_code=422,
                 detail={
                     "phi_blocked": True,
+                    # WHICH of the two this is, as a value — so the front end
+                    # can offer "try again" for one and "edit your message" for
+                    # the other, instead of reading a sentence.
+                    "reason": "indeterminate" if _indeterminate else "phi_detected",
+                    "retryable": _indeterminate,
                     "phi_evidence": _phi.get("phi_evidence") or [],
                     "identifier_labels": _phi.get("identifier_labels") or [],
-                    "message": _phi.get("message") or "Message contains PHI — remove or override to proceed.",
+                    "message": (
+                        "We could not verify this message — the safety check "
+                        "did not respond, so nothing was sent. Please try "
+                        "again."
+                        if _indeterminate
+                        else (_phi.get("message")
+                              or "Message contains PHI — remove or override "
+                                 "to proceed.")
+                    ),
                 },
             )
         _log_phi_msg_gate(correlation_id, thread_id, user_id, "overridden", _phi)
