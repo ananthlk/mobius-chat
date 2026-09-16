@@ -920,6 +920,35 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 agent_role=_agent_role_for(decision.posture),
                 posture=decision.posture,
             )
+
+            # 🔴 THE FACTS SCHEMA WAS ONLY EVER ASKED FOR BY v1'S LOOP.
+            #
+            # `system_suffix` carries the "facts": [{fact, document, page}]
+            # block. Its ONLY caller was react_loop.py:7171 — v1's loop
+            # running the v2 shadow. The governor loop never appended it, so
+            # on our own loop the model was never asked to name the document a
+            # fact came from.
+            #
+            # It answered anyway, with facts that had no provenance. Three
+            # consumers then reported that honestly and none of them said why:
+            #
+            #   verify:    "skipped=no facts with a document and page"
+            #   contract:  "fact with no document"
+            #   citations: cited_source_indices [] beside 13 published sources
+            #
+            # Every one of those is a could-not-check, and I read past all
+            # three — including a line my own verify emit was printing.
+            #
+            # Fourth time this session that work existed only in the loop that
+            # is OFF. The others were ahead-prefetch, verify, and format rules.
+            try:
+                from app.pipeline.v2 import prompts as _v2pr
+                _suffix = _v2pr.system_suffix(ctx)
+                if _suffix:
+                    system = (system or "") + _suffix
+            except Exception:   # a prompt suffix must never end a turn
+                logger.warning("[v2.loop] system_suffix failed", exc_info=True)
+
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
             _llm_t0 = time.monotonic()
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,

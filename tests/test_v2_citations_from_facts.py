@@ -69,3 +69,65 @@ def test_the_live_shape_produces_citations():
     got = cited_indices_from_facts([Fact("deadline is 90 days", "Sunshine Provider Manual",
                                          None, "d9721756")], srcs)
     assert got == [2, 4], f"expected both Sunshine chunks, got {got}"
+
+
+class TestTheFactsSchemaReachesTheGovernorLoop:
+    """The starvation upstream of the mapper.
+
+    `system_suffix` carries the "facts": [{fact, document, page}] block, and
+    its only caller was react_loop.py:7171 -- v1's loop. The governor loop
+    never appended it, so the model was never ASKED for provenance. It
+    answered with facts that had none, and three consumers reported that
+    honestly without saying why:
+
+        verify:    "skipped=no facts with a document and page"
+        contract:  "fact with no document"
+        citations: [] beside thirteen published sources
+    """
+
+    def test_the_governor_loop_appends_the_v2_system_suffix(self):
+        """Asserted on the SOURCE, because the alternative is a live turn.
+
+        Parse rather than grep: a match inside a comment or a docstring is
+        exactly how this file has produced a false green before.
+        """
+        import ast
+        import pathlib
+
+        import app.pipeline.v2.loop as L
+
+        tree = ast.parse(pathlib.Path(L.__file__).read_text())
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "system_suffix"
+        ]
+        assert calls, (
+            "the governor loop never calls system_suffix, so the model is "
+            "never asked which document a fact came from"
+        )
+
+    def test_the_suffix_actually_asks_for_the_document(self):
+        """The call is worth nothing if the block it appends dropped the
+        field. Assert the PROPERTY -- provenance is requested -- not that a
+        particular function was called."""
+        from types import SimpleNamespace
+
+        from app.pipeline.v2 import prompts as P
+
+        suffix = P.system_suffix(SimpleNamespace(orchestrator_version="v2"))
+        assert suffix, "v2 got an empty suffix"
+        flat = " ".join(suffix.split())
+        assert '"facts"' in flat
+        assert '"document"' in flat, "facts are requested without provenance"
+        assert '"page"' in flat
+
+    def test_v1_is_not_handed_a_v2_suffix(self):
+        """v1 is the A/B control arm. A v2 module must never hand it a value
+        it chose -- that moves the control and destroys the comparison."""
+        from types import SimpleNamespace
+
+        from app.pipeline.v2 import prompts as P
+
+        assert P.system_suffix(SimpleNamespace(orchestrator_version="v1")) == ""
