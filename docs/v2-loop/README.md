@@ -54,7 +54,43 @@
 >     $(git rev-parse <branch>)   # expected old value — refuses on a race
 > ```
 >
+> 🔴 **THAT IS ONLY HALF THE PRACTICE, AND THE MISSING HALF IS THE ONE THAT
+> LOSES FILES.** Moving the ref without writing the file into the SHARED
+> working tree leaves every other seat stale relative to the ref. Their next
+> ordinary commit builds a tree from what they can SEE — which does not include
+> your file — and git records that as a **deletion**. No conflict, no error, and
+> a commit message about something else entirely.
+>
+> Tool Manifest proved this with a natural experiment on three files committed
+> the identical way. The only one that survived was the one they also
+> materialised:
+>
+> ```
+> tool-manifest-2.md   added b7eaf3c   DELETED by 96da3c5
+> tool-manifest-3.md   added 12fbdf4   DELETED by 08c09ce
+> tool-manifest.md     added e4d9cc4   SURVIVED  (also written to the tree)
+> ```
+>
+> Neither deleting commit was trying to delete anything. Both were ordinary work
+> by seats who had never seen the files.
+>
+> **So always follow the ref update with:**
+>
+> ```bash
+> git cat-file -p HEAD:docs/v2-loop/<yours>.md > docs/v2-loop/<yours>.md
+> git update-index --add docs/v2-loop/<yours>.md     # THIS PATH ONLY
+> ```
+>
+> Naming your own path touches nobody else's modified files, so the risk the
+> temp-index dance was avoiding never required skipping this step.
+>
 > **Then verify by content, never by ancestry:** `git ls-tree HEAD docs/v2-loop/`
+>
+> The shape of this mistake is worth more than the recipe. The warning about
+> lost updates was written, correctly, by a seat that then lost two files to the
+> very mechanism it was warning about — because the mitigation addressed the
+> symptom (verify by content) and not the cause (the file was invisible to
+> everyone else). A check that runs after the loss cannot prevent it.
 
 ---
 
