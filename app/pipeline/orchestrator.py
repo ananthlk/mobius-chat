@@ -485,9 +485,17 @@ def run_pipeline(
     try:
         from app.pipeline.v2.routing import assign as _v2_assign
         if ab_arm in ("v1", "v2"):
-            # PINNED by the harness so both arms run in the same seconds. The
-            # API process already refused the pin unless MOBIUS_V2_AB_FORK=1,
-            # so a payload carrying one is by construction a harness turn.
+            # PINNED. The API process already refused the pin unless
+            # MOBIUS_V2_AB_FORK=1.
+            #
+            # 🔴 THIS USED TO SAY "by construction a harness turn". As of the
+            # Chat FE version selector (2026-09-16) that is FALSE: a real
+            # person choosing "v1 only" in the kebab sends ab_arm on an
+            # ordinary turn. Pinning still behaves correctly — the arm is the
+            # arm — but nothing downstream may infer "harness" from the
+            # presence of this field. Today nothing does (shadow.py only logs
+            # it), and this note exists so the next reader does not restore
+            # the inference from the old wording.
             ctx.orchestrator_version = ab_arm
             logger.info("[v2] arm PINNED by harness cid=%s arm=%s",
                         correlation_id[:8], ab_arm)
