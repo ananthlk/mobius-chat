@@ -359,6 +359,25 @@ def _upgrade_signal(current: str, result) -> str:
     sig = result.get("signal")
     if sig and sig != RETRIEVAL_SIGNAL_NO_SOURCES:
         return sig
+
+    # 🔴 A PRELOAD RESULT HAS NO `signal` KEY AT ALL.
+    #
+    # preload.execute returns {ok, payload, summary, sources, tool, ...} —
+    # `signal` is a REACT tool-result field and preload does not produce one.
+    # So this function could never upgrade from preloaded evidence, and a turn
+    # answered entirely from preload reported no_sources.
+    #
+    # Measured on pinned turn a8cbd6d8, after the source seeding landed:
+    #     sources: 13 · sources block refs: 13 · strip: no_sources
+    # Thirteen documents published and the strip still said we had none, which
+    # drives the confidence badge and the abstention.
+    #
+    # Sources ARE the signal here: a result carrying corpus sources IS corpus
+    # retrieval, whatever key it does or does not use to say so. Read the fact
+    # rather than the field, because the field belongs to the other producer.
+    if result.get("sources"):
+        from app.services.doc_assembly import RETRIEVAL_SIGNAL_CORPUS_ONLY
+        return RETRIEVAL_SIGNAL_CORPUS_ONLY
     return current
 
 
