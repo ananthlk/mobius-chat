@@ -176,9 +176,7 @@ def test_no_invented_filing_deadline_in_any_string_literal():
     the reasoning readable is the point.
     """
     import ast
-    import inspect
-    from app.pipeline import react_loop
-    tree = ast.parse(inspect.getsource(react_loop))
+    tree = ast.parse(_appeals_source())
     banned = ("Default FL Medicaid", "60 days, certified mail")
     offenders = []
     for node in ast.walk(tree):
@@ -189,14 +187,34 @@ def test_no_invented_filing_deadline_in_any_string_literal():
     assert not offenders, f"fabricated filing values in code: {offenders}"
 
 
+
+def _appeals_source() -> str:
+    """react_loop PLUS the appeals dispatch module.
+
+    🔴 THE CODE MOVED, 2026-09-16. The 590-line appeals block was extracted
+    from react_loop._execute_tool to react/appeals_dispatch.py, continuing the
+    Phase 1i split the LOC ratchet asks for.
+
+    test_audience_is_passed_explicitly_on_every_guarded_read says in its own
+    docstring "this test fails if the argument disappears in a refactor" — and
+    it did exactly that, correctly, when the call moved rather than
+    disappeared. Scanning the UNION means the guard follows the code instead of
+    following the file, which is what it was always trying to protect.
+    """
+    import inspect
+
+    from app.pipeline import react_loop
+    from app.pipeline.react import appeals_dispatch
+
+    return inspect.getsource(react_loop) + "\n" + inspect.getsource(appeals_dispatch)
+
+
 def test_audience_is_passed_explicitly_on_every_guarded_read():
     """The route defaults `audience` to "", which appeals currently fails OPEN
     on — scalars pass through. So a dropped argument does not serve nothing, it
     leaks PROVIDER deadlines and fax numbers to a member-declared consumer.
     This test fails if the argument disappears in a refactor."""
-    import inspect
-    from app.pipeline import react_loop
-    src = inspect.getsource(react_loop)
+    src = _appeals_source()
     guarded = [ln for ln in src.splitlines() if "/playbook-guarded/" in ln]
     assert guarded, "no guarded playbook reads found — did the call move?"
     for ln in guarded:

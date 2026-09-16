@@ -17,9 +17,18 @@ that NAMES the gap is the library answering; anything else is us failing.
 """
 import inspect
 
-from app.pipeline import react_loop
+from app.pipeline.react import appeals_dispatch
 
-SRC = inspect.getsource(react_loop._execute_tool)
+# 🔴 THE CODE MOVED, THE BEHAVIOUR DID NOT (2026-09-16). This read
+# react_loop._execute_tool, where the appeals dispatch used to live. The 590
+# lines were extracted whole to react/appeals_dispatch.py to continue the Phase
+# 1i split the LOC ratchet asks for — unchanged except for indentation and four
+# closure names becoming parameters.
+#
+# These tests were pinned to the LOCATION. What they protect — a named library
+# gap reported as an answer rather than a tool failure — is unchanged, so they
+# now read the module that holds it.
+SRC = inspect.getsource(appeals_dispatch)
 
 
 def _handler_block() -> str:

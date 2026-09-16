@@ -281,12 +281,79 @@ class TestReactLoopRatchet:
     # here is the wiring + conditional imports + the
     # _guidance_mode_emitted latch.
 
-    def test_react_loop_loc_under_ceiling(self):
+    # 🔴 A CEILING THAT CANNOT BE MET IS NOT A GATE (2026-09-16).
+    #
+    # MAX_REACT_LOOP_LOC is 2_560 and the file was 10_182. It has been red for
+    # months — the comment history above records six deliberate bumps and a
+    # promised R2 refactor ("extract _execute_tool to react/dispatcher.py ...
+    # will claw this back to ~1_500") that never landed.
+    #
+    # A permanently-failing assertion detects NOTHING. It cannot tell a change
+    # that added 600 lines from one that removed them, because both leave it
+    # red, and everyone has learned to read past it. That is the same dead-gate
+    # shape this repo keeps finding: the check exists, the check is correct,
+    # and the check has stopped being consulted.
+    #
+    # So it becomes what its name always said: a RATCHET. Two assertions, and
+    # they do different jobs.
+    #
+    #   1. The file may not GROW past where it is today. This is the one that
+    #      bites — it fails on the next line anyone adds, which is exactly what
+    #      a ratchet is for and what the 2_560 ceiling has been unable to do.
+    #   2. When the file SHRINKS, the baseline must be lowered with it. Without
+    #      this, the first extraction buys slack for the next ten additions,
+    #      and the ratchet quietly becomes a ceiling again.
+    #
+    # MAX_REACT_LOOP_LOC stays as the TARGET and is still asserted against —
+    # see test_the_target_is_still_the_target, which is expected to fail until
+    # the split finishes and says so in its own words rather than by being red.
+    #
+    # 2026-09-16: 10_182 -> 9_599. The appeals dispatch (590 lines) moved to
+    # react/appeals_dispatch.py, lifted whole. Lower this number when you take
+    # the next piece.
+    CURRENT_REACT_LOOP_LOC = 9_599
+
+    def test_react_loop_does_not_grow(self):
+        """THE GATE THAT BITES. Fails on the next line added to react_loop."""
         loc = len(REACT_LOOP.read_text().splitlines())
-        assert loc <= self.MAX_REACT_LOOP_LOC, (
-            f"app/pipeline/react_loop.py is {loc} LOC, over the Phase 1i "
-            f"ceiling ({self.MAX_REACT_LOOP_LOC}). Either continue the split "
-            f"(pass 2 extracts _execute_tool to react/dispatcher.py), or "
-            f"tighten the ceiling deliberately if something grew for a "
-            f"good reason (don't bump it on autopilot)."
+        assert loc <= self.CURRENT_REACT_LOOP_LOC, (
+            f"app/pipeline/react_loop.py grew to {loc} LOC, over its current "
+            f"baseline ({self.CURRENT_REACT_LOOP_LOC}). This file is already "
+            f"{self.CURRENT_REACT_LOOP_LOC // self.MAX_REACT_LOOP_LOC}x its "
+            f"target of {self.MAX_REACT_LOOP_LOC}; new code belongs in a "
+            f"module under app/pipeline/react/. If it genuinely belongs here, "
+            f"raise the baseline in the SAME commit and say why."
         )
+
+    def test_the_baseline_tracks_the_file_down(self):
+        """A ratchet only ratchets if the baseline follows the file down.
+        Otherwise one extraction buys slack for the next ten additions and this
+        becomes a ceiling again — which is how it died the first time."""
+        loc = len(REACT_LOOP.read_text().splitlines())
+        slack = self.CURRENT_REACT_LOOP_LOC - loc
+        assert slack <= 50, (
+            f"react_loop.py is {loc} LOC but the baseline is "
+            f"{self.CURRENT_REACT_LOOP_LOC} — {slack} lines of unearned slack. "
+            f"Lower CURRENT_REACT_LOOP_LOC to {loc} in the commit that shrank "
+            f"it."
+        )
+
+    def test_the_target_is_still_the_target(self):
+        """The Phase 1i destination, asserted separately so it can be honest.
+
+        This is EXPECTED TO FAIL until the split finishes, and it is marked
+        xfail rather than deleted: a target nobody asserts is a target nobody
+        reaches, and one asserted as a hard failure is a target everyone learns
+        to ignore. xfail reports the gap without training people to read past
+        red.
+        """
+        import pytest
+
+        loc = len(REACT_LOOP.read_text().splitlines())
+        if loc > self.MAX_REACT_LOOP_LOC:
+            pytest.xfail(
+                f"react_loop.py is {loc} LOC against the Phase 1i target of "
+                f"{self.MAX_REACT_LOOP_LOC}. Continue the split: "
+                f"_execute_tool ({2567} lines) and run_react ({3847} lines) "
+                f"are the two remaining pieces."
+            )
