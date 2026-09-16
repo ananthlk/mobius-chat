@@ -5577,6 +5577,24 @@ def _finalize_response(
 # ---------------------------------------------------------------------------
 
 
+def _payload_text(payload) -> str:
+    """A tool payload as the TEXT the rest of this module expects.
+
+    Structured payloads are serialized rather than dropped — a dict from an
+    MCP tool is still the evidence the round fetched, and returning "" for it
+    would trade a crash for a silent loss of the thing we just paid to get.
+    """
+    if isinstance(payload, str):
+        return payload
+    if payload is None:
+        return ""
+    try:
+        import json as _pj
+        return _pj.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        return str(payload)
+
+
 def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) -> None:
     """Mid-loop truncation recovery checkpoint (Task #29,
     docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §1). If a timeout kills the
@@ -5614,15 +5632,22 @@ def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) ->
     instead — same durable-stash purpose for Task #29's mid-turn
     recovery (get_checkpoint() already reads this as the "evidence"
     quality, one tier below a real "draft"), no live event."""
-    best = next((tr for tr in reversed(tool_results) if tr.get("success")), None)
-    if best is None:
-        return
-    text = (best.get("result") or "").strip()
-    if len(text) < 40:
-        text = (best.get("result_summary") or "").strip()
-    if not text or len(text) < 40:
-        return
+    # 🔴 THE GUARD WAS AIMED ONE LEVEL BELOW THE LOSS. This function's own
+    # docstring promises "checkpointing must never break the actual turn it's
+    # protecting" — and the try/except covered only the WRITE, while the
+    # selection two lines above it raised and killed the turn. A promise in a
+    # docstring that the code does not keep is worse than no promise: it stops
+    # the next reader looking.
     try:
+        best = next((tr for tr in reversed(tool_results)
+                     if isinstance(tr, dict) and tr.get("success")), None)
+        if best is None:
+            return
+        text = _payload_text(best.get("result")).strip()
+        if len(text) < 40:
+            text = _payload_text(best.get("result_summary")).strip()
+        if not text or len(text) < 40:
+            return
         from app.storage.progress import append_evidence_checkpoint
         append_evidence_checkpoint(ctx.correlation_id, text)
     except Exception:
@@ -6444,7 +6469,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         ctx.seed_tool_results.append({
                             "tool": _r.get("tool"),
                             "success": True,
-                            "result": _r["payload"],
+                            # 🔴 `result` IS A STRING BY CONVENTION, AND
+                            # THIS PUT A DICT IN IT.
+                            #
+                            # Nine places in this module read
+                            # `(tr.get("result") or "").strip()`; every other
+                            # producer writes text (the appeals branches
+                            # json.dumps their payload before returning). This
+                            # one passed toolreg's payload through raw, so a
+                            # structured MCP result made `result` a dict and
+                            # the FIRST consumer to touch it killed the turn:
+                            #
+                            #   react_loop.py:5620 _checkpoint_best_evidence
+                            #   text = (best.get("result") or "").strip()
+                            #   AttributeError: 'dict' object has no attribute
+                            #   'strip'
+                            #
+                            # Live, 2026-09-16, cids aa6f582d and c71a31be:
+                            # "✗ Turn failed at orchestrator" and the person
+                            # got "Something went wrong — trying another path."
+                            #
+                            # Fixed at the producer, not in nine consumers: the
+                            # convention is the contract, and restoring it here
+                            # fixes every reader at once.
+                            "result": _payload_text(_r["payload"]),
                             "result_summary": _r.get("summary") or "",
                             # round_virtual=0: retrieved BEFORE round 1 spoke.
                             # Not round 1's own work, and the trace must not
@@ -7298,6 +7346,34 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 reasoning_system = _resolved.system_prompt
                 _reasoning_composition_id = _resolved.composition_id
                 _reasoning_composition_hash = _resolved.composition_hash
+
+            # 🔴 v2's FORMAT RULES ON THE LIVE PATH — THIRD TIME I HAVE MADE
+            # THIS MISTAKE TODAY.
+            #
+            # I wired them into _v2_system_prompt, which lives in v2/loop.py
+            # and is called ONLY by run_react_v2 — the loop that is OFF
+            # (MOBIUS_V2_OWN_LOOP is empty). So the new prompt set was inert on
+            # the path that actually serves people, exactly like the next-steps
+            # prefetch was this afternoon. Building it into the loop we are
+            # migrating TO, and not the one running, is not a smaller mistake
+            # for being a familiar one.
+            #
+            # Gated on the v2 orchestrator AND the communicating round, so a v1
+            # turn and a judging round are both untouched: v1 keeps its fixed
+            # bullet shape byte-for-byte.
+            try:
+                if (getattr(ctx, "orchestrator_version", "v1") == "v2"
+                        and getattr(ctx, "_v2_round_communicates", False)):
+                    from app.pipeline.v2.format_rules import V2_FORMAT_RULES_TEXT
+                    if V2_FORMAT_RULES_TEXT not in (reasoning_system or ""):
+                        reasoning_system = (
+                            f"{reasoning_system}\n\n{V2_FORMAT_RULES_TEXT}")
+                        logger.info(
+                            "[v2.format] rules appended cid=%s round=%s",
+                            (getattr(ctx, "correlation_id", "") or "")[:8],
+                            iteration)
+            except Exception:   # a prompt addition must never end a turn
+                logger.warning("[v2.format] not applied", exc_info=True)
             # else: leave reasoning_system AND the composition_id/hash at
             # whatever they were (this round's fail-soft fallback reuses the
             # prior value, so the attribution must stay in sync with it —

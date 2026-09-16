@@ -70,7 +70,17 @@ def test_preload_seeds_its_payload_as_a_virtual_tool_result():
     # the gate failed on code that was correct.
     block = SRC[i:SRC.index("})", i) + 2]
     assert '"round_virtual": 0' in block, "round 1 would be credited with the fetch"
-    assert '"result": _r["payload"]' in block
+    # ASSERT THE PROPERTY, NOT THE FINGERPRINT. This pinned the exact source
+    # text `"result": _r["payload"]`, so it broke when the payload started
+    # being coerced to text — while the thing it protects (the preloaded
+    # payload reaches round 1 as evidence) was never in question.
+    #
+    # The coercion exists because `result` is a STRING by convention: nine
+    # readers in react_loop call .strip() on it, and a raw dict payload killed
+    # a live turn (cid aa6f582d, "'dict' object has no attribute 'strip'").
+    assert '"result":' in block and '_r["payload"]' in block, (
+        "the preloaded payload no longer reaches the seeded result — round 1 "
+        "would be blind to what preload fetched")
 
 
 def test_the_seed_is_written_before_the_loop_reads_it():

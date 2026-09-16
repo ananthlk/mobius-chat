@@ -110,3 +110,57 @@ def test_the_prompt_builder_actually_applies_them():
     first_call = min(c.lineno for c in calls)
     assert first_call < max(r.lineno for r in returns), (
         "the rules are applied after a return — one exit will miss them")
+
+
+def test_the_rules_reach_the_LOOP_THAT_ACTUALLY_RUNS():
+    """🔴 THE MISTAKE I MADE THREE TIMES TODAY.
+
+    Work wired only into run_react_v2 is inert, because MOBIUS_V2_OWN_LOOP is
+    empty and v1's loop serves every real turn. It happened with the next-steps
+    prefetch (ahead.start was called only from run_react_v2 while
+    _v2_integrate already consumed it), and again here: the v2 format rules
+    were applied only in _v2_system_prompt, which v2/loop.py alone calls.
+
+    The gate is deliberately about the LIVE loop by name. A test that only
+    asserted "something applies them" passed while they were inert.
+    """
+    import app.pipeline.react_loop as R
+
+    tree = ast.parse(inspect.getsource(R))
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react")
+    # Assert it is IMPORTED from the prompt module and ASSIGNED into the
+    # prompt — not merely that the name appears. My first version grepped for
+    # the name and passed on a mutation that replaced the import with
+    # `V2_FORMAT_RULES_TEXT = ""`, which is the inert state it exists to catch.
+    imports = [n for n in ast.walk(fn)
+               if isinstance(n, ast.ImportFrom)
+               and (n.module or "").endswith("v2.format_rules")]
+    assert imports, (
+        "run_react never imports v2's format rules from their module — the "
+        "prompt set is inert on the loop that actually serves turns")
+
+    assigns = [n for n in ast.walk(fn)
+               if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "reasoning_system"
+                       for t in n.targets)
+               and "V2_FORMAT_RULES_TEXT" in ast.unparse(n.value)]
+    assert assigns, (
+        "the rules are imported but never appended to reasoning_system — "
+        "present in the source and absent from the prompt")
+
+
+def test_v1_turns_do_not_get_v2s_rules():
+    """The whole reason for a second set. The live-path application must be
+    gated on the v2 orchestrator AND the communicating round."""
+    import app.pipeline.react_loop as R
+
+    tree = ast.parse(inspect.getsource(R))
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react")
+    guards = [n for n in ast.walk(fn)
+              if isinstance(n, ast.If) and "V2_FORMAT_RULES_TEXT" in ast.unparse(n)]
+    assert guards, "the application is not inside a guard at all"
+    text = " ".join(ast.unparse(g.test) for g in guards)
+    assert "orchestrator_version" in text, "not gated on the v2 orchestrator"
+    assert "_v2_round_communicates" in text, "not gated on the communicating round"
