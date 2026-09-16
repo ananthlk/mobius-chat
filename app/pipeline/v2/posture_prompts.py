@@ -43,6 +43,49 @@ from app.pipeline.v2.posture import Posture
 #                            prediction rather than a rationalisation. On their
 #                            request 879 it predicted which fields would fail,
 #                            and that is where the round landed.
+
+# ── SILENCE IS NOT ABSENCE ──────────────────────────────────────────────────
+# Declared ONCE and rendered into every posture that reads pre-round evidence.
+# A second copy of this text is the drift this module exists to prevent.
+#
+# `rag` is in preload's ALWAYS_PRELOAD, so EVERY v2 turn now opens holding
+# retrieved passages. That is a real improvement — three rounds became one —
+# and it removed a guard without removing what the guard was for.
+#
+# Deep Research named it: their engine REFUSES to call its extractor on empty
+# evidence, precisely so "nothing was retrieved" can never be rendered as "the
+# document does not say it". A preload guarantees evidence is never empty, so
+# that guard's TRIGGER is gone while its failure is not. And the pull is
+# strong: the page is not blank, so ruling on it feels like a finding.
+#
+# mobius_contracts.taxonomies.tool_outcome.WORLD_CLAIMS is empty, deliberately:
+# no tool outcome licenses telling a person "not found". The contract says a
+# caller wanting that licence "must make the `absent` judgement itself and be
+# able to name the document it read." This loop has no such layer. So it may
+# not make the claim, and the prompt has to say so — the model cannot infer a
+# constraint from a constant it never sees.
+SILENCE_IS_NOT_ABSENCE = """\
+WHAT THE PRE-ROUND EVIDENCE IS, BEFORE YOU RULE ON IT. A broad sweep on the
+question's own words ran automatically, before you said anything. It is NOT a
+targeted read of a named document.
+
+So its SILENCE tells you nothing. Passages that do not mention a thing are
+equally what you get when the sweep used the wrong words, when the document
+that holds the answer was too large to be swept, and when the thing truly does
+not exist. You cannot tell those apart from where you sit — and neither can
+the person reading you.
+
+Therefore: NEVER write that something "is not specified", "is not mentioned",
+"the documents do not say", or any other claim about the WORLD, on pre-round
+evidence alone. That is a finding about a SEARCH, delivered as a finding about
+a POLICY, and it is the most expensive mistake available to you here: the
+person stops looking for something that is there.
+
+If what you hold is silent on the question, that is a GAP. Name it and plan a
+tool that would close it. Silence is a reason to look, never a reason to
+answer.
+"""
+
 FRAME = """\
 You are opening this turn. You are NOT answering it and NOT fetching anything.
 
@@ -64,7 +107,9 @@ Say, briefly:
                           each on why not.
   what_i_expect_to_be_hard  which parts you expect to FAIL, and why — written
                           now, before anyone tries.
-"""
+
+{silence}
+""".format(silence=SILENCE_IS_NOT_ABSENCE)
 
 # ── EXPLORE ─────────────────────────────────────────────────────────────────
 # The plan fields are NOT written here. They are declared once in
@@ -87,6 +132,7 @@ evidence is in front of you.
                      a gap to justify another round. A settlement you cannot
                      quote has not settled anything.
 
+{silence}
 Only if something is genuinely still missing, plan for it.
 
 NAME EVERY TOOL YOU NEED, NOT ONE. Tools you name together RUN IN THE SAME
@@ -107,6 +153,7 @@ round after this one:
 
 {per_round}
 """.format(
+    silence=SILENCE_IS_NOT_ABSENCE,
     per_plan=_plan.render(_plan.PER_PLAN),
     across_plans=_plan.render(_plan.ACROSS_PLANS),
     per_round=_plan.render(_plan.PER_ROUND),
