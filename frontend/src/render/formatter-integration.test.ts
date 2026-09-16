@@ -120,3 +120,48 @@ describe("formatter output renders in the real answer card", () => {
       });
   });
 });
+
+// ── steps with inline markup ────────────────────────────────────────────────
+// .ac-fmt-step is display:flex with a ::before number badge, so it expects
+// exactly two children. Setting innerHTML on the <li> made every element
+// _inlineMd produced its own FLEX ITEM: a step containing bold spans rendered
+// as one narrow column per span, with "fax" squeezed to a letter per line.
+//
+// Only fires when a step contains bold — and react's FORMAT RULES ask for bold
+// on entity names, deadlines, codes and contact info, so real steps almost
+// always do. Every fixture step was plain, which is why it survived.
+describe("a step's inline markup does not become columns", () => {
+  const stepsCard = {
+    direct_answer: "To appeal a CARC 22 denial, here is what to do:",
+    sections: [{
+      intent: "process", label: "Steps", format: "steps",
+      data: { items: [
+        { label: "**Submit an appeal within 90 days** of the denial date via their "
+                 + "**Secure Provider Portal**, **fax** (1-833-504-0580), or **mail**." },
+        { label: "Complete and attach the **Provider Claim Adjustment Request Form**." },
+      ] },
+    }],
+  } as unknown as AnswerCard;
+
+  it("each step has exactly ONE element child — the text wrapper", () => {
+    const el = renderAnswerCard(stepsCard);
+    const steps = [...el.querySelectorAll("li.ac-fmt-step")];
+    expect(steps.length).toBe(2);
+    steps.forEach((li, i) => {
+      expect(li.children.length, `step ${i} has ${li.children.length} flex children`).toBe(1);
+      expect(li.children[0].className).toBe("ac-fmt-step-text");
+    });
+  });
+
+  it("the bold survives inside the wrapper rather than beside it", () => {
+    const el = renderAnswerCard(stepsCard);
+    const first = el.querySelector("li.ac-fmt-step .ac-fmt-step-text")!;
+    expect(first.querySelectorAll("strong").length).toBe(4);
+    expect(first.textContent).toContain("1-833-504-0580");
+  });
+
+  it("no <strong> is ever a direct child of the flex row", () => {
+    const el = renderAnswerCard(stepsCard);
+    expect(el.querySelectorAll("li.ac-fmt-step > strong").length).toBe(0);
+  });
+});

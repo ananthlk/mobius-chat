@@ -140,7 +140,10 @@ function _renderSectionBody(sec, body) {
     data.items.forEach((item) => {
       const li = document.createElement("li");
       li.className = "ac-fmt-step";
-      li.innerHTML = _inlineMd(typeof item === "string" ? item : item.label ?? "");
+      const text = document.createElement("div");
+      text.className = "ac-fmt-step-text";
+      text.innerHTML = _inlineMd(typeof item === "string" ? item : item.label ?? "");
+      li.appendChild(text);
       ol.appendChild(li);
     });
     body.appendChild(ol);

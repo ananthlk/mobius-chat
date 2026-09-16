@@ -3373,6 +3373,13 @@ body {
   line-height: 1.5;
   color: var(--sidebar-text);
 }
+.ac-fmt-step-text {
+  /* min-width:0 so a long step wraps instead of forcing the flex row wider
+     than its container — flex items do not shrink below min-content without
+     it, which is what turned a long step into a horizontal overflow. */
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .ac-fmt-step::before {
   content: counter(ac-step);
   flex-shrink: 0;

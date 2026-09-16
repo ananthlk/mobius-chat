@@ -64,7 +64,28 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     data.items.forEach((item) => {
       const li = document.createElement("li");
       li.className = "ac-fmt-step";
-      li.innerHTML = _inlineMd(typeof item === "string" ? item : (item.label ?? ""));
+      // The step's text goes in its OWN element, never straight onto the <li>.
+      //
+      // .ac-fmt-step is `display: flex` with a ::before number badge, so it
+      // expects exactly two children: the badge and the text. Setting
+      // innerHTML on the <li> itself makes every element _inlineMd produces a
+      // separate FLEX ITEM — so a step containing bold spans renders as one
+      // narrow column per span. Live, 2026-09-16: "…via their **Secure
+      // Provider Portal**, **fax** (1-833-504-0580), or **mail** to…" came out
+      // as columns, with "fax" squeezed to one letter per line.
+      //
+      // Invisible until now because it only fires when a step contains bold —
+      // and react's FORMAT RULES ask for bold on entity names, deadlines,
+      // codes and contact info, so real steps almost always do. The test
+      // fixtures did not, which is the whole reason it survived.
+      //
+      // Every other renderer here already does this: bar labels, condition
+      // cells and stat values all get their own block element. Steps was the
+      // one outlier.
+      const text = document.createElement("div");
+      text.className = "ac-fmt-step-text";
+      text.innerHTML = _inlineMd(typeof item === "string" ? item : (item.label ?? ""));
+      li.appendChild(text);
       ol.appendChild(li);
     });
     body.appendChild(ol);
