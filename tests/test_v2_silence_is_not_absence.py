@@ -79,3 +79,28 @@ def test_the_contract_this_rule_enforces_still_forbids_world_claims():
         "WORLD_CLAIMS gained a member — a tool outcome now licenses 'not "
         "found', and this prompt rule contradicts the contract"
     )
+
+
+def test_citable_is_declared_and_reaches_the_prompt():
+    """A route can be independent and still unable to close a claim.
+
+    Deep Research measured the registry at 100% call success and 0-21%
+    settle, against rag's 43%: a row is not a quotable sentence.
+    `same_kind_check` cannot catch it -- "structured registry row" and
+    "policy prose" ARE different kinds. The unasked question was whether
+    the kind can be quoted.
+    """
+    from app.pipeline.v2 import plan_shape as ps
+
+    names = [f.name for f in ps.PER_PLAN]
+    assert "citable" in names, "the quotability test is not declared"
+
+    field = next(f for f in ps.PER_PLAN if f.name == "citable")
+    assert field.required, (
+        "an optional citability test is one the model skips on exactly the "
+        "plans that most need it"
+    )
+    # Declared is not delivered: it must survive render() into the posture the
+    # planner actually reads.
+    assert "citable" in P.EXPLORE, "declared but never rendered into EXPLORE"
+    assert "QUOTE" in flat(field.text)

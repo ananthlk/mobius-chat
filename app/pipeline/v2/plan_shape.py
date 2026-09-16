@@ -46,6 +46,30 @@ PER_PLAN: tuple[Field, ...] = (
         "cheap_test", False,
         "how to find that out cheaply, or null.",
     ),
+    # deep-research, 2026-09-16. `evidence_kind` gets close to this and does
+    # not reach it, and they have the measurement that separates them:
+    #
+    #     evidence came from        calls  returned evidence  settled
+    #     service_line_search          12        100%             0%
+    #     service_line_detail          16        100%             6%
+    #     service_line_requirements    19        100%            21%
+    #     rag                          92         68%            43%
+    #
+    # The registry has a PERFECT call-success rate and the worst settle rate,
+    # because a row is not a quotable sentence. Their planner nominates it as
+    # an independent route in nearly every plan — and it IS independent. It is
+    # independently unable to close a slot.
+    #
+    # `same_kind_check` cannot catch this: "structured registry row" and
+    # "policy prose" are genuinely different KINDS. The question neither field
+    # asked is whether the kind can be QUOTED.
+    Field(
+        "citable", True,
+        "can this route produce a sentence you could QUOTE? A structured row\n"
+        "or a lookup result is evidence you can act on, not evidence you can\n"
+        "cite. If nothing here is quotable, this plan cannot close a claim on\n"
+        "its own — say so, and name what would.",
+    ),
     # deep-research, 2026-09-15: the second test, which did not make it across
     # when I took the first.
     Field(
