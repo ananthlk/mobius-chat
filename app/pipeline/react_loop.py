@@ -5328,6 +5328,32 @@ def _finalize_response(
             _had_hint = True
         if _had_hint:
             _hinted_tr_ids.add(id(_tr))
+        else:
+            # 🔴 THE TOOL HAS A CARD; FIT ITS OUTPUT TO IT, WHOEVER RAN IT.
+            #
+            # Ananth: "in the backend where we have the deterministic ux
+            # formatter, we should check if there is a tool with a ux card then
+            # we fit it to that format.. if not we format .. this way we will
+            # render each tools cards as such."
+            #
+            # Every appeals card in this product reaches the screen through a
+            # `section_hint`, and only CHAT's branches emit one. The same tool
+            # served by Tool Manifest's MCP route returns generic evidence, so
+            # the card silently became a paraphrase.
+            #
+            # What that costs, measured side by side on 2026-09-16: the appeals
+            # service holds COB.R001 "Medicaid Payor of Last Resort" with its
+            # rule id, CARC 22/23 codes, a rule STATEMENT and a separate
+            # "our argument", a provenance tier and a review state. The reader
+            # got four bold-led bullets. The ids, the statement/argument
+            # distinction, the codes and the provenance were all discarded by
+            # a model asked to summarise a structure it was handed whole.
+            #
+            # A card is a property of the TOOL, not of the route that ran it.
+            _fitted = _card_hint_for_tool(_tr)
+            if _fitted:
+                _all_hints.append(_fitted)
+                _hinted_tr_ids.add(id(_tr))
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
@@ -5575,6 +5601,78 @@ def _finalize_response(
 # ---------------------------------------------------------------------------
 # ReAct main loop
 # ---------------------------------------------------------------------------
+
+
+#: Which UX card a tool's output renders as. TEMPORARY AND DELIBERATELY TINY.
+#:
+#: Ananth: "declaration where tool is registered.. we should have per tool
+#: output so i can pick it up". That is Tool Manifest's registry
+#: (tools.tool_version.renders_as), and the ask is written up in
+#: docs/v2-loop/tool-declares-its-card.md. This map exists ONLY so the contract
+#: gets exercised on real traffic before they build against it — they inherit a
+#: shape that has run, not a guess. It is deleted the moment `renders_as` is
+#: readable from the manifest, and it does not grow past what proves the shape.
+_TOOL_RENDERS_AS: dict[str, str] = {
+    "appeals_lookup_rules": "appeals_rules",
+    "appeals_find_carc": "appeals_rules",
+    "appeals_get_playbook": "appeals_playbook",
+}
+
+_CARD_LABELS: dict[str, str] = {
+    "appeals_rules": "Appeal rules",
+    "appeals_playbook": "Appeal playbook",
+}
+
+
+def _card_hint_for_tool(tr: dict) -> dict | None:
+    """A section_hint built from a tool result, when the tool declares a card
+    and the payload carries what that card cannot render without.
+
+    Falls through (returns None) on BOTH "no card declared" and "card would
+    come out empty" — the second matters more: a card rendered from a payload
+    missing its load-bearing fields looks authoritative and says nothing, which
+    is worse than the prose it would replace.
+    """
+    try:
+        if not isinstance(tr, dict) or not tr.get("success"):
+            return None
+        fmt = _TOOL_RENDERS_AS.get(tr.get("tool") or "")
+        if not fmt:
+            return None
+
+        from mobius_contracts.taxonomies import ux_cards as _ux
+
+        card = _ux.card_for(fmt)
+        payload = tr.get("result")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(payload, dict):
+            return None
+
+        # appeals_find_carc nests its rules under matches[]; flatten so one
+        # card shape serves both tools rather than two near-identical readers.
+        if not payload.get("rules") and isinstance(payload.get("matches"), list):
+            _rules: list = []
+            for _m in payload["matches"]:
+                if isinstance(_m, dict) and isinstance(_m.get("rules"), list):
+                    _rules.extend(_m["rules"])
+            if _rules:
+                payload = {**payload, "rules": _rules}
+
+        if not _ux.fits(card, payload):
+            logger.info("[ux_card] %s declares %s but the payload is missing %s "
+                        "— falling through to prose",
+                        tr.get("tool"), fmt, ", ".join(_ux.missing(card, payload)))
+            return None
+        return {"section_format": fmt,
+                "label": _CARD_LABELS.get(fmt, fmt.replace("_", " ").title()),
+                "data": payload}
+    except Exception:      # a card is an improvement, never a turn-ender
+        logger.warning("[ux_card] fit failed", exc_info=True)
+        return None
 
 
 def _payload_text(payload) -> str:

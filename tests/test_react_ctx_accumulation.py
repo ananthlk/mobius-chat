@@ -97,6 +97,35 @@ class TestRagChunksUnifiedPool:
         assert ctx.rag_chunks == []
 
 
+
+def _rules_reaching_the_integrator(ctx):
+    """Every channel the rules can arrive on.
+
+    🔴 THE CHANNEL CHANGED, THE PROPERTY DID NOT (2026-09-16). A tool that
+    DECLARES a UX card now has its output fitted to that card
+    (react_loop._card_hint_for_tool), so appeals rules arrive as a
+    `section_hint` — the richer channel the front end renders as the appeals
+    card — and the module's existing no-duplicate rule then skips them in
+    tool_outputs so the enricher is not handed the same content twice.
+
+    Task #58's requirement was "integrator should have access to everything
+    react collected". It still does. These tests asserted the CHANNEL; they
+    now assert the access.
+
+    Why the card and not the prose: measured side by side, the tool holds
+    COB.R001 with a rule id, CARC codes, a rule statement and a separately
+    authored appeal argument. Summarised into bullets, all four disappear.
+    """
+    out = []
+    for hint in (getattr(ctx, "tool_section_hints", None) or []):
+        if isinstance(hint, dict) and hint.get("section_format") in (
+                "appeals_rules", "appeals_playbook"):
+            out.extend((hint.get("data") or {}).get("rules") or [])
+    out.extend(((getattr(ctx, "tool_outputs", None) or {})
+                .get("appeals", {}).get("rules") or []))
+    return out
+
+
 class TestToolOutputsTypedByFamily:
     def test_appeals_rules_from_lookup_rules(self):
         rule = {"rule_id": "COB.R001", "rule_name": "Payor of Last Resort", "rule_statement": "...",
@@ -105,7 +134,7 @@ class TestToolOutputsTypedByFamily:
             {"tool": "appeals_lookup_rules", "success": True, "result": json.dumps({"carc": 22, "rules": [rule]})},
         ])
         _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
-        assert ctx.tool_outputs["appeals"]["rules"] == [rule]
+        assert _rules_reaching_the_integrator(ctx) == [rule]
 
     def test_appeals_rules_unified_from_find_carc_nested_matches(self):
         """appeals_find_carc nests rules per-candidate (matches[i].rules)
@@ -117,7 +146,7 @@ class TestToolOutputsTypedByFamily:
              "result": json.dumps({"matches": [{"carc": 22, "rules": [rule]}], "top_carc": 22})},
         ])
         _finalize_response(ctx, "answer", [], "no_sources", "appeals_find_carc", None)
-        assert ctx.tool_outputs["appeals"]["rules"] == [rule]
+        assert _rules_reaching_the_integrator(ctx) == [rule]
 
     def test_appeals_letter_sourced_from_recital_not_raw_result(self):
         """appeals_assemble_letter's raw result is plain letter TEXT, not
@@ -213,7 +242,7 @@ class TestToolOutputsTypedByFamily:
             seed_tool_results=[{"tool": "appeals_validate_claim", "success": True, "result": json.dumps({"action": "appeal"})}],
         )
         _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
-        assert ctx.tool_outputs["appeals"]["rules"] == [{"rule_id": "A"}]
+        assert _rules_reaching_the_integrator(ctx) == [{"rule_id": "A"}]
         assert ctx.tool_outputs["appeals"]["validation"] == {"action": "appeal"}
 
 
