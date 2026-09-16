@@ -3551,33 +3551,36 @@ function renderAnswerCard(card, isError, opts) {
     answerPanel.appendChild(note);
   }
   if (hasAnswerEnvelope) {
-    const answerWrap = document.createElement("div");
+    const _envBody = opts?.envelopeBody ?? null;
+    const answerWrap = _envBody ?? document.createElement("div");
     answerWrap.className = "ac-answer-final";
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
-    if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
+    if (!_envBody && (modeLabel === "CANONICAL" || modeLabel === "RECITAL")) {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;
       answerWrap.appendChild(lbl);
     }
-    if (_tldrSummary) {
+    if (!_envBody && _tldrSummary) {
       const tldr = document.createElement("div");
       tldr.className = "ac-answer-tldr";
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
       answerWrap.appendChild(tldr);
     }
     const _lead = _displaySummary || (card.direct_answer ?? "").trim();
-    if (_lead) {
+    if (!_envBody && _lead) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
       body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => {
-      const el2 = renderOneSection(sec);
-      if (el2)
-        answerWrap.appendChild(el2);
-    });
+    if (!_envBody) {
+      _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => {
+        const el2 = renderOneSection(sec);
+        if (el2)
+          answerWrap.appendChild(el2);
+      });
+    }
     stripCitationMarkers(answerWrap);
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
     const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({
@@ -3585,7 +3588,7 @@ function renderAnswerCard(card, isError, opts) {
       ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
       isThought: !(r?.running_answer ?? "").trim() && !!(r?.learned ?? "").trim()
     })).filter((r) => r.ans.length > 0);
-    if (_reactDraft || _rdRounds.length > 0) {
+    if (!_envBody && (_reactDraft || _rdRounds.length > 0)) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";
       const sum = document.createElement("button");
@@ -13994,6 +13997,48 @@ ${message}`;
         }
         const _msgCard = tryParseAnswerCard(fullMessage);
         const fullCard = useEnvelope && envelopeHasContent ? envelopeToAnswerCard(envBlocks, _msgCard) : _msgCard;
+        let _envelopeBody = null;
+        if (useEnvelope && envelopeHasContent) {
+          const _dropped = [];
+          const { answerBody } = renderEnvelope(envBlocks, {
+            onUnknownBlock: (t) => _dropped.push(t),
+            renderExtraBlock: (b) => {
+              try {
+                const one = renderAssistantFromEnvelope(
+                  { ...envCandidate, blocks: [b] },
+                  {
+                    onFollowupClick: (q) => sendMessage(q),
+                    onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
+                    sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+                    showConfidenceBadge: false,
+                    qcAudit: qcFromPayload,
+                    correlationId: cidForTurn || null,
+                    suppressConfidenceForAdminQcFail: suppressConf,
+                    threadId: data.thread_id ?? currentThreadId ?? null
+                  }
+                );
+                const inner = one.querySelector(".message-bubble");
+                if (!inner || inner.children.length === 0)
+                  return null;
+                const holder = document.createElement("div");
+                holder.className = "envelope-extra-block";
+                Array.from(inner.children).forEach((c) => holder.appendChild(c));
+                return holder;
+              } catch {
+                return null;
+              }
+            }
+          });
+          _envelopeBody = answerBody;
+          if (_dropped.length) {
+            console.warn(
+              "[envelope] blocks dropped \u2014 emitted but not rendered:",
+              _dropped.join(", "),
+              "cid=",
+              cidForTurn
+            );
+          }
+        }
         const _isRecitalShell = !!existingBubble?.querySelector(".recital-prose");
         if (fullCard && existingBubble) {
           messageWrapEl.classList.remove("answer-card--blended");
@@ -14035,7 +14080,11 @@ ${message}`;
               corrections: _extractedCorrections,
               nextStepTasks: _extractedNextStepTasks,
               onCreateTask: openCreateTaskDialog,
-              onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite)
+              onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite),
+              // THE CUTOVER: the body comes from renderEnvelope, so the card
+              // does not rebuild one from its own fields. Null on turns with
+              // no content-bearing envelope, where the card assembles as before.
+              envelopeBody: _envelopeBody
             });
             const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
@@ -14158,53 +14207,6 @@ ${message}`;
           if (data.status !== "clarification" && !suppressConf) {
             const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
             existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
-          }
-        }
-        if (useEnvelope && existingBubble) {
-          const _hasTabs = !!(fullCard && (fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0));
-          const _suppressedChrome = new Set(
-            _hasTabs ? ["tool_attribution", "detail", "callout", "correction"] : []
-          );
-          const cardFormatsRendered = /* @__PURE__ */ new Set();
-          for (const s of fullCard?.sections ?? []) {
-            const d = s.data ?? {};
-            const nonEmpty = Array.isArray(d.rows) && d.rows.length > 0 || Array.isArray(d.items) && d.items.length > 0 || Array.isArray(s.bullets) && s.bullets.length > 0 || typeof s.format === "string" && s.format.startsWith("appeals");
-            if (nonEmpty && s.format)
-              cardFormatsRendered.add(s.format);
-          }
-          const FORMAT_BLOCK_TYPES = /* @__PURE__ */ new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
-          const CARD_PROSE_CHROME = /* @__PURE__ */ new Set(["detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge", "callout", "correction"]);
-          const toolBlocks = envCandidate.blocks.filter((b) => {
-            const bt = b.type;
-            if (bt === "direct_answer" || bt === "sources")
-              return false;
-            if (fullCard) {
-              if (CARD_PROSE_CHROME.has(bt))
-                return false;
-              if (FORMAT_BLOCK_TYPES.has(bt)) {
-                const rendered = bt === "domain_card" ? cardFormatsRendered.has("appeals_playbook") || cardFormatsRendered.has("appeals_rules") : cardFormatsRendered.has(bt);
-                if (rendered)
-                  return false;
-              }
-            }
-            return !_suppressedChrome.has(bt);
-          });
-          if (toolBlocks.length > 0) {
-            const toolEnv = { ...envCandidate, blocks: toolBlocks };
-            const toolRendered = renderAssistantFromEnvelope(toolEnv, {
-              onFollowupClick: (q) => sendMessage(q),
-              onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
-              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
-              showConfidenceBadge: false,
-              qcAudit: qcFromPayload,
-              correlationId: cidForTurn || null,
-              suppressConfidenceForAdminQcFail: suppressConf,
-              threadId: data.thread_id ?? currentThreadId ?? null
-            });
-            const innerBubble = toolRendered.querySelector(".message-bubble");
-            if (innerBubble) {
-              Array.from(innerBubble.children).forEach((child) => existingBubble.appendChild(child));
-            }
           }
         }
         messageWrapEl.querySelectorAll(".envelope-takeaways").forEach((el2) => el2.remove());

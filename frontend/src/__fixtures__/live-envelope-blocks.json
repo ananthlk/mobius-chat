@@ -1,0 +1,201 @@
+{
+ "correlation_id": "bfcf3385-7bc9-40a2-b6b6-eb4443594424",
+ "assistant_envelope": {
+  "version": 1,
+  "blocks": [
+   {
+    "type": "mode_badge",
+    "mode": "FACTUAL"
+   },
+   {
+    "type": "tool_attribution",
+    "tool_fired": "unknown",
+    "icon": "search",
+    "label": "Research"
+   },
+   {
+    "type": "direct_answer",
+    "markdown": "To appeal a **CARC 22** denial from **Sunshine Health**, you must submit an appeal within **90 days**.\n\n*   **Submission Methods**: Appeals can be submitted via the **Sunshine Health Secure Provider Portal**, fax to **1-833-504-0580**, or mail to **Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823**.\n*   **Required Documents**: Include the **Claim Adjustment Request Form**, a **written statement outlining your disagreement**, and the **Explanation of Payment (EOP)/EOB**.\n*   **Appeal Arguments for CARC 22 (Coordination of Benefits)**: You can argue that the member had no other credible health coverage, no third-party liability, or that Sunshine Health's Third-Party Liability (TPL) record is incorrect or stale. Another argument is that the member was (or should be established as) eligible for Florida Medicaid for the date of service, and retroactive eligibility applies.\n\n\u2192 Next step: Complete the **Claim Adjustment Request Form** and prepare a written statement with supporting documentation."
+   },
+   {
+    "type": "bullets",
+    "items": [
+     "The deadline to appeal a CARC 22 denial for Sunshine Health is 90 days. [appeals_get_playbook]",
+     "Appeals can be submitted via the Sunshine Health Secure Provider Portal, fax to 1-833-504-0580, or mail to Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823. [appeals_get_playbook]",
+     "Required documents for appeal include the Claim Adjustment Request Form, a written statement outlining disagreement, and the Explanation of Payment / EOB. [appeals_get_playbook]",
+     "CARC 22 is titled 'Coordination of Benefits \u2014 This care may be covered by another payer'. [appeals_lookup_rules]",
+     "Potential appeal arguments for CARC 22 include that the member had no other credible health care coverage and no third-party liability existed on the date of service. [appeals_lookup_rules]",
+     "Another appeal argument is that no other entity was financially responsible for these services, and the payor's TPL record is incorrect or stale. [appeals_lookup_rules]",
+     "An appeal argument can be that the member did not have primary health insurance coverage in addition to this plan on the date of service. [appeals_lookup_rules]",
+     "The member was (or should be established as) eligible for Florida Medicaid for this date of service, and retroactive eligibility applies. [appeals_lookup_rules]"
+    ],
+    "label": "What the documents say"
+   },
+   {
+    "type": "first_pass",
+    "collapsed_default": true,
+    "draft_markdown": "To appeal a **CARC 22** denial from **Sunshine Health**, you must submit an appeal within **90 days**.\n\n*   **Submission Methods**: Appeals can be submitted via the **Sunshine Health Secure Provider Portal**, fax to **1-833-504-0580**, or mail to **Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823**.\n*   **Required Documents**: Include the **Claim Adjustment Request Form**, a **written statement outlining your disagreement**, and the **Explanation of Payment (EOP)/EOB**.\n*   **Appeal Arguments for CARC 22 (Coordination of Benefits)**: You can argue that the member had no other credible health coverage, no third-party liability, or that Sunshine Health's Third-Party Liability (TPL) record is incorrect or stale. Another argument is that the member was (or should be established as) eligible for Florida Medicaid for the date of service, and retroactive eligibility applies.\n\n\u2192 Next step: Complete the **Claim Adjustment Request Form** and prepare a written statement with supporting documentation.",
+    "trace_rounds": [
+     {
+      "round": 1,
+      "tool": null,
+      "learned": "I have retrieved comprehensive information from `appeals_get_playbook` and `appeals_lookup_rules` regarding how to appeal a CARC 22 denial for Sunshine Health, including submission details, deadlines, required documents, and specific appeal arguments. The `rag` tool provided general information but was less specific than the appeals tools.",
+      "running_answer": "**To appeal a CARC 22 denial from Sunshine Health, you must submit an appeal within 90 days.** The appeal can be submitted via the **Sunshine Health Secure Provider Portal**, fax to **1-833-504-0580**, or mail to **Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823**. Required documents include the **Claim Adjustment Request Form**, a **written statement outlining disagreement**, and the **Explanation of Payment/EOB**. Potential appeal arguments for CARC 22 (Coordination of Benefits)"
+     },
+     {
+      "round": 2,
+      "tool": null,
+      "learned": "I have gathered information on the appeal process, required documents, deadlines, and potential appeal arguments for a CARC 22 denial from Sunshine Health using `appeals_get_playbook` and `appeals_lookup_rules`. The `rag` tool did not provide additional specific information for CARC 22. I will now synthesize this information into a complete answer.",
+      "running_answer": "**To appeal a CARC 22 denial from Sunshine Health, you must submit an appeal within 90 days.** The appeal can be submitted via the **Sunshine Health Secure Provider Portal**, fax to **1-833-504-0580**, or mail to **Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823**. Required documents include the **Claim Adjustment Request Form**, a **written statement outlining disagreement**, and the **Explanation of Payment/EOB**. Potential appeal arguments for CARC 22 (Coordination of Benefits)",
+      "gaps_closed": [
+       "how do i appeal a CARC 22 denial for sunshine health?"
+      ]
+     }
+    ]
+   },
+   {
+    "type": "action_chips",
+    "chips": [
+     {
+      "type": "external_link",
+      "label": "Open Appeals Agent",
+      "url": "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
+      "icon": "\u2696\ufe0f"
+     }
+    ]
+   },
+   {
+    "type": "sources",
+    "refs": [
+     {
+      "index": 1,
+      "title": "FL-Care-Provider-Manual-Statewide-Medicaid-Managed-Care.pdf",
+      "page": 91,
+      "snippet": "91     |     UnitedHealthcare Community Plan\b\n\u00a9 2026 UnitedHealthcare\nChapter 12: Claim reconsiderations, appeals and grievances\nDenial\nYour claim may be denied for administrative or medical \nnecessit",
+      "document_id": "69e4d10b-b6ef-465c-8559-c6da0e609eab"
+     },
+     {
+      "index": 2,
+      "title": "Sunshine Provider Manual",
+      "page": 35,
+      "snippet": "Sunshine Health requests notification \u2014 but will not deny claims payment based solely on lack of \nnotification \u2014 for the following: \n\u2022 \nObstetrical admissions exceeding 48 hours for vaginal delivery a",
+      "document_id": "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+     },
+     {
+      "index": 3,
+      "title": "CMS-PRO-PE-Manual.pdf",
+      "page": 54,
+      "snippet": "If Sunshine Health overturns its initial action and/or the denial, it will issue an authorization \nto cover the requested service and notify the Member verbally by end of business the day \nthe decisio",
+      "document_id": "3e20da1e-4672-415f-bc61-3de2bdab3f61"
+     },
+     {
+      "index": 4,
+      "title": "Sunshine Provider Manual",
+      "page": 122,
+      "snippet": "To send claims electronically to Sunshine Health, all EDI claims must first be forwarded to one of \nSunshine Health\u2019s clearinghouses. This can be completed via a direct submission to a \nclearinghouse ",
+      "document_id": "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+     },
+     {
+      "index": 5,
+      "title": "CMS-PRO-PE-Manual.pdf",
+      "page": 53,
+      "snippet": "interest of the Member. If an extension is not requested by the Member, CMS Health Plan \nwill notify the Member verbally of the extension and provide the Member with written \nnotice of the reason for ",
+      "document_id": "3e20da1e-4672-415f-bc61-3de2bdab3f61"
+     },
+     {
+      "index": 6,
+      "title": "LTC-PRO-PE-ALF.pdf",
+      "page": 4,
+      "snippet": "\u2022 \nProviders can request an appeal for the following types of denials: \no No authorization claims denials. \no Authorization denials due to member not meeting medical necessity authorization \ndenials a",
+      "document_id": "e4f79c67-4c30-449b-9c3c-e0ba1dcf2b1e"
+     },
+     {
+      "index": 7,
+      "title": "Sunshine Provider Manual",
+      "page": 126,
+      "snippet": "o Physicians/dentists \u2014 $500 \no Rural hospitals \u2014 None \no Other providers \u2014 None \nIneligible Claims \nThe following types of claims are ineligible for the claim dispute resolution program: \n\u2022 Claims fo",
+      "document_id": "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+     },
+     {
+      "index": 8,
+      "title": "CMS-PRO-PE-Manual.pdf",
+      "page": 34,
+      "snippet": "denied as \u201cservices not authorized,\u201d and may initiate the provider dispute resolution process \nafter receiving the denied claim notice. \nIn situations in which a service does not meet medical necessit",
+      "document_id": "3e20da1e-4672-415f-bc61-3de2bdab3f61"
+     },
+     {
+      "index": 9,
+      "title": "508-Medical-Foster-Care-billing-guidelines.pdf",
+      "page": 25,
+      "snippet": "8/30/2021\nTo file a dispute, a provider can:\nCall 1-844-477-8313 or Send a written dispute using the Sunshine Health Provider Claim Dispute Request Form to: Call 1-844-477-8313 or Send a written dispu",
+      "document_id": "f869dbb3-5109-4697-a47a-b73bcfd1800a"
+     },
+     {
+      "index": 10,
+      "title": "Sunshine Provider Manual",
+      "page": 50,
+      "snippet": "\u2022 \nAppointment waiting times \n\u2022 \nQuality of care \n\u2022 \nThe behavior of a doctor or his/her staff \n\u2022 \nWait times to be seen while in a doctor\u2019s office \nSunshine Health must resolve grievances within 30 d",
+      "document_id": "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+     },
+     {
+      "index": 11,
+      "title": "Sunshine Provider Manual",
+      "page": 65,
+      "snippet": "identify areas where we can improve and make engaging and doing business with us a positive \nexperience every time. Understanding the perspective of our provider network will continue to \nsupport the ",
+      "document_id": "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+     },
+     {
+      "index": 12,
+      "title": "508-Medical-Foster-Care-billing-guidelines.pdf",
+      "page": 26,
+      "snippet": "8/30/2021\nHow to Reach Us",
+      "document_id": "f869dbb3-5109-4697-a47a-b73bcfd1800a"
+     },
+     {
+      "index": 13,
+      "title": "508-Medical-Foster-Care-billing-guidelines.pdf",
+      "page": 24,
+      "snippet": "8/30/2021\nProvider Disputes\nSunshine Health is enhancing our provider dispute process based on \nnew contract requirements. The provider resolution unit will manage \nprovider disputes. \nProviders can s",
+      "document_id": "f869dbb3-5109-4697-a47a-b73bcfd1800a"
+     }
+    ]
+   },
+   {
+    "type": "next_steps",
+    "items": [
+     {
+      "text": "Complete the Sunshine Health Claim Adjustment Request Form.",
+      "clickable": false
+     },
+     {
+      "text": "Gather your Explanation of Payment (EOP)/EOB and any documentation supporting your appeal arguments.",
+      "clickable": false
+     },
+     {
+      "text": "Submit your appeal through the Sunshine Health Secure Provider Portal, by fax to 1-833-504-0580, or by mail to Sunshine Health Post Office Box 3070 Farmington, MO 63640-3823.",
+      "clickable": false
+     }
+    ],
+    "collapsed_default": false
+   },
+   {
+    "type": "suggested_questions",
+    "items": [
+     {
+      "text": "Where can I find the Sunshine Health Claim Adjustment Request Form?",
+      "clickable": true
+     },
+     {
+      "text": "What specific details should I include in my written statement to support my appeal?",
+      "clickable": true
+     },
+     {
+      "text": "How long does Sunshine Health typically take to process an appeal once it's submitted?",
+      "clickable": true
+     }
+    ],
+    "collapsed_default": false
+   }
+  ]
+ }
+}

@@ -12370,6 +12370,71 @@ function run(): void {
           const fullCard = (useEnvelope && envelopeHasContent)
             ? envelopeToAnswerCard(envBlocks, _msgCard)
             : _msgCard;
+
+          // ── THE renderEnvelope CUTOVER ────────────────────────────────────
+          // Ananth, 2026-09-15: "lets do the renderEnvelope cutover.. when
+          // there is a tool and a preferred UX we should just use it".
+          //
+          // renderEnvelope walks the blocks in backend order and renders each
+          // ONE time. The body it returns becomes the card's body, so the
+          // shell (tabs, Sources tab, Tasks panel, actions, diagnostics)
+          // stays where it is and the envelope becomes the single producer of
+          // what is inside it.
+          //
+          // This retires the second additive pass below it, and with it
+          // `_suppressedChrome` and the format-by-format comparison that stood
+          // in for "did the shell already draw this". That heuristic is where
+          // blocks went missing: next_steps most recently, which reached the
+          // reader as a "Tasks 3" badge and nothing else.
+          //
+          // Blocks renderEnvelope does not draw itself route through
+          // renderExtraBlock, which DELEGATES to the existing per-block
+          // renderers rather than reimplementing them — zero drift, and a new
+          // block type keeps working the day the backend adds one.
+          let _envelopeBody: HTMLElement | null = null;
+          if (useEnvelope && envelopeHasContent) {
+            const _dropped: string[] = [];
+            const { answerBody } = renderEnvelope(envBlocks as EnvBlock[], {
+              onUnknownBlock: (t: string) => _dropped.push(t),
+              renderExtraBlock: (b: EnvBlock): HTMLElement | null => {
+                // Render this ONE block through the existing envelope
+                // renderer and lift its element out. Reuse, not reimplementation.
+                try {
+                  const one = renderAssistantFromEnvelope(
+                    { ...(envCandidate as AssistantEnvelope), blocks: [b] },
+                    {
+                      onFollowupClick: (q: string) => sendMessage(q),
+                      onDisambiguationSelect: (sel: unknown, echo: string) =>
+                        sendMessage(echo, { selection: sel as never }),
+                      sourceConfidenceStrip:
+                        (data.source_confidence_strip ?? "").trim() || undefined,
+                      showConfidenceBadge: false,
+                      qcAudit: qcFromPayload,
+                      correlationId: cidForTurn || null,
+                      suppressConfidenceForAdminQcFail: suppressConf,
+                      threadId: data.thread_id ?? currentThreadId ?? null,
+                    },
+                  );
+                  const inner = one.querySelector(".message-bubble");
+                  if (!inner || inner.children.length === 0) return null;
+                  const holder = document.createElement("div");
+                  holder.className = "envelope-extra-block";
+                  Array.from(inner.children).forEach((c) => holder.appendChild(c));
+                  return holder;
+                } catch {
+                  return null;
+                }
+              },
+            });
+            _envelopeBody = answerBody;
+            if (_dropped.length) {
+              // A block the backend emitted and NOTHING rendered. This is the
+              // one failure this architecture can detect for free, so it is
+              // never silent.
+              console.warn("[envelope] blocks dropped — emitted but not rendered:",
+                           _dropped.join(", "), "cid=", cidForTurn);
+            }
+          }
           const _isRecitalShell = !!existingBubble?.querySelector(".recital-prose");
           if (fullCard && existingBubble) {
             // Update the mode class (was placeholder --blended or --recital; confirm correct mode)
@@ -12415,6 +12480,10 @@ function run(): void {
                 nextStepTasks: _extractedNextStepTasks,
                 onCreateTask: openCreateTaskDialog,
                 onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite),
+                // THE CUTOVER: the body comes from renderEnvelope, so the card
+                // does not rebuild one from its own fields. Null on turns with
+                // no content-bearing envelope, where the card assembles as before.
+                envelopeBody: _envelopeBody,
               });
               const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
 
@@ -12592,92 +12661,25 @@ function run(): void {
             }
           }
 
-          // Envelope blocks — functional blocks (task_list, document_download, etc.)
-          // Tab-chrome blocks already captured above; suppress them here
-          if (useEnvelope && existingBubble) {
-            const _hasTabs = !!(fullCard && (
-              (fullCard.citations && fullCard.citations.length > 0) ||
-              _extractedCorrections.length > 0 ||
-              _extractedNextStepTasks.length > 0 ||
-              nextQuestions.length > 0
-            ));
-            // 🔴 next_steps REMOVED FROM THIS LIST, 2026-09-15.
-            //
-            // Ananth, on a live card: "many information is missing... when
-            // there is a tool and a preferred UX we should just use it".
-            //
-            // next_steps was suppressed inline and filed into the hidden Tasks
-            // tab, while suggested_questions — the same kind of content —
-            // rendered inline as chips. Measured on that card: three next_steps
-            // emitted, three showing as the "Tasks 3" badge, and nothing the
-            // reader could see. The person got an answer with no onward route
-            // unless they thought to open a tab.
-            //
-            // The Tasks panel keeps them: that panel is for ASSIGNING an item,
-            // which is a different job from reading it. This restores the
-            // block's own rendering, which is what the envelope emitted it for.
-            //
-            // The other four stay suppressed — the card genuinely redraws those
-            // (tool_attribution as the chip, detail/callout/correction as tab
-            // chrome), so rendering them here is the duplicate-print this guard
-            // was built to stop.
-            const _suppressedChrome = new Set(
-              _hasTabs ? ["tool_attribution", "detail", "callout", "correction"] : []
-            );
-            // DUAL-READ GUARD (Ananth 2026-08-10 "cards are duplicated"): when the card rendered the
-            // body above (fullCard present), the envelope carries the SAME content as blocks, so
-            // re-rendering a card-owned block double-prints it (the duplicate table). BUT suppression
-            // must be CONTENT-AWARE: a card section can carry a label with EMPTY data while the real
-            // rows live only in the envelope block — suppressing by type then drops the only copy
-            // ("the react had the table but the final is missing it", Ananth 2026-08-10). So: prose/
-            // chrome the card always draws → always suppress; typed FORMAT blocks → suppress ONLY when
-            // the card actually rendered a NON-EMPTY section of that format. The renderEnvelope cutover
-            // retires this whole second path; until then this dedups without ever dropping content.
-            const cardFormatsRendered = new Set<string>();
-            for (const s of (fullCard?.sections ?? [])) {
-              const d = (s.data ?? {}) as { rows?: unknown[]; items?: unknown[] };
-              const nonEmpty =
-                (Array.isArray(d.rows) && d.rows.length > 0) ||
-                (Array.isArray(d.items) && d.items.length > 0) ||
-                (Array.isArray(s.bullets) && s.bullets.length > 0) ||
-                (typeof s.format === "string" && s.format.startsWith("appeals"));
-              if (nonEmpty && s.format) cardFormatsRendered.add(s.format);
-            }
-            const FORMAT_BLOCK_TYPES = new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
-            const CARD_PROSE_CHROME = new Set(["detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge", "callout", "correction"]);
-            const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
-              const bt = (b as EnvelopeBlock).type;
-              if (bt === "direct_answer" || bt === "sources") return false;
-              if (fullCard) {
-                if (CARD_PROSE_CHROME.has(bt)) return false;                 // card always draws prose/chrome
-                if (FORMAT_BLOCK_TYPES.has(bt)) {
-                  const rendered = bt === "domain_card"
-                    ? (cardFormatsRendered.has("appeals_playbook") || cardFormatsRendered.has("appeals_rules"))
-                    : cardFormatsRendered.has(bt);
-                  if (rendered) return false;   // card drew this format non-empty → drop the dup
-                  // else the card's section was empty/absent → KEEP the envelope block (don't lose data)
-                }
-              }
-              return !_suppressedChrome.has(bt);
-            });
-            if (toolBlocks.length > 0) {
-              const toolEnv: AssistantEnvelope = { ...(envCandidate as AssistantEnvelope), blocks: toolBlocks };
-              const toolRendered = renderAssistantFromEnvelope(toolEnv, {
-                onFollowupClick: (q) => sendMessage(q),
-                onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
-                sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
-                showConfidenceBadge: false,
-                qcAudit: qcFromPayload,
-                correlationId: cidForTurn || null,
-                suppressConfidenceForAdminQcFail: suppressConf,
-                threadId: data.thread_id ?? currentThreadId ?? null,
-              });
-              const innerBubble = toolRendered.querySelector(".message-bubble");
-              if (innerBubble) {
-                Array.from(innerBubble.children).forEach((child) => existingBubble.appendChild(child));
-              }
-            }
-          }
+          // ── THE SECOND PASS IS GONE (renderEnvelope cutover, 2026-09-15) ──
+          //
+          // What stood here: a re-render of the same blocks the card had just
+          // drawn, filtered by `_suppressedChrome`, `CARD_PROSE_CHROME`,
+          // `FORMAT_BLOCK_TYPES` and a format-by-format check of which card
+          // sections came out non-empty — all of it a heuristic standing in
+          // for "did the shell already draw this", with the results
+          // transplanted child-by-child into the bubble.
+          //
+          // Every one of those mechanisms existed only because two renderers
+          // read one contract. One renderer needs none of them: renderEnvelope
+          // above walks the blocks in backend order and renders each exactly
+          // once, so there is nothing to deduplicate and nothing to suppress.
+          //
+          // The failure mode it leaves behind is strictly better. Before, a
+          // block could be dropped by a filter and nothing said so — that is
+          // how next_steps reached readers as a "Tasks 3" badge and no visible
+          // text. Now a block nothing renders is counted by onUnknownBlock and
+          // logged with its correlation id.
 
           messageWrapEl.querySelectorAll(".envelope-takeaways").forEach((el) => el.remove());
           turnWrap.classList.add("turn-meta-revealing");

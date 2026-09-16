@@ -1438,6 +1438,25 @@ export function renderAnswerCard(
     /** Injected: open the doc-reader for a citation source (Task #34). Keeps this renderer free of
      * app.ts state — app.ts wires it to openDocReaderPanel(document_id, page_number, snippet). */
     onSourceClick?: (documentId: string, pageNumber?: number | null, citeText?: string | null) => void;
+    /**
+     * THE renderEnvelope CUTOVER (Ananth, 2026-09-15: "lets do the
+     * renderEnvelope cutover.. when there is a tool and a preferred UX we
+     * should just use it").
+     *
+     * A body already built by renderEnvelope from the assistant_envelope's
+     * typed blocks. When present it REPLACES the body this function would
+     * otherwise assemble out of card fields — the shell (tabs, Sources tab,
+     * Tasks panel, actions, diagnostics, streaming reuse) stays here, and the
+     * envelope becomes the single producer of what is inside it.
+     *
+     * That removes the dual read at its source. Previously the card drew a
+     * body from card fields AND a second pass re-rendered the same blocks,
+     * with a `_suppressedChrome` set and a format-by-format comparison
+     * standing in for "did the shell already draw this". Blocks went missing
+     * there — next_steps most recently, which reached the reader as a "Tasks
+     * 3" badge and nothing else.
+     */
+    envelopeBody?: HTMLElement | null;
   }
 ): HTMLElement {
   const wrap = document.createElement("div");
@@ -1577,18 +1596,22 @@ export function renderAnswerCard(
   // "First pass" right below it. No separate Answer tab. (_displaySummary/_answerSections/
   // hasAnswerEnvelope/_reactDraft computed above.)
   if (hasAnswerEnvelope) {
-    const answerWrap = document.createElement("div");
+    // When the envelope built the body, use it verbatim — do not rebuild from
+    // card fields. Everything below that appends to `answerWrap` is the
+    // card-side assembly this replaces.
+    const _envBody = opts?.envelopeBody ?? null;
+    const answerWrap = _envBody ?? document.createElement("div");
     answerWrap.className = "ac-answer-final";
     // Mode badge — only CANONICAL (authoritative policy) / RECITAL (verbatim legal); FACTUAL/BLENDED
     // are the default path and signal nothing (Chat Master 2026-08-07).
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
-    if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
+    if (!_envBody && (modeLabel === "CANONICAL" || modeLabel === "RECITAL")) {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;
       answerWrap.appendChild(lbl);
     }
-    if (_tldrSummary) {
+    if (!_envBody && _tldrSummary) {
       const tldr = document.createElement("div");
       tldr.className = "ac-answer-tldr";
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
@@ -1598,13 +1621,15 @@ export function renderAnswerCard(
     // (so a sections-only turn with no display_summary — appeals-shaped — still leads with its
     // answer line rather than dropping it).
     const _lead = _displaySummary || (card.direct_answer ?? "").trim();
-    if (_lead) {
+    if (!_envBody && _lead) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
       body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => { const el = renderOneSection(sec); if (el) answerWrap.appendChild(el); });
+    if (!_envBody) {
+      _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => { const el = renderOneSection(sec); if (el) answerWrap.appendChild(el); });
+    }
     // Sources are NOT rendered inline (Chat Master 2026-08-08) — they live in the Sources tab only.
     // (applyCitationFootnotes / renderSourcesList remain exported + tested for potential reuse, but
     // the answer card body no longer calls them.) Strip any raw [N] citation markers the integrator
@@ -1629,7 +1654,10 @@ export function renderAnswerCard(
         isThought: !((r?.running_answer ?? "").trim()) && !!(r?.learned ?? "").trim(),
       }))
       .filter((r) => r.ans.length > 0);
-    if (_reactDraft || _rdRounds.length > 0) {
+    // The envelope carries its own first_pass block, so the card must not
+    // build a second one — that would print the draft twice, which is the
+    // duplication this cutover exists to remove.
+    if (!_envBody && (_reactDraft || _rdRounds.length > 0)) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";
       const sum = document.createElement("button");

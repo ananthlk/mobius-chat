@@ -1,53 +1,56 @@
 /**
- * A block the backend emits must not be silently filed out of sight.
+ * Every emitted block reaches the renderer — there is no suppression list.
  *
- * Ananth, on a live card, 2026-09-15: "many information is missing and we
- * should check the ux envelope for these cards, i think they are better ..
- * when there is a tool and a preferred UX we should just use it".
+ * Ananth, 2026-09-15: "lets do the renderEnvelope cutover.. when there is a
+ * tool and a preferred UX we should just use it IMO".
  *
- * WHAT WAS HAPPENING. The completed-handler suppresses some envelope blocks
- * when the card has tabs, because the card redraws them and rendering both
- * double-prints. `next_steps` was on that list — so three next steps were
- * emitted, three showed as the "Tasks 3" badge, and the reader saw none of
- * them. Meanwhile `suggested_questions`, the same kind of content, rendered
- * inline as chips. Same card, opposite treatment.
+ * WHAT THIS REPLACES. An earlier version of this file asserted that
+ * `next_steps` was absent from `_suppressedChrome` — a set naming envelope
+ * blocks the completed-handler skipped because the card had already drawn
+ * them. That set, plus CARD_PROSE_CHROME, FORMAT_BLOCK_TYPES and a
+ * format-by-format check of which card sections came out non-empty, were all
+ * heuristics standing in for "did the shell already draw this", because two
+ * renderers read one contract.
  *
- * The suppression list is legitimate; next_steps did not belong on it.
+ * The cutover removed the second renderer, so the right assertion is no longer
+ * "next_steps is off the list" but "there is no list". A test pinned to the
+ * old mechanism would have passed happily on a handler that still had it.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-/** The list as the PROGRAM holds it — comments stripped, so this cannot match
- *  its own explanation. That failure has happened here before. */
-function suppressedTypes(): string[] {
-  const src = fs.readFileSync(path.resolve(__dirname, "app.ts"), "utf8");
-  const noLineComments = src.replace(/^\s*\/\/.*$/gm, "");
-  const m = /_suppressedChrome\s*=\s*new Set\(\s*_hasTabs\s*\?\s*\[([^\]]*)\]/.exec(
-    noLineComments,
-  );
-  if (!m) throw new Error("suppression list not found — did the guard move?");
-  return [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]);
-}
+const appSrc = (): string => {
+  const raw = fs.readFileSync(path.resolve(__dirname, "app.ts"), "utf8");
+  // strip line comments so this cannot match its own explanation — a failure
+  // this repo has produced before
+  return raw.replace(/^\s*\/\/.*$/gm, "");
+};
 
-describe("envelope block suppression", () => {
-  it("does not suppress next_steps", () => {
-    expect(suppressedTypes()).not.toContain("next_steps");
+describe("renderEnvelope cutover", () => {
+  it("has no block suppression list at all", () => {
+    expect(appSrc()).not.toContain("_suppressedChrome");
   });
 
-  it("treats next_steps and suggested_questions the same way", () => {
-    // They are the same kind of content — what to do next, what to ask next.
-    // One rendering inline while the other hides in a tab is the defect.
-    const s = suppressedTypes();
-    expect(s.includes("next_steps")).toBe(s.includes("suggested_questions"));
-  });
-
-  it("still suppresses the blocks the card genuinely redraws", () => {
-    // Emptying the list entirely would bring back the duplicate print this
-    // guard exists to stop, so the fix must be surgical, not a removal.
-    const s = suppressedTypes();
-    for (const t of ["tool_attribution", "detail", "callout", "correction"]) {
-      expect(s).toContain(t);
+  it("has no card-vs-envelope format reconciliation", () => {
+    const s = appSrc();
+    for (const relic of ["cardFormatsRendered", "CARD_PROSE_CHROME"]) {
+      expect(s).not.toContain(relic);
     }
+  });
+
+  it("renders the body through renderEnvelope and hands it to the shell", () => {
+    const s = appSrc();
+    expect(s).toContain("renderEnvelope(envBlocks");
+    expect(s).toContain("envelopeBody: _envelopeBody");
+  });
+
+  it("counts blocks nothing rendered instead of dropping them silently", () => {
+    // The one failure this architecture can detect for free. Before the
+    // cutover a filtered-out block was invisible; that is how next_steps
+    // reached readers as a "Tasks 3" badge and no text.
+    const s = appSrc();
+    expect(s).toContain("onUnknownBlock");
+    expect(s).toMatch(/blocks dropped/);
   });
 });
