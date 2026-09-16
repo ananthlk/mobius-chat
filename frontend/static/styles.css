@@ -6676,17 +6676,25 @@ body.landing-state .composer-landing-chips {
 }
 
 /* A/B compare toggle — a checkable menu item. The check fills when on. */
-.composer-options-menu .composer-option-item { display: flex; align-items: center; gap: 8px; }
+/* A/B mode radio group — a single choice, so round dots, not square checkboxes. */
+.composer-options-menu .composer-option-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 8px;
+  margin: 1px 4px; width: calc(100% - 8px); line-height: 1.35;
+}
+.composer-options-menu .composer-option-item:hover { background: var(--mobius-bg-secondary, #f1f5f9); }
 .composer-option-check {
-  width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--mobius-border, #cbd5e1);
-  flex: 0 0 auto; position: relative;
+  width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid var(--mobius-border, #cbd5e1);
+  flex: 0 0 auto; position: relative; transition: border-color .12s;
 }
-.composer-option-item--on .composer-option-check { background: #7c3aed; border-color: #7c3aed; }
+.composer-option-item--on { background: #faf5ff; }
+.composer-option-item--on:hover { background: #f3e8ff; }
+.composer-option-item--on .composer-option-check { border-color: #7c3aed; }
 .composer-option-item--on .composer-option-check::after {
-  content: "✓"; color: #fff; font-size: 10px; position: absolute; inset: 0; display: flex;
-  align-items: center; justify-content: center;
+  content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #7c3aed;
 }
-.composer-option-sub { color: var(--mobius-text-muted, #94a3b8); font-size: 11px; }
+.composer-option-label { display: flex; flex-direction: column; }
+.composer-option-item--on .composer-option-label { font-weight: 600; }
+.composer-option-sub { color: var(--mobius-text-muted, #94a3b8); font-size: 11px; font-weight: 400; }
 
 /* Mode indicator — a subtle ring ONLY. Never a text strip: Ananth 2026-09-11, the disclaimer
    was eating the message-box width. Which mode is active reads from the kebab's checked item.
