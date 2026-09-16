@@ -544,6 +544,7 @@ def register_mcp_skills(
         spec = _spec_from_mcp_tool(t)
         if spec is None:
             logger.debug("register_mcp_skills: skipping malformed tool descriptor: %r", t)
+            _skipped.append(f"malformed:{str(t.get('name') or '?')[:40]}")
             continue
 
         if has(spec.name):
@@ -556,6 +557,7 @@ def register_mcp_skills(
                 "Builtins win; MCP tool not registered.",
                 spec.name,
             )
+            _skipped.append(f"builtin_wins:{spec.name}")
             continue
 
         register(spec)
@@ -567,12 +569,45 @@ def register_mcp_skills(
             len(registered),
             ", ".join(registered),
         )
-    # The counts that distinguish "nothing offered" from "everything skipped".
+    # 🔴 EVERY SKIP PATH RECORDS, NOT ONE OF THREE.
+    #
+    # The comment above this function already said the point — "the listing
+    # returning zero and the listing returning 29 that were all skipped are
+    # opposite problems with opposite fixes, and the same three words" — and
+    # then only the non-dict path appended to `_skipped`. The other two,
+    # malformed descriptor and name collision, returned `continue` silently.
+    #
+    # So /diag/mcp reported {discovered: 34, registered: 0, skipped: [],
+    # error: null} while all 34 had been skipped deliberately because a builtin
+    # already owns each name. That report reads as a total capability loss. It
+    # fooled me on 2026-09-15: I reported an outage to Ananth and had to
+    # withdraw it — the tools were never unavailable, chat's builtins serve
+    # every one of them, exactly as intended.
+    #
+    # A deliberate policy and a silent failure must not produce the same three
+    # numbers. `reason:name` so the next reader sees WHICH policy, per tool.
+    _outcome = ("all_skipped" if discovered and not registered
+                else "partial" if _skipped else "clean")
     try:
         from app import main as _m
         _m._MCP_DISCOVERY = {"discovered": len(discovered or []),
                              "registered": len(registered),
-                             "skipped": _skipped[:40]}
+                             "skipped": _skipped[:40],
+                             "skipped_total": len(_skipped),
+                             "outcome": _outcome}
     except Exception:
         pass
+    if discovered and not registered:
+        # Say it once, at INFO, with the reason spread. A boot that registers
+        # nothing is worth a line even when it is correct.
+        _by_reason: dict[str, int] = {}
+        for _s in _skipped:
+            _by_reason[_s.split(":", 1)[0]] = _by_reason.get(_s.split(":", 1)[0], 0) + 1
+        logger.info(
+            "register_mcp_skills: %d discovered, 0 registered — %s. "
+            "This is NOT an outage when the reason is builtin_wins: chat's "
+            "own implementation serves that name deliberately.",
+            len(discovered),
+            ", ".join(f"{k}={v}" for k, v in sorted(_by_reason.items())) or "no reason recorded",
+        )
     return registered
