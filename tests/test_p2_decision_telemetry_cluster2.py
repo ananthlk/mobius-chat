@@ -201,9 +201,16 @@ def test_the_fix_is_in_the_source_not_only_in_this_test():
     comment that explains why it was wrong, and a substring search would fail
     forever — with the obvious "fix" being to delete the explanation."""
     import inspect
+    # 🔴 THE CODE MOVED, 2026-09-16. The appeals dispatch was extracted from
+    # react_loop._execute_tool to react/appeals_dispatch.py (584 lines, lifted
+    # whole) to continue the Phase 1i split. `_lookups` is appeals code, so a
+    # scan of react_loop alone stopped finding it — the test was pinned to the
+    # FILE, and what it protects is the CARC-lookup fix wherever that lives.
     from app.pipeline import react_loop
+    from app.pipeline.react import appeals_dispatch
     code = "\n".join(
-        ln for ln in inspect.getsource(react_loop).splitlines()
+        ln for ln in (inspect.getsource(react_loop)
+                      + "\n" + inspect.getsource(appeals_dispatch)).splitlines()
         if not ln.lstrip().startswith("#")
     )
     assert "lookup = carc_group or str(carc) if carc else carc_group" not in code
