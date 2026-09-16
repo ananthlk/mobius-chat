@@ -699,7 +699,30 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     # round 1 was handed.
     tool_results: list[dict] = list(getattr(ctx, "seed_tool_results", None) or [])
     ctx.react_trace_rounds = getattr(ctx, "react_trace_rounds", None) or []
-    all_sources: list = []
+    # 🔴 SEEDED FROM PRELOAD, LIKE tool_results ABOVE.
+    #
+    # This was `= []` and only ever appended inside the ROUND tool loop, so a
+    # turn that answered from preloaded evidence published NOTHING. Measured on
+    # pinned turn 58e37239, immediately after fixing the round context: preload
+    # returned 14 rag sources, round 1 read 32,812 chars of evidence and
+    # answered in ONE round — and the response carried
+    #
+    #     sources: 0 · cited_source_indices: [] · strip: no_sources
+    #
+    # An 817-character answer with fourteen documents behind it and no way for
+    # the reader to check any of it. The better the turn got, the fewer
+    # citations it had: a round that answers without calling a tool never
+    # reaches the only line that collected sources.
+    #
+    # Same shape as the round-context defect one commit ago, and the same
+    # lesson: preload has SEVERAL consumers and I wired one at a time. Seeded
+    # from ctx.seed_tool_results so there is one channel carrying preload
+    # forward, not two that can disagree.
+    all_sources: list = [
+        _s
+        for _sr in (getattr(ctx, "seed_tool_results", None) or [])
+        for _s in (_sr.get("sources") or [])
+    ]
     last_tool: str | None = None
     unusable = 0
     extensions_used = 0

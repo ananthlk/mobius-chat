@@ -177,3 +177,64 @@ def test_a_seeded_result_is_TEXT_not_a_dict():
     assert L._payload_as_text({"deadline_appeal_days": 90}) == '{"deadline_appeal_days": 90}'
     assert L._payload_as_text("already text") == "already text"
     assert L._payload_as_text(None) == ""
+
+
+# ── everything preload fetched must reach the reader ────────────────────────
+
+def test_sources_are_seeded_from_preload_too():
+    """THE DEFECT, on pinned turn 58e37239 — found immediately after fixing the
+    round context, because fixing that made it visible.
+
+    preload returned 14 rag sources, round 1 read 32,812 chars and answered in
+    ONE round, and the response carried:
+
+        sources: 0 · cited_source_indices: [] · strip: no_sources
+
+    `all_sources` was `= []` and only appended inside the ROUND tool loop, so a
+    turn that answers from preloaded evidence publishes nothing. The BETTER the
+    turn got, the fewer citations it had: a round that answers without calling
+    a tool never reaches the only line that collected sources.
+    """
+    tree = ast.parse(inspect.getsource(L))
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react_v2")
+    inits = [n for n in ast.walk(fn)
+             if isinstance(n, ast.AnnAssign)
+             and isinstance(n.target, ast.Name) and n.target.id == "all_sources"]
+    assert inits, "all_sources is never initialised"
+    value = ast.unparse(inits[0].value)
+    assert value != "[]", (
+        "all_sources starts empty — a turn answered from preload publishes no "
+        "citations at all")
+    assert "seed_tool_results" in value, (
+        f"all_sources is initialised to {value!r}, not seeded from preload")
+
+
+def test_every_preload_consumer_is_seeded_from_the_same_channel():
+    """THE CLASS, not the instance. Preload's output has several consumers —
+    the round context, the source list, the retrieval signal — and I wired them
+    ONE AT A TIME across three commits, each fix revealing the next gap:
+
+        round list   `= []`  -> round 1 saw no evidence
+        all_sources  `= []`  -> the answer had no citations
+        final_signal         -> (upgraded, but only after a separate fix)
+
+    Each was invisible until the one before it was fixed. So this asserts the
+    PROPERTY: everything carried forward from preload comes off
+    ctx.seed_tool_results, so there is one channel and a fourth consumer has an
+    obvious place to read from rather than a new empty list to forget.
+    """
+    src = inspect.getsource(L.run_react_v2)
+    seeded = src.count("seed_tool_results")
+    assert seeded >= 3, (
+        f"only {seeded} references to the preload channel — a consumer is "
+        "probably starting from an empty list again")
+
+
+def test_the_signal_is_upgraded_from_preload_results_too():
+    """A turn whose evidence came entirely from preload must not report
+    no_sources — that drives the confidence strip and the abstention."""
+    src = inspect.getsource(L.run_react_v2)
+    assert "_upgrade_signal(final_signal, _pr)" in src, (
+        "preloaded results never upgrade the retrieval signal, so a turn "
+        "answered from preload reports no_sources and abstains")
