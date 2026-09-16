@@ -249,3 +249,57 @@ def test_a_failed_tool_cannot_upgrade_the_signal():
     # junk is inert
     assert L._upgrade_signal("corpus", None) == "corpus"
     assert L._upgrade_signal(NO, {"success": True}) == NO
+
+
+def test_preload_results_survive_the_loop():
+    """THE DEFECT, found by pinning a turn to the governor loop (cid ee783367):
+
+        ✓ rag · via Tool Manifest (speculative) · 3688ms · 14 source(s)
+        · preload unavailable: UnboundLocalError: cannot access local variable
+          'final_signal' where it is not associated with a value
+
+    `final_signal` was declared AFTER the preload try/except and used INSIDE it.
+    The first preloaded tool raised, the except caught it, and fourteen fetched
+    sources were discarded — the answer went out with sources: 0.
+
+    Asserts the ORDER over the AST, because the swallow means a runtime test
+    sees a turn that "worked". Every name the preload block reads from the
+    enclosing scope must be bound before that block starts.
+    """
+    tree = ast.parse(_src())
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react_v2")
+
+    preload = None
+    for n in fn.body:
+        if isinstance(n, ast.Try) and "_v2pre" in ast.unparse(n):
+            preload = n
+            break
+    assert preload is not None, "preload block not found — did it move?"
+
+    bound_before = set()
+    for stmt in fn.body:
+        if stmt is preload:
+            break
+        for sub in ast.walk(stmt):
+            if isinstance(sub, ast.Assign):
+                for t in sub.targets:
+                    bound_before |= {x.id for x in ast.walk(t)
+                                     if isinstance(x, ast.Name)}
+    bound_before |= {a.arg for a in fn.args.args}
+
+    # names the preload block ASSIGNS itself are fine
+    inner = set()
+    for sub in ast.walk(preload):
+        if isinstance(sub, ast.Assign):
+            for t in sub.targets:
+                inner |= {x.id for x in ast.walk(t) if isinstance(x, ast.Name)}
+        elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+            for a in sub.names:
+                inner.add((a.asname or a.name).split(".")[0])
+
+    # the specific one that broke, asserted by name so the message is useful
+    assert "final_signal" in bound_before, (
+        "final_signal is read inside the preload block but bound after it — "
+        "the first preloaded tool raises UnboundLocalError, the except "
+        "swallows it, and every preloaded source is discarded")

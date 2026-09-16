@@ -455,6 +455,28 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     # So the PRIMITIVES are shared (v2/preload.py is already v2-owned, and the
     # runner translates a tool result into react's result shape) and the
     # SEQUENCE is ours — which is the same rule the rest of this file follows.
+    # 🔴 INITIALISED BEFORE THE PRELOAD BLOCK THAT READS IT.
+    #
+    # This was declared AFTER the preload try/except and used INSIDE it
+    # (_upgrade_signal on each preloaded result), so the first preloaded tool
+    # raised UnboundLocalError — which my own except caught and reported as a
+    # single line. Measured live on a pinned turn, cid ee783367:
+    #
+    #     ✓ rag · via Tool Manifest (speculative) · 3688ms · 14 source(s)
+    #     · preload unavailable: UnboundLocalError: cannot access local
+    #       variable 'final_signal' where it is not associated with a value
+    #
+    # Fourteen sources fetched, paid for, and discarded; the answer went out
+    # with sources: 0 and no citations. The swallow that exists so a preload
+    # failure cannot end a turn hid a preload failure instead — a guard doing
+    # its job and costing everything the step was for.
+    #
+    # It only bites on THIS loop, so every live test missed it: v1's loop never
+    # runs this block. A pinned turn found it in one go, which is the argument
+    # for pinning rather than reasoning about the off path.
+    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES as _NO_SRC
+    final_signal = _NO_SRC
+
     _preloaded = None
     try:
         from app.pipeline.v2 import preload as _v2pre
@@ -564,9 +586,6 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         # reason correctly about why its evidence is thin if nothing says the
         # step did not run.
         emit(f"  preload unavailable: {type(_pre_e).__name__}: {_pre_e}")
-
-    from app.pipeline.react_loop import RETRIEVAL_SIGNAL_NO_SOURCES as _NO_SRC
-    final_signal = _NO_SRC
 
     res = V2LoopResult()
     # 🔴 THE ROUND EXECUTES WHAT THE LAST ROUND ASKED FOR, AT ITS TOP.
