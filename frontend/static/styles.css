@@ -6686,8 +6686,8 @@ body.landing-state .composer-landing-chips {
   width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid var(--mobius-border, #cbd5e1);
   flex: 0 0 auto; position: relative; transition: border-color .12s;
 }
-.composer-option-item--on { background: #faf5ff; }
-.composer-option-item--on:hover { background: #f3e8ff; }
+.composer-options-menu .composer-option-item--on { background: #faf5ff; }
+.composer-options-menu .composer-option-item--on:hover { background: #f3e8ff; }
 .composer-option-item--on .composer-option-check { border-color: #7c3aed; }
 .composer-option-item--on .composer-option-check::after {
   content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #7c3aed;
