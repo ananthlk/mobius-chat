@@ -249,7 +249,18 @@ class TestRealTrafficQuestions:
         split a single-payer question into 'providers' and 'members'."""
         q = ("Sunshine Health FL Medicaid MCO appeal levels and process "
              "for providers and members")
-        assert self._kind(q) == "none"
+        # ASSERTS THE INTENT — "not a comparison" — not the incidental "none".
+        #
+        # This asserted == "none" and passed for the wrong reason: the
+        # procedural branch was UNREACHABLE (_is_procedural tested
+        # question.axis, which is "" for every procedural question, with a
+        # regex written to match the question). This question contains
+        # "process for", which has always been in _PROCEDURAL, so once that
+        # branch could fire at all the answer became "steps".
+        #
+        # Steps is right here — it IS a process question — and the protection
+        # this test exists for is untouched: no two-row table of audiences.
+        assert self._kind(q) != "comparison"
 
     def test_the_axis_comes_out_of_bare_noun_phrase_queries(self):
         """Most live traffic has no interrogative to anchor on."""

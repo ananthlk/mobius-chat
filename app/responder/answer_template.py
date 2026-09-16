@@ -61,6 +61,11 @@ class QuestionShape:
     explicit_format: str | None = None
     #: Planner question_intent, when available.
     intent: str = ""
+    #: The question AS ASKED. Added because _is_procedural was testing `axis`
+    #: — a noun phrase extracted for a table header — with a regex written to
+    #: match a question, so the procedural branch was unreachable. The shape of
+    #: a question ("how do I…") lives in the question, not in a header.
+    text: str = ""
 
 
 @dataclass(frozen=True)
@@ -302,14 +307,42 @@ def _comparison(question: QuestionShape, evidence: EvidenceShape) -> str:
 
 
 _PROCEDURAL = re.compile(
-    r"\b(?:how\s+do\s+i|how\s+to|what\s+(?:are\s+)?the\s+steps|process\s+for"
-    r"|walk\s+me\s+through|procedure)\b",
+    # Widened 2026-09-15 with the questions it was measured missing.
+    # "what steps must a provider take" is as procedural as "how do i", and the
+    # original required "the steps" so it matched neither that nor "steps to".
+    r"\b(?:how\s+do\s+(?:i|you|we)|how\s+can\s+i|how\s+to"
+    r"|what\s+steps|what\s+(?:are\s+)?the\s+steps|steps\s+to"
+    r"|process\s+for|walk\s+me\s+through|procedure)\b",
     re.I,
 )
 
 
 def _is_procedural(question: QuestionShape) -> bool:
-    return bool(_PROCEDURAL.search(question.axis or "")) or question.intent == "procedural"
+    """🔴 THIS READ THE AXIS, AND THE AXIS IS ALMOST ALWAYS EMPTY.
+
+    _PROCEDURAL is written to match a QUESTION — "how do i", "how to", "what
+    are the steps", "process for", "walk me through". It was applied to
+    `question.axis`, which is a noun phrase extracted for use as a table column
+    header and comes back "" for every procedural question I measured:
+
+        "how do i appeal a CARC 22 denial for sunshine health?"
+            axis = ''   procedural on axis = False   on QUESTION = True
+        "how do i submit a corrected claim to Aetna?"
+            axis = ''   procedural on axis = False   on QUESTION = True
+
+    So `_procedure()` — the branch that asks for numbered steps — was
+    UNREACHABLE from question text. Only `intent == "procedural"` could reach
+    it, and nothing on this path sets intent. A pattern built for one field,
+    applied to another, and dead in a way no test noticed because both sides
+    were individually correct.
+
+    That is why every appeal answer came back as bullets: not the model
+    choosing badly, and not the classifier misreading it — the one instruction
+    that would have asked for steps never rendered.
+    """
+    return (bool(_PROCEDURAL.search(question.text or ""))
+            or bool(_PROCEDURAL.search(question.axis or ""))
+            or question.intent == "procedural")
 
 
 def _procedure(question: QuestionShape) -> str:
@@ -337,6 +370,7 @@ def suggest_from_question(
 
     return suggest_template(
         QuestionShape(
+            text=question_text or "",
             entities=entities,
             # A column header is a noun phrase. The question text itself is a
             # worse header than a generic one, so extraction failing returns

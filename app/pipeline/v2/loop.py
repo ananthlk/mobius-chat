@@ -1094,6 +1094,39 @@ def _best_running_answer(ctx: Any) -> str:
 V2_MODULE_KEY = "react.v2_governor"
 
 
+def _with_v2_format_rules(base: str, posture) -> tuple[str, str]:
+    """v2's own FORMAT RULES, replacing v1's fixed-shape ones.
+
+    Ananth: "create a new prompt set so that we dont disrupt v1.. this way we
+    can use that modular". So this APPENDS a v2-only block rather than editing
+    react/prompts.py, and v1's answers are byte-identical to yesterday's.
+
+    WHY IT IS NEEDED. v1's rules say "follow with 2-4 short bullet points" on
+    every answer, so every answer reaches the formatter as bullets. The
+    classifier is not the problem — hand it the same content written three
+    ways and it returns bullets / steps / stats correctly. Nothing ever asked
+    for a different shape.
+
+    ONLY ON THE ROUND THAT WRITES WHAT THE PERSON READS. A judging round is not
+    producing the answer field, and 2.2k characters of shape guidance in a
+    prompt that is already 76k is noise where it cannot apply. Same gating the
+    answer_shape block uses, and for the same reason.
+
+    LAST WINS. The base already carries v1's rules from the composition; this
+    is appended after, and the later instruction is the one the model follows.
+    That is why the block says explicitly not to end with a "Next step:" line —
+    it is overriding something the reader of the prompt has already been told.
+    """
+    try:
+        if posture is None or getattr(posture, "value", "") != "communicate":
+            return base, "not_applied (not the communicating round)"
+        from app.pipeline.v2.format_rules import V2_FORMAT_RULES_TEXT
+        return (f"{base}\n\n{V2_FORMAT_RULES_TEXT}", "applied")
+    except Exception:      # a prompt addition must never end a turn
+        logger.warning("[v2.loop] v2 format rules not applied", exc_info=True)
+        return base, "failed"
+
+
 def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
                       v1_builder, allowed_tools=None,
                       agent_role: str = "explore",
@@ -1143,14 +1176,16 @@ def _v2_system_prompt(max_rounds: int, mode: str, user_profile: dict | None,
             block = COMMUNICATE_FAILURE
     except Exception:
         block = None
+    base, _fmt_applied = _with_v2_format_rules(base, posture)
     if not block:
         # COMMUNICATE is deliberately None pending the Deterministic UX seat,
         # and an unknown posture is a real state. Either way the base prompt
         # is complete on its own — say which posture had no block rather than
         # implying one was applied.
-        source = {**source, "posture_block": None,
+        source = {**source, "posture_block": None, "format_rules": _fmt_applied,
                   "posture": getattr(posture, "value", None), "failed": failed}
         return base, source
+    source = {**source, "format_rules": _fmt_applied}
     return (f"{base}\n\nTHIS ROUND\n{block}",
             {**source, "posture_block": "applied",
              "posture": getattr(posture, "value", None), "failed": failed})

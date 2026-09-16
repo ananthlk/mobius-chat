@@ -226,12 +226,39 @@ class Verdict:
 # Ordered most-specific first: "in bullet points" must not be swallowed by a
 # looser "list" pattern. Anchored on the preposition so that a question ABOUT
 # tables ("what does the fee table say") does not read as a request FOR one.
+# 🔴 WIDENED 2026-09-15 TO THE PHRASING THE PRODUCT ALREADY PROMISES.
+#
+# Every pattern here required "AS/IN/INTO a table" — so the two examples our
+# own user documentation advertises both failed:
+#
+#     docs/product-docs/response-cards.md, authored by the UX team:
+#     "The format is chosen automatically, but you can steer it by asking —
+#      'show me a rate comparison table' or 'give me the steps to appeal.'"
+#
+#     detect_explicit_format("show me a rate comparison table")  -> None
+#     detect_explicit_format("give me the steps to appeal")      -> None
+#
+# A documented capability that cannot fire on its own documented example. The
+# verb leading the request ("show me", "give me", "can you") is the common
+# phrasing and none of it was matched.
+#
+# Deliberately NOT a bare noun match: "the steps below are wrong" and "this
+# table is missing a payer" are ABOUT a format, not requests for one. A verb of
+# asking, or an explicit "as a X", is what distinguishes a request from a
+# mention.
+_ASK = r"(?:show|give|make|format|put|render|display|write|list)\s+(?:me\s+|it\s+|this\s+|them\s+)?(?:as\s+)?(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}?"
+
 _EXPLICIT_FORMAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:as|in|into)\s+(?:a\s+)?bullet(?:\s+point)?s?\b", re.I), "bullets"),
     (re.compile(r"\b(?:as|in|into)\s+(?:a\s+)?tables?\b", re.I), "table"),
     (re.compile(r"\b(?:as|in|into)\s+(?:a\s+)?(?:numbered\s+)?steps?\b", re.I), "steps"),
     (re.compile(r"\b(?:as|in|into)\s+(?:a\s+)?(?:bulleted\s+)?lists?\b", re.I), "bullets"),
     (re.compile(r"\btabulat(?:e|ed)\b", re.I), "table"),
+    # "show me a rate comparison TABLE", "give me a table of ..."
+    (re.compile(_ASK + r"tables?\b", re.I), "table"),
+    # "give me the STEPS to appeal", "show me the steps"
+    (re.compile(_ASK + r"(?:numbered\s+)?steps?\b", re.I), "steps"),
+    (re.compile(_ASK + r"bullet(?:\s+point)?s?\b", re.I), "bullets"),
 )
 
 
