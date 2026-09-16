@@ -940,6 +940,34 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             res.stopped_by = "model_error"
             break
 
+        # 🔴 A MODEL THAT SAID NOTHING IS NOT A MODEL THAT SAID SOMETHING
+        # UNUSABLE.
+        #
+        # _call_llm_json ends `return (raw or "").strip()`. A provider that
+        # answers HTTP 200 with zero output tokens raises NOTHING, so the
+        # except-branch above never sees it and every recovery rung hanging off
+        # `except` is skipped. Deep Research measured this on their side:
+        # 21,823 tokens in, output_tokens 0 back, reported to the user as
+        # "0 slots · response did not parse" — a statement about the REQUEST,
+        # when in truth nobody had answered it.
+        #
+        # Falling through is worse than failing here. "" parses to {}, which
+        # this loop counts as an unusable ROUND, so an unanswered call is spent
+        # against MAX_UNUSABLE_ROUNDS and the turn ends having burned its
+        # budget on rounds the model never took part in.
+        #
+        # This is could-not-check dressed as checked-false, one level up: the
+        # difference between "the model did not answer" and "the model answered
+        # badly" is the difference between retrying and giving up, so the two
+        # get different names and `model_empty` stays distinguishable in
+        # telemetry rather than hiding inside model_error.
+        if not (raw or "").strip():
+            logger.warning(
+                "[v2.loop] round %s: model returned EMPTY (no exception, no "
+                "tokens). Not counted as an unusable round.", rn)
+            res.stopped_by = "model_empty"
+            break
+
         # _call_llm_json RETURNS A STRING. My first version did
         # `raw if isinstance(raw, dict) else {}`, which was therefore ALWAYS
         # {} -- every round parsed as unusable, the loop bailed on its own
