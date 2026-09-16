@@ -95,9 +95,83 @@ export function simpleMarkdownToHtml(text: string): string {
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = renderLists(out);
   out = out.replace(/\n\n+/g, "</p><p>");
   out = out.replace(/\n/g, "<br>\n");
-  return "<p>" + out + "</p>";
+  return unwrapBlocks("<p>" + out + "</p>");
+}
+
+/**
+ * A <ul> inside a <p> is invalid HTML — the browser silently closes the
+ * paragraph early and the surrounding spacing goes wrong. The paragraph pass
+ * above cannot know a block element is coming, so the wrappers are removed
+ * here rather than by making that pass list-aware (which would mean two places
+ * that both have to understand lists).
+ */
+function unwrapBlocks(html: string): string {
+  return html
+    .replace(/<p>\s*(<[uo]l>)/g, "$1")
+    .replace(/(<\/[uo]l>)\s*<\/p>/g, "$1")
+    .replace(/<p>\s*<\/p>/g, "")
+    .replace(/(<\/[uo]l>)\s*<br>\s*/g, "$1");
+}
+
+/**
+ * Block-level lists. THE DEFECT THIS FIXES, seen on a live card 2026-09-15:
+ *
+ *     * **Appeal Arguments:** You can argue that the member had no other...
+ *
+ * rendered with the asterisk VISIBLE and the bold applied — because this
+ * module converted `**bold**`, headings, links and paragraphs, and had no list
+ * handling at all, so `* item` fell through to the `\n` -> `<br>` pass and
+ * arrived as literal text. Bold worked, bullets did not, which is why it read
+ * as a content bug rather than a renderer gap.
+ *
+ * Runs AFTER the bold pass on purpose: by this point `**` is gone, so a
+ * leading `*` can only be a list marker. A marker must be followed by
+ * whitespace, so `*emphasis*` is never mistaken for one.
+ *
+ * Emits list HTML as its own line so the paragraph pass below cannot wrap a
+ * `<ul>` in a `<p>` or insert `<br>` between items.
+ */
+function renderLists(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let items: string[] = [];
+  let kind: "ul" | "ol" | null = null;
+
+  const flush = () => {
+    if (kind && items.length) {
+      out.push(`<${kind}>` + items.map((i) => `<li>${i}</li>`).join("") + `</${kind}>`);
+    }
+    items = [];
+    kind = null;
+  };
+
+  for (const line of lines) {
+    const ul = /^\s{0,3}[*+-]\s+(.*)$/.exec(line);
+    const ol = /^\s{0,3}\d+[.)]\s+(.*)$/.exec(line);
+    if (ul) {
+      if (kind && kind !== "ul") flush();
+      kind = "ul";
+      items.push(ul[1].trim());
+    } else if (ol) {
+      if (kind && kind !== "ol") flush();
+      kind = "ol";
+      items.push(ol[1].trim());
+    } else if (kind && !line.trim()) {
+      // A blank line ends the list rather than splitting it in two.
+      flush();
+    } else if (kind) {
+      // A non-marker line directly under an item is that item's continuation,
+      // which is how a wrapped bullet arrives from the model.
+      items[items.length - 1] += " " + line.trim();
+    } else {
+      out.push(line);
+    }
+  }
+  flush();
+  return out.join("\n");
 }
 
 /** Same as simpleMarkdownToHtml but does not escape HTML. Use only for trusted backend content (e.g. inside npi-profile-card). */

@@ -1,3 +1,7 @@
+// src/generated/envelope-thresholds.ts
+var STATS_MAX_ITEMS = 4;
+var BULLETS_MAX_VISIBLE = 4;
+
 // src/ui-helpers.ts
 function simpleMarkdownToHtml(text) {
   const s = (text ?? "").trim();
@@ -56,13 +60,53 @@ function simpleMarkdownToHtml(text) {
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = renderLists(out);
   out = out.replace(/\n\n+/g, "</p><p>");
   out = out.replace(/\n/g, "<br>\n");
-  return "<p>" + out + "</p>";
+  return unwrapBlocks("<p>" + out + "</p>");
+}
+function unwrapBlocks(html) {
+  return html.replace(/<p>\s*(<[uo]l>)/g, "$1").replace(/(<\/[uo]l>)\s*<\/p>/g, "$1").replace(/<p>\s*<\/p>/g, "").replace(/(<\/[uo]l>)\s*<br>\s*/g, "$1");
+}
+function renderLists(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let items = [];
+  let kind = null;
+  const flush = () => {
+    if (kind && items.length) {
+      out.push(`<${kind}>` + items.map((i) => `<li>${i}</li>`).join("") + `</${kind}>`);
+    }
+    items = [];
+    kind = null;
+  };
+  for (const line of lines) {
+    const ul = /^\s{0,3}[*+-]\s+(.*)$/.exec(line);
+    const ol = /^\s{0,3}\d+[.)]\s+(.*)$/.exec(line);
+    if (ul) {
+      if (kind && kind !== "ul")
+        flush();
+      kind = "ul";
+      items.push(ul[1].trim());
+    } else if (ol) {
+      if (kind && kind !== "ol")
+        flush();
+      kind = "ol";
+      items.push(ol[1].trim());
+    } else if (kind && !line.trim()) {
+      flush();
+    } else if (kind) {
+      items[items.length - 1] += " " + line.trim();
+    } else {
+      out.push(line);
+    }
+  }
+  flush();
+  return out.join("\n");
 }
 
 // src/render/bubble.ts
-var MAX_BULLETS_PER_SECTION = 4;
+var MAX_BULLETS_PER_SECTION = BULLETS_MAX_VISIBLE;
 function _renderSectionBody(sec, body) {
   const fmt = sec.format ?? "bullets";
   const data = sec.data;
@@ -105,7 +149,7 @@ function _renderSectionBody(sec, body) {
   if (fmt === "stats" && data?.items) {
     const grid = document.createElement("div");
     grid.className = "ac-fmt-stats";
-    data.items.slice(0, 4).forEach((item) => {
+    data.items.slice(0, STATS_MAX_ITEMS).forEach((item) => {
       const tile = document.createElement("div");
       tile.className = "ac-fmt-stat-tile";
       const val = document.createElement("div");
