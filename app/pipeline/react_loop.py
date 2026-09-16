@@ -5355,7 +5355,7 @@ def _finalize_response(
                 _all_hints.append(_fitted)
                 _hinted_tr_ids.add(id(_tr))
     if _all_hints:
-        ctx.tool_section_hints = _all_hints
+        ctx.tool_section_hints = _dedupe_section_hints(_all_hints)
 
     # 2026-08-07 (Task #58, schema approved by coordinator) -- typed tool
     # outputs, grouped by tool family, not a flat dict[name, raw-string].
@@ -5622,6 +5622,54 @@ _CARD_LABELS: dict[str, str] = {
     "appeals_rules": "Appeal rules",
     "appeals_playbook": "Appeal playbook",
 }
+
+
+def _dedupe_section_hints(hints: list[dict]) -> list[dict]:
+    """One card per distinct thing to show.
+
+    🔴 THE SAME PLAYBOOK RENDERED TWICE. appeals_get_playbook runs on the
+    preload AND again in the round (or via the round-0 CARC pre-route), so two
+    tool results carry the same answer and each produced a card. Measured live,
+    cid 770fd836: two appeals_playbook blocks, payor "Sunshine Health", carc
+    [22, 23, 220], BYTE-IDENTICAL data (sha c9be48c9be0e both times).
+
+    DEDUPED ON CONTENT, NOT ON FORMAT. Collapsing by section_format would drop
+    a second, genuinely different card — two payers compared, or a playbook
+    beside its rules — which is a worse failure than the duplicate: the reader
+    cannot tell a card that was never produced from one that was thrown away.
+
+    ORDER IS PRESERVED: the first occurrence stays where it was. A card that
+    moves because a later duplicate arrived would reorder the answer for
+    reasons the reader cannot see.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for h in hints:
+        if not isinstance(h, dict):
+            continue
+        try:
+            # KEY ON THE WHOLE HINT. My first version keyed on
+            # {section_format, data} and collapsed two DIFFERENT tables,
+            # because section hints come in two shapes: some carry their
+            # content under `data`, others put section_title/rows at the top
+            # level. Keying on the fields I happened to know about silently
+            # deduped by a subset — caught by
+            # test_finalize_response_collects_plural_section_hints, which
+            # asserts two distinct tables survive.
+            key = json.dumps(h, sort_keys=True, default=str)
+        except Exception:
+            # Unhashable or unserializable content: keep it rather than guess.
+            # A card shown twice is a blemish; a card silently dropped because
+            # we could not compare it is a loss.
+            out.append(h)
+            continue
+        if key in seen:
+            logger.info("[ux_card] duplicate %s suppressed — same content "
+                        "already rendered", h.get("section_format"))
+            continue
+        seen.add(key)
+        out.append(h)
+    return out
 
 
 def _card_payload_shaped(fmt: str, payload: dict) -> dict:

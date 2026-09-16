@@ -102,3 +102,76 @@ def test_the_fitter_is_reached_from_the_hint_collection():
     assert "_card_hint_for_tool" in called, (
         "nothing fits tool output to its declared card — every appeals result "
         "stays a paraphrase")
+
+
+# ── one card per distinct thing to show ─────────────────────────────────────
+
+def test_the_same_playbook_is_not_rendered_twice():
+    """LIVE, cid 770fd836: two appeals_playbook blocks, payor "Sunshine
+    Health", carc [22, 23, 220], BYTE-IDENTICAL data (sha c9be48c9be0e both
+    times). appeals_get_playbook runs on the preload AND again in the round, so
+    two tool results carried the same answer and each produced a card."""
+    hint = {"section_format": "appeals_playbook",
+            "label": "Appeal playbook",
+            "data": {"payor": "Sunshine Health", "deadline_appeal_days": 90}}
+    out = R._dedupe_section_hints([hint, dict(hint), hint])
+    assert len(out) == 1
+
+
+def test_two_DIFFERENT_cards_both_survive():
+    """Deduping by section_format would drop a genuinely different card — two
+    payers compared, or a playbook beside its rules. That is a worse failure
+    than the duplicate: the reader cannot tell a card that was never produced
+    from one that was thrown away."""
+    a = {"section_format": "appeals_playbook",
+         "data": {"payor": "Sunshine Health", "deadline_appeal_days": 90}}
+    b = {"section_format": "appeals_playbook",
+         "data": {"payor": "Aetna Better Health", "deadline_appeal_days": 60}}
+    c = {"section_format": "appeals_rules", "data": {"rules": [{"rule_id": "X"}]}}
+    assert len(R._dedupe_section_hints([a, b, c])) == 3
+
+
+def test_order_is_preserved():
+    """A card that moves because a later duplicate arrived would reorder the
+    answer for a reason the reader cannot see."""
+    a = {"section_format": "appeals_playbook", "data": {"payor": "A"}}
+    b = {"section_format": "appeals_playbook", "data": {"payor": "B"}}
+    got = R._dedupe_section_hints([a, b, dict(a)])
+    assert [h["data"]["payor"] for h in got] == ["A", "B"]
+
+
+def test_an_uncomparable_hint_is_kept_not_dropped():
+    """A card shown twice is a blemish; a card silently dropped because we
+    could not compare it is a loss."""
+    class Odd:
+        def __repr__(self): return "<Odd>"
+    weird = {"section_format": "appeals_playbook", "data": {"x": Odd()}}
+    assert len(R._dedupe_section_hints([weird])) == 1
+
+
+def test_the_dedupe_is_actually_applied():
+    """Producer-with-no-producer check — a dedupe nothing calls is two cards."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(R))
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "_finalize_response")
+    called = {n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_dedupe_section_hints" in called, (
+        "section hints are stored without deduping — the same playbook renders "
+        "once per tool call that produced it")
+
+
+def test_hints_that_carry_content_OUTSIDE_data_are_not_collapsed():
+    """Section hints come in two shapes: some carry content under `data`,
+    others put section_title/rows at the top level. My first dedupe keyed on
+    {section_format, data} and collapsed two DIFFERENT tables into one, because
+    both had data=None. Keying on a subset of the fields you happen to know
+    about is deduping by luck."""
+    a = {"section_format": "table", "section_title": "A", "rows": [["x"]]}
+    b = {"section_format": "table", "section_title": "B", "rows": [["y"]]}
+    out = R._dedupe_section_hints([a, b])
+    assert len(out) == 2
+    assert [h["section_title"] for h in out] == ["A", "B"]
