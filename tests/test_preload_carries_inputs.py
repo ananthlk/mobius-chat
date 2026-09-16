@@ -124,3 +124,56 @@ def test_the_loop_really_executes_a_list():
     src = inspect.getsource(L.run_react_v2)
     assert 'decision_json.get("tools")' in src
     assert "for _t, _in in pending" in src
+
+
+# ── round 1 must see what preload fetched ───────────────────────────────────
+
+def test_the_round_list_is_seeded_from_preload():
+    """THE DEFECT, measured on pinned turn c11ea4af. preload ran rag (14
+    sources), appeals_get_playbook and appeals_lookup_rules SUCCESSFULLY, and
+    round 1 reported "tools in hand: none · evidence: 637 chars".
+
+    build_reasoning_context reads ONLY the list passed to it
+    (react/prompts.py:913), and mine was initialised `= []`. Three consequences
+    from one line: the permission-to-finish had nothing to read; the governor
+    chose `nothing_worth_buying` at 12s of a 31s promise while holding fourteen
+    unread sources; and round 3 re-requested a tool preload had already run.
+
+    v1 seeds its list at react_loop.py:6155 and I did not carry it across.
+    """
+    # OVER THE AST, NOT THE TEXT. My first version searched the source for
+    # "tool_results: list[dict] =" and matched MY OWN COMMENT quoting v1's
+    # line — the read-prose-not-program defect, again. The AST sees only the
+    # program.
+    tree = ast.parse(inspect.getsource(L))
+    fn = next(f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and f.name == "run_react_v2")
+    inits = [n for n in ast.walk(fn)
+             if isinstance(n, ast.AnnAssign)
+             and isinstance(n.target, ast.Name)
+             and n.target.id == "tool_results"]
+    assert inits, "tool_results is never initialised"
+    value = ast.unparse(inits[0].value)
+    assert value != "[]", (
+        "the round list starts empty — round 1 cannot see preloaded evidence")
+    assert "seed_tool_results" in value, (
+        f"the round list is initialised to {value!r}, not seeded from "
+        "ctx.seed_tool_results — the channel v1 uses and "
+        "build_reasoning_context renders")
+
+
+def test_preload_results_are_published_on_the_shared_seed_channel():
+    """Seeded from the SAME ctx.seed_tool_results v1 builds, so the two loops
+    cannot disagree about what round 1 was handed."""
+    src = inspect.getsource(L.run_react_v2)
+    assert "ctx.seed_tool_results" in src
+    assert '"round_virtual": 0' in src, (
+        "a preloaded result must not credit round 1 with fetching it")
+
+
+def test_a_seeded_result_is_TEXT_not_a_dict():
+    """`result` is a string by convention — nine readers call .strip() on it,
+    and a raw dict there killed a live turn this morning."""
+    assert L._payload_as_text({"deadline_appeal_days": 90}) == '{"deadline_appeal_days": 90}'
+    assert L._payload_as_text("already text") == "already text"
+    assert L._payload_as_text(None) == ""

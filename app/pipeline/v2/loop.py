@@ -62,6 +62,7 @@ from this loop goes through _finalize_response. There is no second publish.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import replace
@@ -181,6 +182,24 @@ def _start_next_steps_ahead(ctx, state, step) -> None:
                 "v2 governor (converging)", "v2.ahead", "running"))
     except Exception:      # a prefetch must never end a turn
         logger.debug("[v2.loop] ahead start failed", exc_info=True)
+
+
+def _payload_as_text(payload) -> str:
+    """A preloaded payload as the TEXT the round context expects.
+
+    `result` is a string by convention — nine readers in react_loop call
+    .strip() on it, and a raw dict there killed a live turn this morning.
+    Structured payloads are serialized rather than dropped: a dict from an MCP
+    tool is still the evidence the turn paid for.
+    """
+    if isinstance(payload, str):
+        return payload
+    if payload is None:
+        return ""
+    try:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        return str(payload)
 
 
 def _record_contract(ctx, decision_json: dict, preloaded, tool_results) -> None:
@@ -600,6 +619,23 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             # and a trace that still said "Looking this up before I answer".
             ctx._v2_preload_round = 1
             ctx._v2_preloaded = _preloaded
+            # The virtual-tool-result channel round 1 reads from. Same shape
+            # and same `result` STRING convention as v1's (react_loop.py:6067)
+            # — a dict here is what crashed a live turn earlier today.
+            if not getattr(ctx, "seed_tool_results", None):
+                ctx.seed_tool_results = []
+            for _sr in (_preloaded or []):
+                if isinstance(_sr, dict) and _sr.get("ok") and _sr.get("payload"):
+                    ctx.seed_tool_results.append({
+                        "tool": _sr.get("tool"),
+                        "success": True,
+                        "result": _payload_as_text(_sr["payload"]),
+                        "result_summary": _sr.get("summary") or "",
+                        # round_virtual=0: fetched BEFORE round 1 spoke, so no
+                        # round is credited with evidence it did not fetch.
+                        "round_virtual": 0,
+                        "sources": _sr.get("sources") or [],
+                    })
             for _pr in (_preloaded or []):
                 final_signal = _upgrade_signal(final_signal, _pr)
             ctx._v2_suggest = getattr(_plan, "suggest", []) or []
@@ -639,7 +675,29 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     max_rounds = min(V2_MAX_ROUNDS.get(mode, V2_MAX_ROUNDS_DEFAULT),
                      MAX_ROUNDS_HARD)
 
-    tool_results: list[dict] = []
+    # 🔴 ROUND 1 MUST SEE WHAT PRELOAD FETCHED.
+    #
+    # This was `= []`, so build_reasoning_context — which reads ONLY the list
+    # passed to it (react/prompts.py:913) — received nothing on round 1, and
+    # the preloaded evidence never reached the model.
+    #
+    # Measured on a pinned turn, cid c11ea4af: preload ran rag (14 sources),
+    # appeals_get_playbook and appeals_lookup_rules successfully, and round 1
+    # reported "tools in hand: none · evidence: 637 chars". Three consequences,
+    # all from this one line:
+    #
+    #   1. the permission-to-finish I had just added had nothing to read, so
+    #      it could not say "this is already answered";
+    #   2. the governor chose `nothing_worth_buying` at 12s of a 31s promise
+    #      while holding fourteen unread sources;
+    #   3. round 3 REQUESTED appeals_get_playbook — a tool preload had already
+    #      run successfully — and the turn ended before it could re-run.
+    #
+    # v1 does it at react_loop.py:6155 (`tool_results: list[dict] = seed`) and
+    # I did not carry it across when I wrote this loop. Seeded from the SAME
+    # ctx.seed_tool_results v1 builds, so the two cannot disagree about what
+    # round 1 was handed.
+    tool_results: list[dict] = list(getattr(ctx, "seed_tool_results", None) or [])
     ctx.react_trace_rounds = getattr(ctx, "react_trace_rounds", None) or []
     all_sources: list = []
     last_tool: str | None = None
