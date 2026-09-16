@@ -5223,6 +5223,22 @@ def _v2_integrate(ctx, final_answer: str, emitter=None) -> None:
                        (getattr(ctx, "correlation_id", "") or "")[:8], _intE)
 
 
+def _v2_running_answer(ctx) -> str:
+    """The model's best answer so far, from the last round that wrote one.
+
+    Local rather than imported from v2/loop.py: that module imports this one,
+    and a top-level import back would close the cycle. It reads
+    react_trace_rounds, which BOTH loops populate in the same shape, so the two
+    readers cannot drift on what "the answer so far" means.
+    """
+    for r in reversed(getattr(ctx, "react_trace_rounds", None) or []):
+        enr = (r or {}).get("enrichment") or {}
+        ans = (enr.get("running_answer") or "").strip()
+        if ans:
+            return ans
+    return ""
+
+
 def _finalize_response(
     ctx: PipelineContext,
     final_answer: str,
@@ -8812,6 +8828,45 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                                 _v2_cmp = _v2s.compare(_pp_directive, _v2_state,
                                                        v1_reason=_pp_reason)
                                 _v2s.emit(ctx.correlation_id, _v2_cmp)
+
+                                # 🔴 ASK FOR THE NEXT STEPS EARLY ON THIS PATH
+                                # TOO — I SHIPPED A CONSUMER WITH NO PRODUCER.
+                                #
+                                # _v2_integrate already reads
+                                # `prefetched=_v2_ahead.take(ctx)`, but the only
+                                # code that STARTED a prefetch lived in
+                                # run_react_v2 — v2's own loop, which is off.
+                                # So on the live path take() returned None
+                                # every turn, the integrator opened a blocking
+                                # call, and the turn paid for it: measured
+                                # 2026-09-15, "promised 31s · delivered 40.6s ·
+                                # MISSED" on the card Ananth was looking at.
+                                #
+                                # That is the mirror of the defect this fleet
+                                # keeps finding, and I built it: a field read
+                                # by a consumer that nothing on the live path
+                                # ever assigns.
+                                #
+                                # Same predicate, same module, same handoff —
+                                # only the call site is new.
+                                try:
+                                    from app.pipeline.v2 import ahead as _ahd
+                                    from app.pipeline.v2.integrator import (
+                                        default_runner as _ahd_runner)
+
+                                    if _ahd.predicted(_v2_state):
+                                        _ahd.start(
+                                            ctx,
+                                            question=(ctx.message or ""),
+                                            answer_so_far=_v2_running_answer(ctx),
+                                            open_gaps=[
+                                                g.text for g in
+                                                (_v2_state.open_gaps or ())
+                                                if getattr(g, "text", "")],
+                                            runner=_ahd_runner(ctx))
+                                except Exception:   # never fail a turn on it
+                                    logger.debug("[v2.ahead] v1-path start failed",
+                                                 exc_info=True)
                                 # Accumulate; the batch lands once at settle.
                                 # A write on the round path would add latency to
                                 # production for an observer's benefit.

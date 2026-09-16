@@ -165,3 +165,34 @@ def test_finalisation_hands_the_running_call_to_the_integrator():
     assert "prefetched=_v2_ahead.take(ctx)" in src, (
         "finalisation never collects the prefetched call — it would start a "
         "second one while the first is still running")
+
+
+def test_every_loop_that_TAKES_a_prefetch_also_STARTS_one():
+    """THE DEFECT I SHIPPED. _v2_integrate reads `prefetched=_v2_ahead.take(ctx)`,
+    but the only code that STARTED a prefetch lived in run_react_v2 — v2's own
+    loop, which is OFF. So on the live path take() returned None every turn, the
+    integrator opened a blocking call, and the turn paid for it:
+
+        "promised 31s · delivered 40.6s · MISSED"   (2026-09-15, live card)
+
+    A consumer with no producer, on exactly the seam this fleet keeps finding
+    them — and I built it while fixing one.
+
+    The gate is general on purpose: any module that calls ahead.take() must
+    also, somewhere, call ahead.start(). Naming one function would pass the day
+    someone adds a third loop.
+    """
+    import app.pipeline.react_loop as R
+    from app.pipeline.v2 import loop as L2
+
+    for mod in (R, L2):
+        src = inspect.getsource(mod)
+        takes = ".take(ctx)" in src or "ahead.take" in src
+        if not takes:
+            continue
+        starts = ("ahead.start(" in src or "_ahd.start(" in src
+                  or "_ahead.start(" in src)
+        assert starts, (
+            f"{mod.__name__} consumes a prefetched next-steps call but never "
+            "starts one — take() will return None and the model call goes back "
+            "on the blocking tail")
