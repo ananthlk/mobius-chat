@@ -209,3 +209,48 @@ failure of the answer.
     its conditions — turning "it varies between X and Y" into "it is X", a
     STRONGER claim than the model made, wearing a citation. Decidable only
     because the verdict declares which shape it is, which is (1) again.
+
+### The window bounds CONCLUSIONS, not just grades — and the bias is not uniform
+
+Deep Research's addition, and it is the sharper half: the datable window applies
+to anything concluded ABOUT those grades, **including comparisons between arms**.
+The bias does not land on a random subset — it lands on answers that cite a
+document whose curated `display_name` and `filename` diverge. An arm that cites
+such documents more often absorbs more of the penalty, and the difference
+between arms then contains an artefact of the naming mismatch.
+
+    fix deployed : mobius-verify-claims-00005-l25, ~2026-09-17T06:50Z
+    before that  : a claim on a display-name document reports `unverifiable`
+
+**Any A/B, bank run or arm comparison drawn from turns before that timestamp
+needs this checked rather than assumed.**
+
+### Checked for the 15-question A/B: NOT contaminated
+
+The run completed at 06:42Z, inside the window, so the question is live rather
+than theoretical. Measured from the logs rather than argued:
+
+    turns hitting "is not in the corpus" in the whole 12h window : 1
+      -> cid 9709d0c4, 01:24Z, a PINNED TEST turn, not an A/B turn
+
+    verify results across the A/B turns (checked > 0):
+      checked=7 supported=7 unverifiable=0
+      checked=3 supported=3 unverifiable=0
+      checked=2 supported=2 unverifiable=0
+      checked=1 supported=1 unverifiable=0
+      checked=2 supported=0 unverifiable=0   <- 2 not_supported: a real finding
+
+Zero unverifiable on every A/B turn that verified anything. Chat's interim
+`document_id -> filename` resolution was live for the whole run and did exactly
+what it was built for, so the comparison is clean on this axis.
+
+### A separate limitation the same query exposed
+
+    24 of ~30 verify calls in the window: checked=0
+
+Most turns verified NOTHING, because the model did not emit facts carrying a
+document and a page. So the A/B's quality result is largely **not** influenced by
+the verification work at all — it could not be, on turns where verification never
+ran. That is a boundary on what the A/B measures, and it is worth stating
+alongside the +12.4% rather than leaving a reader to assume the verifier was
+carrying it.
