@@ -151,11 +151,41 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         user_profile=getattr(ctx, "user_profile", None),
     )
 
-    verdict = str(adj.get("verdict") or "FAIL")
-    passed = verdict in ("PASS", "PARTIAL")
-    score = float(adj.get("overall_score") or 0.0)
+    # 🔴 A GRADER THAT COULD NOT GRADE MUST NOT REPORT A FAILURE.
+    #
+    # `verdict or "FAIL"` and `overall_score or 0.0` turned a missing answer
+    # from the adjudicator into the WORST POSSIBLE verdict about the turn.
+    # That is could-not-check rendered as checked-false, on the instrument we
+    # use to prove quality — so the one place it must not happen.
+    #
+    # And `reason or verdict` (below) filled an empty rationale with the
+    # verdict STRING. Measured on turn 13b88a8c: `reason: "FAIL"`, no flags,
+    # score 0.437, on an answer carrying 22 sources. That reads as a graded
+    # judgement and is a missing one.
+    _raw_verdict = adj.get("verdict")
+    _raw_score = adj.get("overall_score")
+    _raw_reason = (adj.get("rationale") or "").strip()
+
+    _ungraded: str | None = None
+    if not _raw_verdict:
+        _ungraded = "adjudicator returned no verdict"
+    elif _raw_score is None:
+        _ungraded = "adjudicator returned a verdict with no score"
+    elif not _raw_reason:
+        _ungraded = "adjudicator returned a verdict with no rationale"
+
+    if _ungraded:
+        # NOT a score of 0 and NOT a FAIL. `passed` is None rather than False:
+        # False is a claim about the turn, None is a statement about us.
+        verdict = "COULD_NOT_GRADE"
+        passed = None
+        score = None
+    else:
+        verdict = str(_raw_verdict)
+        passed = verdict in ("PASS", "PARTIAL")
+        score = float(_raw_score)
     merged = adj.get("sub_scores") or {}
-    reason = (adj.get("rationale") or "").strip()[:4000]
+    reason = (_raw_reason or _ungraded or "")[:4000]
     raw_text = str(adj.get("adjudicator_raw_text") or "")[:8000]
     attr = adj.get("attribution") or {}
 
@@ -213,19 +243,78 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     except Exception as e:
         logger.warning("grade_promise_kept failed for correlation_id=%s: %s", ctx.correlation_id, e)
 
+    # ── DETERMINISTIC FLOOR ─────────────────────────────────────────────────
+    #
+    # The LLM's prose and its number were not bound to each other. Turn
+    # ef589580 FAILED — 126 characters, zero sources — and the adjudicator
+    # wrote "structurally broken, with an empty section and incorrect
+    # citations, making it incomplete and misleading" and scored it 0.611.
+    # The judgement was right and the number did not listen.
+    #
+    # This does not re-grade. It CONTRADICTS a grade that the delivered answer
+    # cannot support, and records the contradiction as its own fact — a
+    # disagreement between a declaration and a mechanical check is an outcome,
+    # not a tie to be broken silently (Deep Research's `uncited`, same shape).
+    #
+    # 🔴 MEASURED ZERO, NEVER UNMEASURED. `sources_for_adj` being an empty
+    # LIST means we looked and the turn published none. It being None means we
+    # did not look, and capping on that would fail a turn for a telemetry gap
+    # — the could-not-check line landing on the gate built to enforce it.
+    contradictions: list[str] = []
+    if score is not None:
+        _src = sources_for_adj if isinstance(sources_for_adj, (list, tuple)) else None
+        _ans = (answer or "").strip()
+
+        # An answer that cites nothing cannot be graded as well-grounded.
+        if _src is not None and len(_src) == 0 and len(_ans) > 0 and score > 0.5:
+            contradictions.append(
+                f"scored {score:.3f} with ZERO published sources (measured, not "
+                f"missing) — a grounded verdict is not available on an answer "
+                f"that cites nothing")
+            score = min(score, 0.5)
+
+        # A turn that delivered almost nothing is not a PARTIAL success.
+        if len(_ans) < 200 and score > 0.4:
+            contradictions.append(
+                f"scored {score:.3f} on a {len(_ans)}-character answer — too "
+                f"little was delivered for the grade to describe the turn")
+            score = min(score, 0.4)
+
+        # A raised failure flag must MOVE the number. A flag that does not is
+        # decoration: DEAD_END_ESCALATION was raised on 26500a75, the rationale
+        # said the user got a dead end, and it scored 0.909.
+        _flags = [str(f) for f in (adj.get("flags") or [])]
+        _hard = [f for f in _flags if f in (
+            "HALLUCINATION_SUSPECTED", "WRONG_PAYER", "STALE_DATA_PRESENTED")]
+        if _hard and score > 0.6:
+            contradictions.append(
+                f"scored {score:.3f} while raising {', '.join(_hard)} — a "
+                f"raised failure flag must bind the score")
+            score = min(score, 0.6)
+
+        if contradictions:
+            logger.warning(
+                "[adjudicator] cid=%s GRADE CONTRADICTED by the delivered "
+                "answer: %s", (ctx.correlation_id or "")[:8],
+                "; ".join(contradictions))
+
     audited_at = datetime.now(timezone.utc).isoformat()
 
     qc_dict: dict[str, Any] = {
         "passed": passed,
-        "reason": reason or verdict,
+        # NOT `reason or verdict` -- that is what produced reason="FAIL".
+        "reason": reason,
         "source": "post_run_adjudicator",
         "audited_at": audited_at,
-        "automated_score": round(score, 4),
+        "automated_score": (round(score, 4) if score is not None else None),
         "sub_scores": _sub_scores_client(merged),
         "adjudicator_full_response": raw_text,
         "adjudication_verdict": verdict,
         "question_category": adj.get("question_category"),
         "adjudication_flags": adj.get("flags"),
+        # The disagreement is itself an outcome, and a reader can act on it:
+        # it says the GRADER was wrong, not that the turn was.
+        "grade_contradicted_by": contradictions or None,
     }
     if adj_model:
         qc_dict["adjudicator_model"] = adj_model

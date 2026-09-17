@@ -1286,9 +1286,43 @@
         html += '<div style="color: rgba(255,255,255,0.4); font-size: 11px; margin-bottom: 18px;">'
              +  'Swept ' + (e.generated_at || '—').slice(0, 16).replace('T', ' ') + ' UTC · ' + (e.provenance || '') + '</div>';
 
-        html += '<h3 style="font-size: 13px; margin-bottom: 10px; font-weight: 600;">Surfaces — pages a person opens (' + (e.surfaces || []).length + ')</h3>';
+        // Discovered from every service's own route table, not hand-listed.
+        var found = e.discovered_surfaces || e.surfaces || [];
+        var unattr = e.discovered_unattributed || [];
+        html += '<h3 style="font-size: 13px; margin-bottom: 4px; font-weight: 600;">Surfaces — pages a person opens (' + found.length + ')</h3>';
+        html += '<div style="font-size:11px; color:rgba(255,255,255,0.4); margin-bottom:10px;">'
+             +  'Discovered by reading each service\'s own routes, then opening every one. '
+             +  (unattr.length ? unattr.length + ' of these belong to no module yet — listed at the end.' : '')
+             +  '</div>';
         html += '<table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:26px;">';
-        (e.surfaces || []).forEach(function (s) {
+        var lastSvc = null;
+        found.forEach(function (s) {
+          if (s.service !== lastSvc) {
+            lastSvc = s.service;
+            html += '<tr><td colspan="5" style="padding:12px 0 4px; color:rgba(255,255,255,0.55); font-weight:600;">' + esc(s.service) + '</td></tr>';
+          }
+          var ok = s.http === 200;
+          html += '<tr style="border-bottom:1px solid #222;">'
+               +  '<td style="padding:6px 10px 6px 0; white-space:nowrap;"><a href="' + s.url + '" target="_blank" rel="noopener" style="color:#a78bfa; text-decoration:none;">' + esc(s.path) + '</a></td>'
+               +  '<td style="padding:6px 10px; color:rgba(255,255,255,0.4);">' + esc(s.content_type || '') + '</td>'
+               +  '<td style="padding:6px 10px; white-space:nowrap; color:' + (ok ? '#4ade80' : '#fbbf24') + ';">' + (s.http === null ? 'no response' : s.http) + '</td>'
+               +  '<td style="padding:6px 0; color:rgba(255,255,255,0.35); white-space:nowrap;">' + (s.kind === 'surface-authed' ? 'behind login' : '') + '</td>'
+               +  '</tr>';
+        });
+        html += '</table>';
+        if (unattr.length) {
+          html += '<h3 style="font-size:13px; margin-bottom:6px; font-weight:600; color:#fbbf24;">Belongs to no module (' + unattr.length + ')</h3>';
+          html += '<div style="font-size:11px; color:rgba(255,255,255,0.4); margin-bottom:10px;">'
+               +  'A page that is served but that no module claims. Attribution cannot be derived from the service — '
+               +  'mobius-payor hosts three modules\' pages — so these need a person to assign them.</div>';
+          html += '<div style="font-size:12px; line-height:1.9; margin-bottom:26px;">';
+          unattr.forEach(function (s) {
+            html += '<a href="' + s.url + '" target="_blank" rel="noopener" style="color:#fbbf24; text-decoration:none; margin-right:14px;">' + esc(s.service) + esc(s.path) + '</a>';
+          });
+          html += '</div>';
+        }
+        var LEGACY = [];
+        LEGACY.forEach(function (s) {
           var ok = s.http === 200;
           html += '<tr style="border-bottom:1px solid #222;">'
                +  '<td style="padding:7px 10px 7px 0; white-space:nowrap;"><a href="' + (s.url || '#') + '" style="color:#a78bfa; text-decoration:none;">' + s.path + '</a></td>'
