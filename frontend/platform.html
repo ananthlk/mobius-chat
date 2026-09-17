@@ -478,6 +478,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="product">Product</button>
     <button class="tab" data-tab="technical">Technical</button>
+    <button class="tab" data-tab="endpoints">Endpoints</button>
     <button class="tab" data-tab="specs">Specs</button>
     <button class="tab" data-tab="roadmap">Roadmap</button>
     <button class="tab" data-tab="sprints">Sprints</button>
@@ -496,6 +497,7 @@
     </div>
     <div id="product" class="content active"></div>
     <div id="technical" class="content"></div>
+    <div id="endpoints" class="content"></div>
     <div id="specs" class="content"></div>
     <div id="roadmap" class="content"></div>
     <div id="sprints" class="content"></div>
@@ -799,6 +801,7 @@
       function renderAll(status, coord) {
         renderProductView();
         renderTechnicalView();
+        renderEndpointsView();
         renderSpecsView();
         renderRoadmap();
         renderSprints();
@@ -997,12 +1000,16 @@
       function renderSpecsView() {
         var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Spec Link</th><th>Status</th></tr>';
         platform.modules.forEach(m => {
-          var link = m.specs_view.link || '—';
+          // A module added without a specs_view used to throw here and abort the
+          // whole Promise chain -- the page showed 'Failed to load platform' and
+          // nothing rendered. One missing optional block must not cost the view.
+          var sv = m.specs_view || { status: 'none' };
+          var link = sv.link || '—';
           var linkHtml = link.startsWith('/') || link.startsWith('docs/') ? '<a href="' + link + '">' + link + '</a>' : link;
           html += '<tr>';
           html += '<td><strong>' + m.name + '</strong></td>';
           html += '<td>' + linkHtml + '</td>';
-          html += '<td>' + (m.specs_view.status || 'N/A') + '</td>';
+          html += '<td>' + (sv.status || 'N/A') + '</td>';
           html += '</tr>';
         });
         html += '</table></div>';
@@ -1104,9 +1111,10 @@
           var gates = m.gates ? m.gates.join(', ') : '—';
           html += '<tr>';
           html += '<td><strong>' + m.name + '</strong></td>';
-          html += '<td>' + (m.eval_view.owned_by || '—') + '</td>';
+          var ev = m.eval_view || {};   // optional block; see renderSpecsView
+          html += '<td>' + (ev.owned_by || '—') + '</td>';
           html += '<td>' + gates + '</td>';
-          html += '<td>' + (m.eval_view.status || '—') + '</td>';
+          html += '<td>' + (ev.status || '—') + '</td>';
           html += '</tr>';
         });
         html += '</table></div>';
@@ -1210,6 +1218,85 @@
 
         html += '</div>';
         document.getElementById('learn').innerHTML = html;
+      }
+
+      // Endpoints — WHERE things actually are. The definition carried service
+      // NAMES but no URLs, so "where is X served?" had no answer on this page.
+      // Two tables because they answer different questions and conflating them
+      // is what made this hard to keep track of: a SERVICE is a deployment, a
+      // SURFACE is a page a person opens. mobius-chat is one service and ten
+      // surfaces; Deep Research is one service whose two surfaces are served by
+      // a DIFFERENT service (mobius-payor). A service list alone shows neither.
+      function renderEndpointsView() {
+        var e = (platform && platform.endpoints) || null;
+        var html = '<div style="max-width: 1200px;">';
+        html += '<h2 style="margin-bottom: 6px; font-size: 16px;">Endpoints</h2>';
+        if (!e) {
+          html += '<div style="color: rgba(255,255,255,0.4); font-size: 12px;">No endpoint sweep in this definition. Run scripts/platform/gen_platform_endpoints.py.</div></div>';
+          document.getElementById('endpoints').innerHTML = html;
+          return;
+        }
+        html += '<div style="color: rgba(255,255,255,0.4); font-size: 11px; margin-bottom: 18px;">'
+             +  'Swept ' + (e.generated_at || '—').slice(0, 16).replace('T', ' ') + ' UTC · ' + (e.provenance || '') + '</div>';
+
+        html += '<h3 style="font-size: 13px; margin-bottom: 10px; font-weight: 600;">Surfaces — pages a person opens (' + (e.surfaces || []).length + ')</h3>';
+        html += '<table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:26px;">';
+        (e.surfaces || []).forEach(function (s) {
+          var ok = s.http === 200;
+          html += '<tr style="border-bottom:1px solid #222;">'
+               +  '<td style="padding:7px 10px 7px 0; white-space:nowrap;"><a href="' + (s.url || '#') + '" style="color:#a78bfa; text-decoration:none;">' + s.path + '</a></td>'
+               +  '<td style="padding:7px 10px; color:rgba(255,255,255,0.55);">' + (s.label || '') + '</td>'
+               +  '<td style="padding:7px 10px; color:rgba(255,255,255,0.4); white-space:nowrap;">' + s.service + '</td>'
+               +  '<td style="padding:7px 10px; white-space:nowrap; color:' + (ok ? '#4ade80' : '#f87171') + ';">' + (s.http === null ? 'unreachable' : s.http) + '</td>'
+               +  '<td style="padding:7px 0; color:rgba(255,255,255,0.35); white-space:nowrap;">' + (s.admin_gated_in_code ? 'admin-gated' : '') + '</td>'
+               +  '</tr>';
+        });
+        html += '</table>';
+
+        var ts = e.tool_surface;
+        if (ts) {
+          html += '<h3 style="font-size: 13px; margin-bottom: 10px; font-weight: 600;">Tool surface — what ReAct can be offered</h3>';
+          html += '<div class="status-block" style="margin-bottom:10px;">';
+          html += '<div class="status-card"><div class="status-label">MCP tools (live)</div><div class="status-value">' + ts.mcp_tool_total + '</div></div>';
+          html += '<div class="status-card"><div class="status-label">Builtin skills</div><div class="status-value">' + ts.builtin_count + '</div></div>';
+          html += '<div class="status-card"><div class="status-label">MCP servers</div><div class="status-value">' + Object.keys(ts.mcp_servers || {}).length + '</div></div>';
+          html += '</div>';
+          html += '<table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:10px;">';
+          Object.keys(ts.mcp_servers || {}).forEach(function (u) {
+            var sv = ts.mcp_servers[u];
+            html += '<tr style="border-bottom:1px solid #222;">'
+                 +  '<td style="padding:7px 10px 7px 0; color:rgba(255,255,255,0.4); white-space:nowrap;">' + sv.role + '</td>'
+                 +  '<td style="padding:7px 10px;"><a href="' + u + '" style="color:#a78bfa; text-decoration:none;">' + u.replace('https://', '') + '</a></td>'
+                 +  '<td style="padding:7px 0; white-space:nowrap; color:' + (sv.count === null ? '#f87171' : '#4ade80') + ';">'
+                 +  (sv.count === null ? (sv.error || 'unreachable') : sv.count + ' tools') + '</td></tr>';
+          });
+          html += '</table>';
+          html += '<div style="font-size:11px; color:rgba(255,255,255,0.4); line-height:1.7; margin-bottom:26px;">' + ts.note + '</div>';
+        }
+
+        html += '<h3 style="font-size: 13px; margin-bottom: 10px; font-weight: 600;">Services — deployments (' + (e.services || []).length + ')</h3>';
+        html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+        var byService = {};
+        (platform.modules || []).forEach(function (m) { if (m.service) byService[m.service] = m.id; });
+        ((e.secondary_deployments) || []).forEach(function (x) { byService[x.service] = x.module + ' (2nd)'; });
+        (e.services || []).forEach(function (sv) {
+          var mod = byService[sv.service];
+          html += '<tr style="border-bottom:1px solid #222;">'
+               +  '<td style="padding:7px 10px 7px 0; white-space:nowrap;">' + sv.service + '</td>'
+               +  '<td style="padding:7px 10px;"><a href="' + sv.url + '" style="color:#a78bfa; text-decoration:none;">' + (sv.url || '').replace('https://', '') + '</a></td>'
+               +  '<td style="padding:7px 0; color:' + (mod ? 'rgba(255,255,255,0.4)' : '#fbbf24') + '; white-space:nowrap;">' + (mod || 'no module') + '</td>'
+               +  '</tr>';
+        });
+        html += '</table>';
+
+        if (e.caveats && e.caveats.length) {
+          html += '<h3 style="font-size:12px; margin-top:24px; margin-bottom:8px; font-weight:600; color:rgba(255,255,255,0.5);">What these numbers do and do not say</h3>';
+          html += '<ul style="font-size:11px; color:rgba(255,255,255,0.4); line-height:1.7; padding-left:18px;">';
+          e.caveats.forEach(function (c) { html += '<li>' + c + '</li>'; });
+          html += '</ul>';
+        }
+        html += '</div>';
+        document.getElementById('endpoints').innerHTML = html;
       }
 
       function renderStatusView(status) {
