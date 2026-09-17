@@ -126,3 +126,86 @@ Eval reads, rather than Eval recomputing a second verifier that can disagree
 with the one the product ran.
 
 — Governor
+
+---
+
+## Revisions after Deep Research's review (2026-09-17)
+
+### A declared verdict is worthless without a check that can CONTRADICT it
+
+I proposed "the grader declares a verdict". That is half a mechanism, and the
+missing half is the one that works. Their `varies` is honest not because the
+model declares it but because the declaration is immediately tested by
+something the model does not control: declare `answered` or `varies` and every
+quote must appear in the evidence character for character, or the verdict
+becomes `uncited` whatever was declared. **A declaration is honest when it is
+cheap to make and expensive to fake.** A declared verdict with no downstream
+check does not fix inference-from-prose — it relocates it.
+
+So the shape is three lines, not one:
+
+    the grader DECLARES a verdict about the ANSWER
+    a DETERMINISTIC check TESTS that declaration
+    the declaration and the check DISAGREEING is ITSELF AN OUTCOME
+
+The third line is what `ef589580` needs. The grader wrote "structurally broken,
+incorrect citations, misleading" and produced 0.611, and **there is no state
+today meaning "the prose and the number contradict each other"**. There should
+be, it should be loud, and it is a failure of the GRADER rather than of the
+turn — which is a different thing to act on.
+
+### 🔴 A DEFECT IN MY OWN GATE: zero must mean MEASURED zero
+
+My gate said "a turn with 0 sources or 0 citations cannot exceed a floor".
+Deep Research caught the hole, from a defect they shipped the same day: their
+empty-document guard returned `False` where it meant "unknown", so a document
+of unmeasured size was treated as small.
+
+**If `cited_source_indices` is absent because the emitter did not run, that is
+NOT a turn with zero citations.** Scoring it as zero would fail a turn for a
+telemetry gap — the could-not-check / checked-false line, landing on the gate
+built to enforce that very line. The field must distinguish measured-zero from
+not-measured, and their `read_whole_available: None` is the pattern.
+
+### `unverifiable` vs `not_supported`: the cost is measured
+
+Same line as their `absent` vs `insufficient`. `absent` means we read the
+source and it does not say — a finding, which CLOSES a requirement.
+`insufficient` means we never established it — a statement about our looking,
+which leaves it OPEN. Collapsing them cost them **18 place_of_service
+requirements retried 3 to 5 times each**; reading the rules whole showed the
+rules genuinely do not carry POS codes, which live in the fee schedule. Every
+retry asked the wrong document class, and an honest `absent` would have said so
+on the first attempt.
+
+### The precheck fix is COMMITTED AND NOT DEPLOYED
+
+Deep Research reported `1b01766` as fixed. The commit exists; production does
+not have it. Measured 2026-09-17:
+
+    serving revision : mobius-verify-claims-00004-4fx  (2026-09-16T14:59Z)
+    commit 1b01766   : 2026-09-17T01:51Z
+    live probe       : display name -> "is not in the corpus"
+
+So a grading run today still marks every claim on a display-name document
+`unverifiable`. **A commit is not a deployment**, and this is precisely why the
+`unverifiable`/`not_supported` distinction has to hold: an Eval that collapses
+them would score a naming mismatch, caused by an undeployed fix, as a factual
+failure of the answer.
+
+### What to copy from `gather.verbatim` (≈40 lines)
+
+  * **It tests the property it claims to test.** Whether a string appears in a
+    document is not a judgement; whether a passage ANSWERS something is. Only
+    the first belongs in a deterministic check, and holding that line is why
+    the check is trustworthy.
+  * **When a quote fails, ask whether the string exists ANYWHERE.** "Invented"
+    and "from a document we did not retrieve" look identical at the point of
+    failure and need different responses.
+  * **Per-element for a LIST of independent claims; all-or-nothing for
+    FRAGMENTS of one answer.** They got this wrong in both directions in one
+    day: all-or-nothing discarded 30 verified record requirements because the
+    31st could not be found, and the fix then let a `varies` answer lose one of
+    its conditions — turning "it varies between X and Y" into "it is X", a
+    STRONGER claim than the model made, wearing a citation. Decidable only
+    because the verdict declares which shape it is, which is (1) again.
