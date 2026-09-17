@@ -28,13 +28,11 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 TOOL_KEY = "verify_claims"
-#: Resolves a document_id to the filename the corpus knows it by.
-NAME_TOOL_KEY = "corpus_diagnostic"
 
 # 🔴 THE BAR IS OURS TO CHOOSE, AND IT IS RECORDED RATHER THAN INHERITED.
 #
@@ -202,56 +200,6 @@ def verifiable(facts) -> tuple[list, dict, str]:
 
 
 
-def canonical_filenames(facts, runner) -> dict:
-    """document_id -> the filename the CORPUS knows, via corpus_diagnostic.
-
-    🔴 RETRIEVAL AND VERIFICATION NAME THE SAME DOCUMENT DIFFERENTLY.
-
-    RAG's retrieval returns `document_name`, a display title. The verifier
-    matches on `documents.filename`. For most documents these are the same
-    string, because the title IS the filename -- "CMS-PRO-PE-Manual.pdf".
-    Where they differ, verification silently fails:
-
-        Sunshine Provider Manual        -> "is not in the corpus"
-        Sunshine Provider Manual.pdf    -> supported
-
-    One extension. Measured on live turn d2d0e0e0, where 5 of 13 sources
-    were that document, on the appeals question -- so the failure was
-    concentrated on the query this product is used for most, and looked
-    like a verifier problem rather than a naming one.
-
-    NOT A HEURISTIC. Appending ".pdf" and retrying would work here and be
-    wrong: it guesses at a naming convention instead of asking the system
-    that owns the name. We hold the document_id already; the corpus can
-    answer authoritatively. A guessed name that happens to match verifies a
-    claim against a document nobody confirmed.
-
-    Called through the SAME runner as the verifier -- corpus_diagnostic is a
-    registered tool, and lifting its HTTP call in here would be a second
-    client to drift.
-    """
-    ids = sorted({(getattr(f, "document_id", "") or "").strip()
-                  for f in (facts or ())
-                  if (getattr(f, "document_id", "") or "").strip()})
-    if not ids:
-        return {}
-    try:
-        res = runner(NAME_TOOL_KEY, {"document_ids": ids, "deep": False}) or {}
-    except Exception:
-        return {}      # never fail a turn to improve a name
-    body = res.get("payload") if isinstance(res.get("payload"), dict) else res
-    rows = (body or {}).get("documents") or []
-    out = {}
-    for row in rows if isinstance(rows, list) else []:
-        if not isinstance(row, dict):
-            continue
-        did = str(row.get("document_id") or "").strip()
-        fn = str(row.get("filename") or "").strip()
-        if did and fn:
-            out[did] = fn
-    return out
-
-
 def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
     """Check facts against their cited pages. `runner(tool_key, inputs)->dict`.
 
@@ -260,19 +208,30 @@ def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
     because "we could not check" and "this is wrong" are different, and
     collapsing them is the defect this whole module exists to avoid.
     """
-    # Resolve display titles to the names the corpus actually holds, BEFORE
-    # scoping -- verifiable() builds its id map from the facts' own document
-    # strings, so renaming afterwards would scope against the old name.
-    _canon = canonical_filenames(facts, runner)
-    if _canon:
-        facts = tuple(
-            replace(f, document=_canon[f.document_id])
-            if getattr(f, "document_id", "") in _canon
-            and _canon[f.document_id] != getattr(f, "document", "")
-            else f
-            for f in (facts or ())
-        )
-
+    # 🔴 THE NAME RESOLUTION THAT USED TO BE HERE IS GONE, AND WHY MATTERS.
+    #
+    # Chat resolved document_id -> documents.filename through corpus_diagnostic
+    # and sent the canonical name, because verify-claims' reachability precheck
+    # was keyed by FILENAME: a document whose curated display_name differed by a
+    # trailing ".pdf" was reported "is not in the corpus" while present with
+    # 364,013 reachable characters.
+    #
+    # Fixed upstream in mobius-verify-claims and verified on the SERVING
+    # revision (00005-l25), not on the commit -- the commit sat undeployed for
+    # ~11 hours while two seats believed it was live. My own probe:
+    #
+    #     display name + id map   -> supported    score 1.0
+    #     canonical filename      -> supported    score 1.0   (control: the
+    #                                             path that already worked is
+    #                                             not broken by the fix)
+    #     display name, NO id map -> unverifiable "is not in the corpus"
+    #
+    # THE THIRD LINE IS WHY THE GUARD BELOW EXISTS. The upstream fix is
+    # CONDITIONAL on the caller sending `document_ids`. Deleting our resolution
+    # without leaving anything behind would mean a future change that stops
+    # populating that map silently restores the original defect, on the one
+    # signal (a real document reported absent) that reads as a corpus problem
+    # rather than a caller problem.
     sendable, ids, excluded = verifiable(facts)
     if not sendable:
         return VerifyResult(skipped=excluded or "no facts with a document and page")
@@ -280,6 +239,16 @@ def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
     payload = [{"fact": getattr(f, "fact", ""),
                 "document": getattr(f, "document", ""),
                 "page": getattr(f, "page", None)} for f in sendable]
+
+    # The condition the upstream fix rests on. verifiable() already drops any
+    # fact with no document_id, so every sendable fact HAS one -- if the map is
+    # empty here, something stopped populating it and every claim is about to
+    # come back "is not in the corpus" for documents we hold.
+    if sendable and not ids:
+        return VerifyResult(skipped=(
+            "document_ids is empty while sending facts that carry ids — "
+            "verify-claims resolves by id and falls back to filename, so a "
+            "display-name document would be reported ABSENT. Not calling."))
     # 🔴 NO "LAST GATE" HERE, AND THAT IS DELIBERATE.
     #
     # I wrote one — every payload fact must appear in the id map — and two

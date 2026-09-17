@@ -1,97 +1,92 @@
-"""Retrieval and verification name the same document differently.
+"""The name resolution is GONE, and the condition it protected is guarded.
 
-RAG's retrieval returns `document_name` (a display title). The verifier
-matches on `documents.filename`. Usually identical -- the title IS the
-filename. Where they differ, verification fails silently:
+Chat used to resolve document_id -> documents.filename through
+corpus_diagnostic before verifying, because verify-claims' reachability
+precheck was keyed by FILENAME: a document whose curated display_name
+differed by a trailing ".pdf" came back "is not in the corpus" while present
+with 364,013 reachable characters.
 
-    Sunshine Provider Manual       -> "is not in the corpus"
-    Sunshine Provider Manual.pdf   -> supported
+Fixed upstream and verified on the SERVING revision 00005-l25 -- the commit
+sat undeployed ~11 hours while two seats believed it was live. Probe:
 
-Measured live: 5 of 13 sources on the appeals question were that document,
-so the loss was concentrated on the most-used query and read as a verifier
-fault rather than a naming one.
+    display name + id map    -> supported    1.0
+    canonical filename       -> supported    1.0   (control)
+    display name, NO id map  -> unverifiable "is not in the corpus"
+
+The third line is the whole reason this file still exists: the upstream fix
+is CONDITIONAL on the caller sending `document_ids`.
 """
+import pathlib
+
 from app.pipeline.v2 import verify as V
 from app.pipeline.v2.contract import Fact
 
-DID = "d9721756-d1b1-4cf4-845b-f44652c5fcf9"
+
+def test_the_local_resolution_is_gone():
+    """Two name paths that can disagree is the drift we removed.
+
+    Parsed, not grepped: the comment explaining WHY the resolution was
+    removed names corpus_diagnostic, and a string search fails on the
+    documentation. Reading prose instead of program is the defect I have
+    now shipped four times in this suite.
+    """
+    import ast
+
+    src = pathlib.Path(V.__file__).read_text()
+    tree = ast.parse(src)
+    assert not hasattr(V, "canonical_filenames"), "the resolver still exists"
+    # No call anywhere passes corpus_diagnostic as a tool key.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for a in list(node.args) + [k.value for k in node.keywords]:
+                if isinstance(a, ast.Constant) and a.value == "corpus_diagnostic":
+                    raise AssertionError(
+                        "chat still CALLS corpus_diagnostic to resolve a name")
 
 
-def _runner(diag_docs, capture):
-    def run(tool_key, inputs):
-        if tool_key == V.NAME_TOOL_KEY:
-            return {"documents": diag_docs}
-        capture.append(inputs)
-        return {"results": [{"verdict": "supported"} for _ in inputs["facts"]],
-                "duration_ms": 1}
-    return run
+def test_it_refuses_to_call_when_the_id_map_is_empty():
+    """🔴 THE GUARD THE DELETION REQUIRED.
+
+    Every sendable fact carries a document_id -- verifiable() drops the ones
+    that do not. So an empty map here means something stopped populating it,
+    and every claim is about to be reported ABSENT for a document we hold.
+    That reads as a corpus problem and is a caller problem, which is the most
+    expensive way for this to fail.
+    """
+    called = []
+
+    def runner(tool, inputs):
+        called.append(tool)
+        return {"results": [{"verdict": "supported"}]}
+
+    # A fact with an id, but verifiable()'s map suppressed: simulate by
+    # sending a fact whose document name is absent from the map it builds.
+    facts = [Fact("a claim", "Sunshine Provider Manual", 35, "d9721756")]
+    original = V.verifiable
+
+    def no_ids(f):
+        sendable, _ids, excluded = original(f)
+        return sendable, {}, excluded          # the defect: map lost
+
+    V.verifiable = no_ids
+    try:
+        r = V.verify(facts, runner)
+    finally:
+        V.verifiable = original
+
+    assert not called, "called the verifier with no id map"
+    assert "document_ids is empty" in r.skipped
+    assert r.findings == (), "a refusal to call is not a finding against a claim"
 
 
-def test_the_display_title_is_replaced_by_the_corpus_filename():
-    sent = []
-    facts = [Fact("the deadline is 90 days", "Sunshine Provider Manual", 35, DID)]
-    docs = [{"document_id": DID, "filename": "Sunshine Provider Manual.pdf"}]
-
-    V.verify(facts, _runner(docs, sent))
-
-    assert sent, "the verifier was never called"
-    assert sent[0]["facts"][0]["document"] == "Sunshine Provider Manual.pdf"
-
-
-def test_the_id_map_is_keyed_by_the_SAME_name_that_is_sent():
-    """A payload naming one string and a scope map keyed by another is the
-    unscopable case -- it costs the batch, not just the fact."""
-    sent = []
-    facts = [Fact("f", "Sunshine Provider Manual", 35, DID)]
-    docs = [{"document_id": DID, "filename": "Sunshine Provider Manual.pdf"}]
-
-    V.verify(facts, _runner(docs, sent))
-
-    payload_names = {f["document"] for f in sent[0]["facts"]}
-    assert payload_names <= set(sent[0]["document_ids"]), (
-        f"names sent {payload_names} are not all keys of the id map "
-        f"{set(sent[0]['document_ids'])}")
-
-
-def test_a_name_that_already_matches_is_left_alone():
-    sent = []
-    facts = [Fact("f", "CMS-PRO-PE-Manual.pdf", 54, "abc")]
-    docs = [{"document_id": "abc", "filename": "CMS-PRO-PE-Manual.pdf"}]
-
-    V.verify(facts, _runner(docs, sent))
-    assert sent[0]["facts"][0]["document"] == "CMS-PRO-PE-Manual.pdf"
-
-
-def test_it_asks_the_corpus_rather_than_guessing_an_extension():
-    """Appending '.pdf' would pass the first test and be wrong: it guesses a
-    convention instead of asking the system that owns the name."""
-    sent = []
-    facts = [Fact("f", "Some Handbook", 3, "zzz")]
-    # the corpus knows it by something an extension rule would never produce
-    docs = [{"document_id": "zzz", "filename": "2024_some_handbook_v3.docx"}]
-
-    V.verify(facts, _runner(docs, sent))
-    assert sent[0]["facts"][0]["document"] == "2024_some_handbook_v3.docx"
-
-
-def test_an_unresolvable_id_keeps_its_original_name():
-    sent = []
-    facts = [Fact("f", "Unknown Doc", 1, "nope")]
-    V.verify(facts, _runner([], sent))
-    assert sent[0]["facts"][0]["document"] == "Unknown Doc"
-
-
-def test_a_failing_resolver_never_fails_the_turn():
-    """Improving a name must never cost the verification, let alone the
-    answer."""
+def test_the_normal_path_still_sends_the_id_map():
     sent = []
 
-    def run(tool_key, inputs):
-        if tool_key == V.NAME_TOOL_KEY:
-            raise RuntimeError("corpus_diagnostic down")
+    def runner(tool, inputs):
         sent.append(inputs)
         return {"results": [{"verdict": "supported"}], "duration_ms": 1}
 
-    r = V.verify([Fact("f", "Doc", 1, "x")], run)
-    assert r.supported == 1
-    assert sent[0]["facts"][0]["document"] == "Doc"
+    V.verify([Fact("c", "Sunshine Provider Manual", 35, "d9721756")], runner)
+    assert sent, "never called"
+    assert sent[0].get("document_ids"), "id map missing from the payload"
+    assert "Sunshine Provider Manual" in sent[0]["document_ids"]
