@@ -306,17 +306,28 @@ def _verify_answer(ctx, emitter, step) -> None:
             detail.append(_trace.item(str(f)[:200], "✗"))
         for pb in vr.problems:
             detail.append(_trace.kv("not checked", pb))
+        # WHY they could not be checked, not just how many. The verifier
+        # returns a reason on every unverifiable row and this emit used to
+        # drop it, so "8 could not be checked" looked unexplainable when the
+        # explanation had been handed to us eight times.
+        for _why, _n in vr.unverifiable_why[:3]:
+            detail.append(_trace.kv("could not check", f"{_n}x — {_why}"))
         step(_trace.Step("verify", head, tuple(detail),
                          {"findings": len(vr.findings), "checked": vr.checked,
                           "supported": vr.supported,
                           "unverifiable": vr.unverifiable,
+                          "unverifiable_why": [
+                              {"why": w, "count": n}
+                              for w, n in vr.unverifiable_why[:5]],
                           "skipped": vr.skipped, "bar": vr.bar},
                          "verify_claims", "verify", "done"))
         logger.info("[v2.loop] cid=%s verify checked=%d supported=%d "
-                    "unverifiable=%d findings=%d ms=%d skipped=%s",
+                    "unverifiable=%d findings=%d ms=%d skipped=%s why=%s",
                     (getattr(ctx, "correlation_id", "") or "")[:8],
                     vr.checked, vr.supported, vr.unverifiable,
-                    len(vr.findings), vr.duration_ms, vr.skipped[:60] or "-")
+                    len(vr.findings), vr.duration_ms, vr.skipped[:60] or "-",
+                    "; ".join(f"{n}x {w}" for w, n in vr.unverifiable_why[:3])
+                    or "-")
         if vr.reopen:
             ctx._v2_verified_findings = tuple(f.repair() for f in vr.findings)
     except Exception:      # pragma: no cover — never fail a turn on a check

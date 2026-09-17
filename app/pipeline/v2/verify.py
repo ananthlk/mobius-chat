@@ -91,6 +91,19 @@ class VerifyResult:
     supported: int = 0
     unverifiable: int = 0
     skipped: str = ""            # why we did not check at all
+    #: Why each UNVERIFIABLE fact could not be checked, most common first.
+    #:
+    #: 🔴 THE COUNT WITHOUT THE REASON IS A COULD-NOT-CHECK WITH NO TELL.
+    #: This reported "unverifiable=8" and dropped the service's `why` on the
+    #: floor, so the only way to learn WHY was to call the verifier by hand --
+    #: which is what I had to do. The answer was one line ("<doc> is not in
+    #: the corpus") and it had been returned on every one of those 8 rows,
+    #: every turn, and thrown away each time.
+    #:
+    #: A reason that is returned and discarded is worse than one never
+    #: produced: it makes the gap look unexplainable when it is merely
+    #: unrecorded.
+    unverifiable_why: tuple[tuple[str, int], ...] = field(default_factory=tuple)
     duration_ms: int = 0
     bar: float = BAR
     problems: tuple[str, ...] = field(default_factory=tuple)
@@ -231,6 +244,7 @@ def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
         return VerifyResult(skipped=f"unrecognised verifier response: {type(rows).__name__}")
 
     found, supported, unverifiable = [], 0, 0
+    why_counts: dict[str, int] = {}
     for r, src in zip(rows, sendable):
         if not isinstance(r, dict):
             continue
@@ -239,6 +253,13 @@ def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
             supported += 1
         elif verdict == "unverifiable":
             unverifiable += 1
+            # Keep the REASON, not just the tally. Normalised to a shape that
+            # groups: the document name varies per row, the failure does not.
+            _w = str(r.get("why") or "").strip() or "no reason given"
+            _doc = str(getattr(src, "document", "") or "").strip()
+            if _doc and _doc in _w:
+                _w = _w.replace(_doc, "<document>")
+            why_counts[_w[:120]] = why_counts.get(_w[:120], 0) + 1
         elif verdict == "not_supported":
             found.append(Finding(
                 fact=getattr(src, "fact", ""),
@@ -253,6 +274,8 @@ def verify(facts, runner, *, bar: float = BAR) -> VerifyResult:
     return VerifyResult(
         findings=tuple(found), checked=len(rows), supported=supported,
         unverifiable=unverifiable,
+        unverifiable_why=tuple(sorted(why_counts.items(),
+                                      key=lambda kv: -kv[1])),
         duration_ms=int(res.get("duration_ms") or 0),
         bar=bar,
         problems=((excluded,) if excluded else ()),
