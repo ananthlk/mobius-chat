@@ -30,6 +30,30 @@ def empty_model(monkeypatch):
         calls["llm"] += 1
         return ""                      # 200 OK, zero output tokens
 
+    # 🔴 STUB PRELOAD, OR THIS TEST MEASURES THE DATABASE.
+    #
+    # The loop preloads before round 1, and preload opens a real connection.
+    # When the dev proxy degrades, that call hangs ~45-75s and fails with
+    # OperationalError -- which spends the ENTIRE round budget before the
+    # model is called even once. The loop then stops with
+    # `v2_budget_exhausted` and this test reports "the empty reply was not
+    # named model_empty", which is true and has nothing to do with empty
+    # replies.
+    #
+    # It cost me a diagnosis: I read the red as a regression in the change I
+    # had just made, and the previous commit failed identically. A test whose
+    # failure message names the wrong subsystem is worse than a slow one.
+    import app.pipeline.v2.preload as _pre
+    monkeypatch.setattr(_pre, "plan", lambda *a, **k: [])
+    monkeypatch.setattr(_pre, "execute", lambda *a, **k: [])
+
+    # The offer comes from Tool Manifest's estimate(), which opens a psycopg2
+    # connection with NO connect_timeout. Unreachable from a test runner, that
+    # call BLOCKS on TCP rather than failing, so the 50s it burns is charged
+    # to the turn budget and the loop stops before round 1.
+    import toolreg.estimate as _est
+    monkeypatch.setattr(_est, "estimate", lambda *a, **k: None)
+
     monkeypatch.setattr(prompts, "_call_llm_json", silent_llm)
     monkeypatch.setattr(rl, "_execute_tool_with_retry",
                         lambda *a, **k: {"tool": a[0], "success": True,

@@ -100,6 +100,19 @@ def harness(monkeypatch):
     def fake_v1_loop(ctx, emitter=None):
         calls["v1_loop"].append(True)
 
+    # 🔴 THE OFFER AND THE PRELOAD BOTH REACH A DATABASE.
+    #
+    # Tool Manifest's estimate() opens a psycopg2 connection with NO
+    # connect_timeout; unreachable from a test runner it BLOCKS on TCP for
+    # ~50s rather than failing. That time is charged to the turn budget, so
+    # the loop stops with `v2_budget_exhausted` before round 1 and every
+    # assertion in this file reports the wrong subsystem.
+    import app.pipeline.v2.preload as _pre
+    import toolreg.estimate as _est
+    monkeypatch.setattr(_est, "estimate", lambda *a, **k: None)
+    monkeypatch.setattr(_pre, "plan", lambda *a, **k: [])
+    monkeypatch.setattr(_pre, "execute", lambda *a, **k: [])
+
     monkeypatch.setattr(prompts, "_call_llm_json", fake_llm)
     monkeypatch.setattr(rl, "_execute_tool_with_retry", fake_tool)
     monkeypatch.setattr(rl, "_finalize_response", fake_finalize)
