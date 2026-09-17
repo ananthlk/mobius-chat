@@ -952,6 +952,13 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             #
             # Fourth time this session that work existed only in the loop that
             # is OFF. The others were ahead-prefetch, verify, and format rules.
+            # Bound BEFORE the try: the user-side statement below reads it,
+            # and an exception in system_suffix would otherwise leave it
+            # unbound — turning a prompt-decoration failure into a NameError
+            # that ends the turn. The except exists precisely so a suffix
+            # failure cannot end a turn; an unbound local would have defeated
+            # it from three lines away.
+            _suffix = ""
             try:
                 from app.pipeline.v2 import prompts as _v2pr
                 _suffix = _v2pr.system_suffix(ctx)
