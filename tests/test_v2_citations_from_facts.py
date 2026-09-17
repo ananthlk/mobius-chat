@@ -131,3 +131,52 @@ class TestTheFactsSchemaReachesTheGovernorLoop:
         from app.pipeline.v2 import prompts as P
 
         assert P.system_suffix(SimpleNamespace(orchestrator_version="v1")) == ""
+
+
+class TestTheFactsSchemaIsStatedTwice:
+    """Once is not enough against a 53,000-character prompt.
+
+    The schema was in the SYSTEM prompt only and live turns came back with
+    no facts: 44 of 60 verify calls skipped with "no facts with a document
+    and page", leaving the verifier and the citations idle on most turns.
+
+    Not length alone — the same suffix works at 18k. The real EXPLORE prompt
+    is 53,213 chars and restates v1's response shape TWELVE times. One
+    statement of an addition, at the end, loses to twelve of the shape it
+    extends. Measured on the real prompt, gemini pinned:
+
+        system only     0 / 9 runs produced facts with provenance
+        system AND user 5 / 7
+    """
+
+    def test_the_round_appends_the_suffix_to_the_user_message_too(self):
+        """Asserted on the SOURCE: a live check would need a model call, and
+        the behaviour it protects is probabilistic (5/7, not 7/7), so a
+        runtime assertion would be flaky for a real reason."""
+        import ast
+        import pathlib
+
+        import app.pipeline.v2.loop as L
+
+        tree = ast.parse(pathlib.Path(L.__file__).read_text())
+        # An assignment whose target is `user` and whose value adds _suffix.
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "user" for t in node.targets):
+                if "_suffix" in ast.dump(node.value):
+                    found = True
+        assert found, (
+            "the facts schema reaches the system prompt only; on the live "
+            "53k prompt that produced facts on 0 of 9 runs")
+
+    def test_both_sites_use_the_SAME_suffix_value(self):
+        """Two copies of the text would drift. One value, stated twice."""
+        import pathlib
+
+        import app.pipeline.v2.loop as L
+
+        src = pathlib.Path(L.__file__).read_text()
+        assert src.count("_v2pr.system_suffix(ctx)") == 1, (
+            "system_suffix is called more than once; the user-side statement "
+            "must reuse the value, not recompute or restate it")

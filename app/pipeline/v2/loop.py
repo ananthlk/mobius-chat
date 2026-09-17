@@ -961,6 +961,30 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
                 logger.warning("[v2.loop] system_suffix failed", exc_info=True)
 
             user = build_reasoning_context(ctx, tool_results, rn, max_rounds)
+
+            # 🔴 ONCE IS NOT ENOUGH AGAINST A 53,000-CHARACTER PROMPT.
+            #
+            # The facts schema was appended to the SYSTEM prompt only, and
+            # live turns came back with no facts at all — 44 of 60 verify
+            # calls skipped with "no facts with a document and page", so the
+            # verifier and the citations both sat idle on most turns.
+            #
+            # It is not length alone: the same suffix works at 18k. The real
+            # prompt is 53,213 chars for EXPLORE and restates v1's response
+            # shape TWELVE times. One statement of an addition, at the very
+            # end, loses to twelve statements of the shape it is adding to.
+            #
+            # Measured, same question, gemini pinned:
+            #     system only (before)   0 / 9 runs produced facts+provenance
+            #     system AND user        5 / 7
+            #
+            # Repetition is what wins, and the user message is where it is
+            # read last. The cost is ~3.5k duplicated characters per round,
+            # paid because a round whose facts are missing cannot be verified
+            # or cited at all — the whole chain downstream is dark.
+            if _suffix:
+                user = (user or "") + _suffix
+
             _llm_t0 = time.monotonic()
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
                                  stage=f"react_{rn}")
