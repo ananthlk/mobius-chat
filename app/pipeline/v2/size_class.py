@@ -116,3 +116,62 @@ def expected_block() -> str:
           "  have not checked."
     )
     return _CACHE
+
+
+#: Which tool performs each class's move, on OUR side. A class whose tool is
+#: None is a move this loop cannot make -- rendering it would teach the model
+#: to plan something nobody can execute, which is the failure Deep Research's
+#: `as_tool` flag exists to prevent. `section_read` is deliberately absent:
+#: it needs a document id AND a section, which is not fillable from a bare
+#: question (Tool Manifest: permanently `inputs_status='unfillable'`, belongs
+#: in `suggest`, which does not exist yet).
+TOOL_FOR_CLASS = {
+    "read_whole": "fetch_document",
+    "retrieval_only": "rag",
+}
+
+
+def escalation_block() -> str:
+    """The rungs THIS loop can actually climb, for a posture that already
+    holds retrieval.
+
+    🔴 WHY THIS EXISTS AT ALL. Measured on live turn 54c3f84f, on a question
+    that opens with the words "Open the Sunshine Provider Manual": the loop
+    ran rag, answered from the chunks, and NEVER called fetch_document. The
+    tool is offered by estimate(), its inputs are `fillable`, and react can
+    dispatch it -- a small-enough document comes back as an inline attachment
+    the next round reads whole. Every part works. Nothing ever asks.
+
+    The prompt never told it the move existed. Deep Research measured
+    read-whole settling at 95% against retrieval's 16%, and this loop was
+    taking the 16% path on a question that NAMED the document.
+
+    Only classes with a tool in TOOL_FOR_CLASS are rendered.
+    """
+    try:
+        by_name = {r["name"]: r for r in _rows() if r.get("name")}
+    except Exception as exc:
+        logger.warning("[v2.size_class] ladder unreadable (%r)", exc)
+        return ""
+    parts = []
+    for name, tool in TOOL_FOR_CLASS.items():
+        row = by_name.get(name)
+        if not row:
+            continue
+        why = " ".join((row.get("why") or "").split())
+        parts.append(
+            f"  {(row.get('move') or name).strip()} — {(row.get('rule') or '').strip()}\n"
+            f"      Tool: {tool}\n"
+            f"      {why}")
+    if not parts:
+        return ""
+    return (
+        "\n\nYOU ARE ALREADY HOLDING RETRIEVAL. A broad sweep ran before you\n"
+        "spoke, so the question is not which move to make — it is whether to\n"
+        "CLIMB OFF the one you have:\n\n"
+        + "\n\n".join(parts)
+        + "\n\n  IF THE QUESTION NAMES A DOCUMENT, OR YOUR EVIDENCE DOES, that is a\n"
+          "  document you have not read — you are holding passages someone ranked\n"
+          "  out of it. Name it and read it rather than searching the same corpus\n"
+          "  again with different words."
+    )

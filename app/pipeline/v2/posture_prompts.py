@@ -137,7 +137,8 @@ evidence is in front of you.
                      a gap to justify another round. A settlement you cannot
                      quote has not settled anything.
 
-{silence}
+{silence}{escalation}
+
 Only if something is genuinely still missing, plan for it.
 
 NAME EVERY TOOL YOU NEED, NOT ONE. Tools you name together RUN IN THE SAME
@@ -159,6 +160,7 @@ round after this one:
 {per_round}
 """.format(
     silence=SILENCE_IS_NOT_ABSENCE,
+    escalation=_size_class.escalation_block(),
     per_plan=_plan.render(_plan.PER_PLAN),
     across_plans=_plan.render(_plan.ACROSS_PLANS),
     per_round=_plan.render(_plan.PER_ROUND),

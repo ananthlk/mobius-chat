@@ -132,3 +132,69 @@ class TestItFailsOpenAndOnAShortLeash:
         b = flat(S.expected_block())
         assert ".pdf" not in b
         assert "§" not in b
+
+
+class TestReadWholeIsOfferedAsAMove:
+    """Live turn 54c3f84f asked "Open the Sunshine Provider Manual..." and the
+    loop ran rag, answered from chunks, and never called fetch_document.
+
+    Every part worked: estimate() offers the tool, its inputs are `fillable`,
+    react can dispatch it, and a small-enough document returns as an inline
+    attachment the next round reads whole. Nothing ever asked. The prompt had
+    no rung for it, so the loop took the 16% path on a question that NAMED
+    the document.
+    """
+
+    # 🔴 THESE RENDER THE BLOCK, THEY DO NOT READ P.EXPLORE.
+    #
+    # EXPLORE is built at import time and the block is empty when the
+    # vocabulary table is unreachable -- which is the fail-open path, and is
+    # the normal state in a test runner. Asserting on the module constant
+    # made these tests pass or fail on whether a DATABASE was up, which is
+    # the exact fragility that cost me an hour on the estimate() hang today.
+    def test_the_block_names_the_tool_that_reads_a_document(self, monkeypatch):
+        monkeypatch.setattr(S, "_rows", lambda: [
+            {"name": "read_whole", "rule": "at most 30,000 characters",
+             "move": "READ IT WHOLE", "why": "one read serves it",
+             "kinds": []}])
+        b = flat(S.escalation_block())
+        assert "fetch_document" in b, (
+            "the block never names the tool that performs the highest-settling "
+            "move, so the model cannot plan it")
+
+    def test_the_block_says_a_named_document_is_one_you_have_not_read(self,
+                                                                      monkeypatch):
+        monkeypatch.setattr(S, "_rows", lambda: [
+            {"name": "read_whole", "rule": "r", "move": "M", "why": "w",
+             "kinds": []}])
+        b = flat(S.escalation_block())
+        assert "NAMES A DOCUMENT" in b
+        assert "ranked" in b and "out of it" in b
+
+    def test_explore_carries_the_block_when_the_vocabulary_is_readable(self):
+        """The wiring, asserted on the SOURCE rather than on a rendered
+        constant that depends on a live database."""
+        import ast
+        src = pathlib.Path(P.__file__).read_text()
+        tree = ast.parse(src)
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "escalation_block"]
+        assert calls, "EXPLORE never calls escalation_block()"
+
+    def test_only_classes_with_a_real_tool_are_offered(self):
+        """`section_read` has no tool surface on our side -- a document id AND
+        a section, not fillable from a bare question. Rendering it would teach
+        the model to plan a move nobody can execute, which is exactly what
+        Deep Research's `as_tool` flag exists to prevent."""
+        assert "section_read" not in S.TOOL_FOR_CLASS
+        assert set(S.TOOL_FOR_CLASS) <= set(S.EXPECTED_CLASSES)
+
+    def test_every_offered_class_names_a_tool_that_is_not_none(self):
+        for name, tool in S.TOOL_FOR_CLASS.items():
+            assert tool, f"{name} is offered with no tool"
+
+    def test_the_ladder_fails_open_like_the_rest(self, monkeypatch):
+        monkeypatch.setattr(S, "_rows", lambda: (_ for _ in ()).throw(
+            RuntimeError("db down")))
+        assert S.escalation_block() == ""
