@@ -273,19 +273,37 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
                 f"that cites nothing")
             score = min(score, 0.5)
 
-        # A turn that delivered almost nothing is not a PARTIAL success.
-        if len(_ans) < 200 and score > 0.4:
-            contradictions.append(
-                f"scored {score:.3f} on a {len(_ans)}-character answer — too "
-                f"little was delivered for the grade to describe the turn")
-            score = min(score, 0.4)
+        # 🔴 A LENGTH RULE WAS HERE AND I REMOVED IT AFTER MEASURING IT.
+        #
+        # "under 200 characters caps at 0.4" fired on 3 of 4 validation turns
+        # and was WRONG on one of them. The data says length cannot do this
+        # job:
+        #
+        #     ef589580   126 chars  an error message        should cap
+        #     babcf5dd   137 chars  an honest refusal that   must NOT cap
+        #                           named who to call
+        #
+        # Eleven characters apart, opposite meanings. The rule capped a PASS
+        # from 0.899 to 0.4 for being SHORT — punishing exactly the concise
+        # honest refusal this loop was changed to produce. That is the bias I
+        # built this floor to remove, re-introduced by my own gate from the
+        # other direction.
+        #
+        # Brevity is not a defect. A broken DELIVERY is, and the adjudicator
+        # already detects that and flags it — so the flag does the work below
+        # rather than a proxy that cannot tell a short answer from a failed
+        # one.
 
         # A raised failure flag must MOVE the number. A flag that does not is
         # decoration: DEAD_END_ESCALATION was raised on 26500a75, the rationale
         # said the user got a dead end, and it scored 0.909.
         _flags = [str(f) for f in (adj.get("flags") or [])]
+        # JSON_BLEED joins these from the validation run: it means wire format
+        # reached the person's screen, which is a delivery failure the model
+        # detects reliably and length never could.
         _hard = [f for f in _flags if f in (
-            "HALLUCINATION_SUSPECTED", "WRONG_PAYER", "STALE_DATA_PRESENTED")]
+            "HALLUCINATION_SUSPECTED", "WRONG_PAYER", "STALE_DATA_PRESENTED",
+            "JSON_BLEED")]
         if _hard and score > 0.6:
             contradictions.append(
                 f"scored {score:.3f} while raising {', '.join(_hard)} — a "

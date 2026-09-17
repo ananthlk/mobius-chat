@@ -24,21 +24,34 @@ def floor(score, *, answer="x" * 500, sources=None, flags=()):
     ans = (answer or "").strip()
     if src is not None and len(src) == 0 and len(ans) > 0 and score > 0.5:
         contradictions.append("zero sources"); score = min(score, 0.5)
-    if len(ans) < 200 and score > 0.4:
-        contradictions.append("too little delivered"); score = min(score, 0.4)
     hard = [f for f in flags if f in ("HALLUCINATION_SUSPECTED", "WRONG_PAYER",
-                                      "STALE_DATA_PRESENTED")]
+                                      "STALE_DATA_PRESENTED", "JSON_BLEED")]
     if hard and score > 0.6:
         contradictions.append("hard flag"); score = min(score, 0.6)
     return score, contradictions
 
 
 class TestTheThreeLiveCases:
-    def test_ef589580_a_126_char_answer_with_no_sources(self):
-        """Delivered 126 characters and zero sources; graded 0.611."""
+    def test_ef589580_zero_sources_still_caps(self):
+        """126 chars AND zero sources. The zero-sources check carries it; the
+        length check was removed after measurement (see below)."""
         score, why = floor(0.611, answer="x" * 126, sources=[])
-        assert score <= 0.4, f"still {score}"
-        assert len(why) == 2, "both the zero-sources and thin-answer checks fire"
+        assert score <= 0.5 and why
+
+    def test_a_SHORT_HONEST_REFUSAL_IS_NOT_PENALISED(self):
+        """🔴 THE RULE I REMOVED AFTER MEASURING IT.
+
+        Live turn babcf5dd: 137 characters, a refusal that named who to call,
+        graded PASS 0.899 -- and my length rule capped it to 0.4 for being
+        short. ef589580 was an ERROR MESSAGE at 126 characters. Eleven
+        characters apart, opposite meanings: length cannot separate them, and
+        the rule punished exactly the concise honest refusal this loop was
+        changed to produce.
+        """
+        score, why = floor(0.899, answer="x" * 137, sources=[{"d": 1}] * 8,
+                           flags=["CORPUS_GAP", "DEAD_END_ESCALATION"])
+        assert score == 0.899, f"a short honest answer was capped to {score}"
+        assert why == []
 
     def test_26500a75_a_raised_flag_must_move_the_number(self):
         score, why = floor(0.909, sources=[{"d": 1}] * 8,
