@@ -19,6 +19,7 @@ posture prompt says what the ROUND is for.
 from __future__ import annotations
 
 from app.pipeline.v2 import plan_shape as _plan
+from app.pipeline.v2 import size_class as _size_class
 from app.pipeline.v2.posture import Posture
 
 # ── FRAME ───────────────────────────────────────────────────────────────────
@@ -95,7 +96,10 @@ Say, briefly:
 
   what_kind_of_question   what is being asked, in your own words — and WHAT
                           KIND OF DOCUMENT answers questions like it. The kind
-                          of document, not the topic: it shapes everything after.
+                          of document, not the topic.
+  expected_size_class     which size class that KIND usually falls in, from the
+                          list below, and that you have not checked. Size, not
+                          kind, is what decides which move is available.
   already_answered        what the evidence in hand already settles — WITH THE
                           DOCUMENT AND SENTENCE FOR EACH. If it settles the
                           whole question, say so plainly. Do not manufacture a
@@ -108,8 +112,9 @@ Say, briefly:
   what_i_expect_to_be_hard  which parts you expect to FAIL, and why — written
                           now, before anyone tries.
 
-{silence}
-""".format(silence=SILENCE_IS_NOT_ABSENCE)
+{silence}{size_classes}
+""".format(silence=SILENCE_IS_NOT_ABSENCE,
+                         size_classes=_size_class.expected_block())
 
 # ── EXPLORE ─────────────────────────────────────────────────────────────────
 # The plan fields are NOT written here. They are declared once in
