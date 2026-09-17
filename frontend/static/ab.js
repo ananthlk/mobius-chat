@@ -59,6 +59,7 @@ function simpleMarkdownToHtml(text) {
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = unnestBold(out);
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = renderLists(out);
   out = out.replace(/\n\n+/g, "</p><p>");
@@ -67,6 +68,17 @@ function simpleMarkdownToHtml(text) {
 }
 function unwrapBlocks(html) {
   return html.replace(/<p>\s*(<[uo]l>)/g, "$1").replace(/(<\/[uo]l>)\s*<\/p>/g, "$1").replace(/<p>\s*<\/p>/g, "").replace(/(<\/[uo]l>)\s*<br>\s*/g, "$1");
+}
+function unnestBold(text) {
+  return text.split("\n").map((line) => {
+    const t = line.trim();
+    if (!t.startsWith("**") || !t.endsWith("**") || t.length < 8)
+      return line;
+    const inner = t.slice(2, -2);
+    if (!inner.includes("**"))
+      return line;
+    return line.replace(t, inner);
+  }).join("\n");
 }
 function renderLists(text) {
   const lines = text.split("\n");
