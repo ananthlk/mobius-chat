@@ -23,6 +23,39 @@ from app.pipeline.context import PipelineContext
 logger = logging.getLogger(__name__)
 
 
+#: Ceiling for a turn that raised a hard failure flag (a fabricated fact, the
+#: wrong payer, stale data presented as current, wire format on screen).
+#:
+#: 🔴 THIS IS AN ORDERING CONSTRAINT, NOT A NUMBER SOMEONE LIKED.
+#:
+#: The rule: NO FABRICATION MAY OUTRANK AN HONEST REFUSAL. For a claims
+#: operator a wrong deadline causes a missed appeal; a dead end causes a phone
+#: call. Those are not the same cost and the score must not say they are.
+#:
+#: Measured over one 15-question bank (30 turns), by flag:
+#:
+#:     HALLUCINATION_SUSPECTED   n=7   min 0.372  median 0.600  max 0.600
+#:     DEAD_END_ESCALATION       n=9   min 0.361  median 0.735  max 1.000
+#:     neither                  n=13   min 0.438  median 0.957  max 1.000
+#:
+#: On MEDIANS the ordering was already correct (0.600 < 0.735). The defect was
+#: the OVERLAP: the best hallucination (0.600) outranked the worst honest
+#: refusal (0.361). 0.35 sits below that floor, so the bands cannot invert.
+#:
+#: RE-DERIVE THIS IF THE BANDS MOVE. It is drawn through 16 flagged turns from
+#: one bank under degraded infrastructure, which is a thin basis for a
+#: constant — it is the right SHAPE on evidence I would not call strong.
+#:
+#: WHAT THIS DELIBERATELY DOES NOT DO: it does not raise refusals. Rewarding a
+#: refusal would pay for saying nothing, and the cheapest way to score well
+#: would become answering nothing at all. Only invention is penalised.
+#:
+#: CONFLICT OF INTEREST, STATED: I own the v2 loop, v2 refuses more and
+#: hallucinates less, and this change moves the metric in v2's favour. It is
+#: argued from operator cost and from the measured inversion above, not from
+#: the A/B — and it would have to hold if the arms were reversed.
+HARD_FLAG_CEILING = 0.35
+
 def _tool_fired_from_log(thinking_lines: list[str]) -> str:
     for line in reversed(thinking_lines or []):
         low = line.lower()
@@ -304,11 +337,11 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         _hard = [f for f in _flags if f in (
             "HALLUCINATION_SUSPECTED", "WRONG_PAYER", "STALE_DATA_PRESENTED",
             "JSON_BLEED")]
-        if _hard and score > 0.6:
+        if _hard and score > HARD_FLAG_CEILING:
             contradictions.append(
                 f"scored {score:.3f} while raising {', '.join(_hard)} — a "
                 f"raised failure flag must bind the score")
-            score = min(score, 0.6)
+            score = min(score, HARD_FLAG_CEILING)
 
         if contradictions:
             logger.warning(

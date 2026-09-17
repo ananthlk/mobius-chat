@@ -24,10 +24,11 @@ def floor(score, *, answer="x" * 500, sources=None, flags=()):
     ans = (answer or "").strip()
     if src is not None and len(src) == 0 and len(ans) > 0 and score > 0.5:
         contradictions.append("zero sources"); score = min(score, 0.5)
+    from app.services.post_run_adjudication import HARD_FLAG_CEILING as CEIL
     hard = [f for f in flags if f in ("HALLUCINATION_SUSPECTED", "WRONG_PAYER",
                                       "STALE_DATA_PRESENTED", "JSON_BLEED")]
-    if hard and score > 0.6:
-        contradictions.append("hard flag"); score = min(score, 0.6)
+    if hard and score > CEIL:
+        contradictions.append("hard flag"); score = min(score, CEIL)
     return score, contradictions
 
 
@@ -62,9 +63,10 @@ class TestTheThreeLiveCases:
             "honest refusal this loop was changed to make")
 
     def test_a_hallucination_flag_does_cap(self):
+        from app.services.post_run_adjudication import HARD_FLAG_CEILING as CEIL
         score, why = floor(0.963, sources=[{"d": 1}] * 5,
                            flags=["HALLUCINATION_SUSPECTED"])
-        assert score == 0.6 and why
+        assert score == CEIL and why
 
 
 class TestZeroMeansMeasuredZero:
@@ -100,3 +102,45 @@ class TestAGraderThatCouldNotGradeReportsNoFailure:
         import inspect
         src = inspect.getsource(adj_mod)
         assert "passed = None" in src
+
+
+class TestNoFabricationOutranksAnHonestRefusal:
+    """The ordering constraint, argued from operator cost.
+
+    A wrong deadline causes a missed appeal. A dead end causes a phone call.
+    The score must not say those are the same.
+
+    Measured over 30 turns, by flag:
+        HALLUCINATION_SUSPECTED  n=7  min 0.372  median 0.600  max 0.600
+        DEAD_END_ESCALATION      n=9  min 0.361  median 0.735  max 1.000
+
+    Medians were already correctly ordered. The defect was the OVERLAP -- the
+    best hallucination (0.600) outranked the worst honest refusal (0.361).
+    """
+
+    WORST_OBSERVED_HONEST_REFUSAL = 0.361
+
+    def test_the_ceiling_sits_below_the_worst_honest_refusal(self):
+        from app.services.post_run_adjudication import HARD_FLAG_CEILING as CEIL
+        assert CEIL < self.WORST_OBSERVED_HONEST_REFUSAL, (
+            f"ceiling {CEIL} allows a fabricated fact to outrank an honest "
+            f"refusal scored at {self.WORST_OBSERVED_HONEST_REFUSAL}")
+
+    def test_a_hallucinated_answer_cannot_beat_a_dead_end(self):
+        hallucinated, _ = floor(0.963, sources=[{"d": 1}] * 5,
+                                flags=["HALLUCINATION_SUSPECTED"])
+        dead_end, _ = floor(self.WORST_OBSERVED_HONEST_REFUSAL,
+                            sources=[{"d": 1}] * 5,
+                            flags=["CORPUS_GAP", "DEAD_END_ESCALATION"])
+        assert hallucinated < dead_end
+
+    def test_refusals_are_NOT_rewarded(self):
+        """🔴 The floor tightens invention. It must never RAISE a refusal.
+
+        Paying for a refusal makes answering nothing the cheapest way to score
+        well, which is a worse failure than the one being fixed.
+        """
+        for s0 in (0.2, 0.5, 0.9):
+            out, _ = floor(s0, sources=[{"d": 1}] * 3,
+                           flags=["CORPUS_GAP", "DEAD_END_ESCALATION"])
+            assert out == s0, f"a refusal was moved from {s0} to {out}"
