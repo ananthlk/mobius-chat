@@ -36,8 +36,27 @@ text-reconstructed ``/documents/{id}/download/pdf`` as
 ``fallback_download_url`` for scraped / text-only docs that have no
 binary original. The frontend tries them in that order.
 
-PHI / safety: this skill returns metadata + a link only. It does NOT
-fetch or re-stream the file. Auth/audit live on the mobius-rag side.
+PHI / safety (2026-08-16, Retriever's finding + Ananth's explicit call --
+correcting a claim below that's no longer accurate): this skill does NOT
+return metadata + a link only anymore -- ``_maybe_fetch_attachment``
+(Task #106, same day) fetches the document's actual bytes server-side and
+embeds them in the LLM's context when a single confident match is small
+enough. ``published_rag_metadata`` includes documents promoted from
+Instant RAG's Vault (``is_instant_rag`` flag in publish.py), not only the
+curated payer-policy corpus -- and mobius-rag's ``/documents/{id}/file``
+endpoint has NO auth or PHI check at all (confirmed by reading it
+directly), so "Auth/audit live on the mobius-rag side" was never
+actually true for that endpoint.
+
+Explicit decision, not a silent gap: Instant RAG's HIPAA gate is an
+ORG-LEVEL permission check at UPLOAD time (mode-not-allowed -> hard
+stop for orgs without HIPAA mode enabled) -- not a per-document content
+scanner re-run at every download/attachment. Ananth's call: trust that
+gate as sufficient once a document is promoted into the corpus; do NOT
+add a second content-level PHI check at fetch/attachment time. If this
+assumption ever needs revisiting (e.g. HIPAA-mode orgs promoting
+content that later needs re-screening), that's a new decision to make
+explicitly, not a bug to silently patch here.
 """
 from __future__ import annotations
 
