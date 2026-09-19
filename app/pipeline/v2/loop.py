@@ -123,6 +123,31 @@ V2_MAX_ROUNDS_DEFAULT = 4
 # wasted round is most of the budget.
 MAX_UNUSABLE_ROUNDS = 2
 
+# The ABSOLUTE cap, which no amount of remaining budget may exceed.
+#
+# 🔴 WHY THE FUSE GREW A SECOND NUMBER. Live turn 98f8a6e1 stopped on
+# `unusable_rounds` after 2 rounds with 84.8s of a 95s promise UNSPENT, on an
+# agentic question whose ceiling was 6 rounds. The governor had judged the gap
+# affordable on both rounds and said EXTEND; the fuse ended the turn anyway,
+# and v1 answered the same question in 6 rounds and scored 0.969 against
+# v2's 0.384.
+#
+# The rationale for 2 was itself budget reasoning — "at v2's ceilings a third
+# wasted round is most of the budget" — expressed as a round count. Where the
+# budget is nearly spent that inference holds; where 89% of it remains it is
+# simply false, and the fuse was enforcing an arithmetic that no longer
+# applied.
+#
+# So the fuse now asks the question it was always approximating: can we still
+# AFFORD another round? If yes, keep going, up to this hard cap. If no, stop
+# at MAX_UNUSABLE_ROUNDS as before.
+#
+# THE RUNAWAY IS STILL CAUGHT. Three independent bounds remain — this cap, the
+# per-mode round ceiling, and the wall-clock check at the top of every round —
+# and the 98-round failure this fuse exists for cannot be reached through any
+# of them.
+MAX_UNUSABLE_ROUNDS_HARD = 4
+
 # ── THE FALLBACK RESERVE ────────────────────────────────────────────────────
 #
 # v2's loop must never spend the turn's whole budget, because when it produces
@@ -1085,7 +1110,23 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         if not tool:
             unusable += 1
             if unusable >= MAX_UNUSABLE_ROUNDS:
+                # Can we still afford a round? The fuse's own reasoning was
+                # about cost; ask about cost rather than about a count.
+                _round_cost = float(getattr(state, "next_round_cost_s", 0.0) or 0.0)
+                _affordable = _round_cost > 0.0 and _left >= _round_cost
+                if _affordable and unusable < MAX_UNUSABLE_ROUNDS_HARD:
+                    logger.info(
+                        "[v2.loop] cid=%s %d unusable round(s), continuing: "
+                        "%.1fs left affords another at %.1fs (hard cap %d)",
+                        (getattr(ctx, "correlation_id", "") or "")[:8],
+                        unusable, _left, _round_cost, MAX_UNUSABLE_ROUNDS_HARD)
+                    continue
                 res.stopped_by = "unusable_rounds"
+                logger.info(
+                    "[v2.loop] cid=%s STOPPING on %d unusable round(s): "
+                    "%.1fs left, next round costs %.1fs",
+                    (getattr(ctx, "correlation_id", "") or "")[:8],
+                    unusable, _left, _round_cost)
                 break
             continue
         unusable = 0

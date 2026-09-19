@@ -98,3 +98,82 @@ def test_the_state_builder_actually_stores_it():
                 and any(k.arg == "pending_tools" for k in n.keywords)):
             ok = True
     assert ok, "state_from_ctx builds a RoundState without pending_tools"
+
+
+class TestTheUnusableFuseAsksAboutCost:
+    """Live turn 98f8a6e1 stopped on `unusable_rounds` after 2 rounds with
+    84.8s of a 95s promise UNSPENT, on an agentic question whose ceiling was
+    6 rounds. The governor said the gap was affordable on both rounds and
+    said EXTEND. v1 answered the same question in 6 rounds, scoring 0.969
+    against v2's 0.384.
+
+    The fuse's own rationale was budget reasoning -- "at v2's ceilings a
+    third wasted round is most of the budget" -- written as a round count.
+    With 89% of the budget left that inference is simply false.
+    """
+
+    def fuse(self, unusable, left_s, round_cost_s):
+        """The decision, reproduced: stop, or keep going?"""
+        from app.pipeline.v2.loop import (MAX_UNUSABLE_ROUNDS,
+                                          MAX_UNUSABLE_ROUNDS_HARD)
+        if unusable < MAX_UNUSABLE_ROUNDS:
+            return "continue"
+        affordable = round_cost_s > 0.0 and left_s >= round_cost_s
+        if affordable and unusable < MAX_UNUSABLE_ROUNDS_HARD:
+            return "continue"
+        return "stop"
+
+    def test_it_no_longer_stops_with_the_budget_barely_touched(self):
+        """98f8a6e1's numbers exactly."""
+        assert self.fuse(unusable=2, left_s=84.8, round_cost_s=9.0) == "continue"
+
+    def test_it_still_stops_when_a_round_is_unaffordable(self):
+        """The case the fuse was written for: nearly spent, still learning
+        nothing."""
+        assert self.fuse(unusable=2, left_s=3.0, round_cost_s=9.0) == "stop"
+
+    def test_the_hard_cap_is_absolute_however_much_budget_remains(self):
+        """🔴 THE RUNAWAY MUST STILL BE CAUGHT. No amount of remaining budget
+        may buy an unbounded number of rounds that learn nothing."""
+        assert self.fuse(unusable=4, left_s=900.0, round_cost_s=1.0) == "stop"
+
+    def test_an_unknown_round_cost_stops_rather_than_continues(self):
+        """Could-not-check is not a licence to spend. If the cost of a round
+        is unknown, affordability is UNKNOWN, and the fuse must not read that
+        as 'affordable' -- the same measured-zero/not-measured line, on the
+        input that decides whether to keep going."""
+        assert self.fuse(unusable=2, left_s=900.0, round_cost_s=0.0) == "stop"
+
+    def test_the_LOOP_actually_consults_the_budget_in_that_branch(self):
+        """🔴 THE TESTS ABOVE REPRODUCE THE DECISION; THIS ONE CHECKS THE CODE.
+
+        A table of cases can agree with itself forever while the loop stops
+        asking the question.
+
+        My first version searched the branch text for "_left" and PASSED
+        while the decision was mutated to `_affordable = False` — because
+        "_left" still appeared in the log line below it. Matching prose that
+        happens to sit nearby, in the gate written to prevent drift. So:
+        parse, find the assignment that decides affordability, and assert
+        ITS expression reads the remaining budget.
+        """
+        import ast
+        import pathlib
+
+        import app.pipeline.v2.loop as L
+
+        tree = ast.parse(pathlib.Path(L.__file__).read_text())
+        decided = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "_affordable"
+                            for t in node.targets)):
+                names = {n.id for n in ast.walk(node.value)
+                         if isinstance(n, ast.Name)}
+                decided.append(names)
+        assert decided, "nothing decides `_affordable` any more"
+        assert any("_left" in names for names in decided), (
+            f"affordability is decided without reading the remaining budget "
+            f"(saw {decided}) — the fuse is a round count again")
+        assert any("_round_cost" in names for names in decided), (
+            "affordability is decided without the cost of a round")
