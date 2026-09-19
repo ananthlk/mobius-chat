@@ -375,6 +375,14 @@ class RoundState:
     #: Empty by default so a caller that does not know about pending work
     #: behaves exactly as before.
     pending_tools: tuple[str, ...] = ()
+    #: How many facts this turn holds that carry a document — the same bar
+    #: `verify` uses, because a fact it cannot check is not evidence.
+    #:
+    #: 🔴 None MEANS NOT MEASURED, AND MUST NOT READ AS ZERO. Zero is the
+    #: trigger for spending into the band; a caller that simply does not know
+    #: would otherwise buy a round on a telemetry gap. Defaults to None so
+    #: every existing caller keeps its current behaviour exactly.
+    grounded_facts: int | None = None
 
 
 _IMPORTANCE_ORDER = {"low": 0, "normal": 1, "high": 2}
@@ -536,6 +544,53 @@ def converging(state: RoundState) -> bool:
     )
 
 
+
+def _shipping_nothing(state: RoundState) -> tuple[bool, str]:
+    """May a turn that has found NOTHING buy a round the promise will not fund?
+
+    🔴 WHY THIS EXISTS. `converging()` asks "is this about to close?" — few
+    gaps, not rising, and something CAME BACK. That is the right test for "I am
+    nearly done, let me finish" and the wrong one for "I have nothing, let me
+    look once more". Its third clause requires a returned payload, so the band
+    opened exactly when a turn was already succeeding and closed exactly when
+    it was failing.
+
+    Measured, live turn 4ab61f6a, "does Aetna cover doula services":
+
+        round 1  remaining 24.2s  spendable  -> explore, extend
+        round 2  remaining 20.0s  NOT spendable (needs 10.4 + 10.0 = 20.4s)
+                 converging=False (nothing returned) -> band refused
+                 -> NARROW, no tools, "not found in our available materials"
+
+    Four tenths of a second short, on a question whose answer the corpus holds.
+    v1 took 47s on the same question — 16s past its promise — retrieved twice
+    and answered it.
+
+    🔴 AND WHY IT IS THE NARROWEST GATE I COULD WRITE. This fires when a turn
+    is FAILING, which is also when a runaway is cheapest to start: every extra
+    round still finds nothing, and "found nothing" stays true forever. So every
+    clause below is a refusal, and the band arithmetic in may_overrun still
+    bounds the spend afterwards.
+    """
+    if state.grounded_facts is None:
+        return False, "grounded facts not measured — not a licence to spend"
+    if state.grounded_facts > 0:
+        return False, f"{state.grounded_facts} grounded fact(s) to ship"
+    if not state.open_gaps:
+        return False, "nothing open to spend on"
+    # A gap that has resisted several distinct levers will resist one more.
+    # This is the clause that stops "found nothing" funding rounds forever.
+    live = [g for g in state.open_gaps if not stuck(g, state.round_index)]
+    if not live:
+        return False, "every open gap is stuck — another round buys the same nothing"
+    if state.budget.band_drawn_s > 0:
+        return False, "the band has already been drawn this turn"
+    return True, (
+        f"shipping ZERO grounded facts with {len(live)} live gap(s) — one "
+        f"round into the band rather than an empty answer"
+    )
+
+
 def may_overrun(state: RoundState) -> tuple[bool, str]:
     """May this turn spend INTO the band? Returns (allowed, why).
 
@@ -551,8 +606,18 @@ def may_overrun(state: RoundState) -> tuple[bool, str]:
     So cost relaxes on convergence alone; latency additionally requires the
     overrun to be BOUNDED by the band and not already drawn.
     """
+    _because = ""
     if not converging(state):
-        return False, "not converging: no evidence one more round closes it"
+        _weak, _why = _shipping_nothing(state)
+        if not _weak:
+            return False, f"not converging: no evidence one more round closes it ({_why})"
+        # Fall through to the band arithmetic below, which bounds the spend
+        # exactly as it does for a converging turn — but carry WHY, because the
+        # standard message says "converging ... evidence returning" and this
+        # turn is neither. A reason that names the wrong source is a reason you
+        # cannot audit, which is the defect this function already documents one
+        # paragraph down.
+        _because = _why
     need = round_cost(Posture.EXPLORE).p50_s
     left_in_band = max(0.0, state.budget.band_s - state.budget.band_drawn_s)
     if state.budget.remaining_s + left_in_band < need:
@@ -571,6 +636,8 @@ def may_overrun(state: RoundState) -> tuple[bool, str]:
              if from_band <= 0 else
              f"{from_promise:.1f}s of promise time + {from_band:.1f}s of the "
              f"{left_in_band:.1f}s band")
+    if _because:
+        return True, f"{_because}; spending {need:.1f}s from {where}"
     return True, (
         f"converging with {len(state.open_gaps)} gap(s) open and evidence "
         f"returning; spending {need:.1f}s from {where}"

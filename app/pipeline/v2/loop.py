@@ -451,6 +451,23 @@ class V2LoopResult:
 
 
 
+def _grounded_fact_count(ctx) -> int | None:
+    """How many facts carry a document, or None when we cannot tell.
+
+    None is not zero. Zero is what lets a turn spend into the band, so a
+    contract we never recorded must not read as "found nothing" — that would
+    buy a round on a telemetry gap.
+    """
+    _c = getattr(ctx, "_v2_last_contract", None)
+    if _c is None:
+        return None
+    return sum(
+        1 for f in (getattr(_c, "facts", ()) or ())
+        if (getattr(f, "fact", "") or "").strip()
+        and (getattr(f, "document", "") or "").strip()
+    )
+
+
 def _has_grounded_facts(ctx) -> bool:
     """Did this turn learn anything it could CITE?
 
@@ -479,7 +496,8 @@ def _has_grounded_facts(ctx) -> bool:
 
 def _round_state(ctx: Any, round_index: int, elapsed_s: float,
                  extensions_used: int,
-                 pending_tools: tuple[str, ...] = ()) -> P.RoundState | None:
+                 pending_tools: tuple[str, ...] = (),
+                 grounded_facts: int | None = None) -> P.RoundState | None:
     """The state this round's decision is made on.
 
     Uses shadow.state_from_ctx — the SAME builder the observer uses — so a v2
@@ -495,6 +513,7 @@ def _round_state(ctx: Any, round_index: int, elapsed_s: float,
         round_cost_s=0.0,
         acting_cost_s=0.0,
         pending_tools=pending_tools,
+        grounded_facts=grounded_facts,
     )
 
 
@@ -835,7 +854,8 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
 
         # ── 1. DECIDE, before spending anything ─────────────────────────────
         state = _round_state(ctx, rn, elapsed, extensions_used,
-                             pending_tools=tuple(t for t, _ in pending))
+                             pending_tools=tuple(t for t, _ in pending),
+                             grounded_facts=_grounded_fact_count(ctx))
         if state is None:
             # No state means no decision. Ending here is honest; guessing is
             # not. The turn still publishes through the one terminal.
