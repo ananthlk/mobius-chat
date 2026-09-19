@@ -139,3 +139,61 @@ reached and exactly when nobody has time to find out it no longer matches.
 - **`ingest_url` deliberately has none.** It publishes into the live corpus and
   there is no dry-run; migration 139 carries a `DO $$` block that fails if a
   probe row for it ever appears. Retriever has committed to the dry-run design.
+
+---
+
+## Addendum, 2026-09-19 — `mobius-platform-dev-db` serves three databases, not one
+
+Retriever is resizing `mobius-platform-dev-db` (2 vCPU/7.5GB → 4/32, Ananth
+approved), described as taking down `/documents/import-from-html`. Re-read from
+the deployed chat service — **two more things are on that instance**:
+
+```
+CHAT_RAG_DATABASE_URL = .../mobius_chat?host=/cloudsql/...mobius-platform-dev-db
+TOOLREG_DATABASE_URL  = .../mobius_rag?host=/cloudsql/...mobius-platform-dev-db
+```
+
+So a restart takes out rag's import **plus chat's own database** (thread state,
+`chat_state`, `turn_attestations`) **plus Tool Manifest's tool catalogue**
+(`tools.probe`, `tools.tool_version`). While it is down, `toolreg.v2.execute_tool`
+cannot read routes or consequence, so **every tool executed through Tool
+Manifest fails** — not only rag's.
+
+**The catalogue degrades safely. Checked, not assumed.** `execute.py:304` holds
+a 300s TTL cache whose hit condition is `if not refresh and _CAT["routes"] and
+…` — it requires **non-empty** routes. A failed load during the window therefore
+cannot be cached as "this tool has no route"; the next call retries and a worker
+that booted mid-resize recovers on its own. Worth stating explicitly because
+Tool Manifest hit the opposite shape in their MCP map days ago: a partial
+listing cached for the life of the process turned one transient boot failure
+into a permanent capability loss in that worker. The catalogue does not have
+that defect.
+
+**What the outage looks like, and what it must not be mistaken for:** tools
+return `could_not_run` (we tried, it broke — retryable), **not** `not_wired`
+(no route was ever declared — not retryable). Anyone reading "chat's tools are
+unrouted" during this window is reading the outage, not a catalogue gap. That
+the two are now distinguishable at all is migration 139 plus `e4074eb`.
+
+## Closed since the last entry
+
+The evidence-shape declaration I proposed to Tool Manifest has **shipped** —
+migrations 140 (`evidence_shape` ∈ `answer_key` | `whole_body`, with a CHECK
+that `answer_key` requires `evidence_key` and `whole_body` forbids it), 144
+(`status_empty_values`), 146. My `payor_readiness` declaration is in as
+`whole_body` + `status_key='ok'`, and 144 carries a `DO $$` assertion that fails
+if anyone changes it — correct, because `ok` is a real boolean there and
+`ok=false` (unknown payor) is an earned empty, so falsy-only is the right gate.
+
+Migration 144 is also the argument for why the owner declaration beat widening a
+generic key list. `product_help_search` answers
+`{"outcome": "docs_gap", "text": "I don't have documentation on that yet."}` —
+`"docs_gap"` is **truthy**, so a boolean-only status gate reported ANSWERED and
+dressed an honest documentation gap as an answer. A key list matching on `text`
+would have done the same. Found by running the tool, not by reading it.
+
+**Still unverified:** whether `payor_readiness` now returns `evidence` rather
+than `could_not_run` through the executor. That needs the database, which is
+mid-resize. Holding until Retriever confirms it is back — and the first call
+after a restart measures the connection, not the service, so that check is worth
+running twice.

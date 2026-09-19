@@ -191,6 +191,8 @@
     /* Declared but not answering at sweep time. Shown, not hidden — a surface
        someone declared and nobody can reach is worth seeing. */
     .surface-chip.dead { background: rgba(248,113,113,0.10); color: #fca5a5; cursor: help; }
+    /* A page template (/dashboard/{payor}); real, but not linkable as-is. */
+    .surface-chip.tmpl { background: rgba(148,163,184,0.12); color: #cbd5e1; cursor: help; }
     .surface-dead { margin-left: 5px; font-size: 9px; opacity: .85; font-weight: 600; }
     .components { margin-top: 11px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 9px; }
     /* Service name and stage on one line, description beneath. Side-by-side
@@ -941,7 +943,17 @@
         return null;
       }
       function surfaceChip(m, s) {
-        var body = esc(s.name) + '<span class="surface-path">' + esc(s.path) + '</span>';
+        // Don't print the path twice when discovery supplied no friendlier name.
+        var body = (s.name && s.name !== s.path)
+          ? esc(s.name) + '<span class="surface-path">' + esc(s.path) + '</span>'
+          : '<span class="surface-path">' + esc(s.path) + '</span>';
+        // A parameterised route is a page TEMPLATE. It was probed with a
+        // synthetic value, so its 404 is expected and means nothing; it is
+        // neither a dead page nor a link, because {payor} is not a destination.
+        if (typeof s.path === 'string' && s.path.indexOf('{') !== -1) {
+          return '<span class="surface-chip tmpl" title="page template — needs a real value in ' +
+                 esc(s.path) + '">' + body + '<span class="surface-dead">template</span></span>';
+        }
         // The sweep resolved and PROBED each declared surface, so link from the
         // probe rather than from the declaration. Three declared surfaces do not
         // answer today; offering them as links would be the page asserting
