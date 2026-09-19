@@ -33,13 +33,28 @@ def test_the_model_proposing_complete_is_an_INPUT_not_the_decision():
     stopped after round 2 with 62.6s of a 95s promise left, two gaps open, and
     v2 saying EXPLORE into a void. Here the proposal is recorded and the
     governor gets the next round to disagree.
+
+    🔴 THIS TEST WAS POSITIONAL AND BROKE ON AN UNRELATED EDIT.
+
+    It took `code.index(...)` of the FIRST `is_complete` and asserted over the
+    next 900 characters. When the rung-0 exit added an earlier `is_complete`
+    branch, the window moved onto the new code and the test failed while the
+    property it guards was untouched — a fingerprint, not a property.
+
+    Rewritten to assert the property over EVERY such branch: at least one of
+    them must record-and-continue, and the branch that ENDS the turn must
+    require the model to report nothing left open.
     """
+    import re
+
     code = _code()
-    i = code.index('decision_json.get("is_complete")')
-    block = code[i:i + 900]
-    assert "continue" in block, "is_complete still ends the turn immediately"
-    # it may only break when the model itself reports nothing left open
-    assert "_no_gaps_left" in block
+    spans = [m.start() for m in re.finditer(r'decision_json\.get\("is_complete"\)', code)]
+    assert spans, "no is_complete branch at all"
+    blocks = [code[i:i + 1400] for i in spans]
+    assert any("continue" in b for b in blocks), (
+        "is_complete still ends the turn immediately")
+    assert any("_no_gaps_left" in b for b in blocks), (
+        "nothing requires the model to report no gaps left before the turn ends")
 
 
 def test_the_loop_can_EXTEND_not_only_stop():

@@ -450,6 +450,19 @@ class V2LoopResult:
         self.answer: str = ""
 
 
+
+def _has_grounded_facts(ctx) -> bool:
+    """Did this turn learn anything it could CITE?
+
+    Structural, not textual. A turn that completes with an empty `facts`
+    tuple has nothing with a document and page behind it, whatever its prose
+    says — which is the same signal `verify` already uses to decide there is
+    nothing to check ("no facts with a document and page").
+    """
+    _c = getattr(ctx, "_v2_last_contract", None)
+    return bool(getattr(_c, "facts", ()) or ())
+
+
 def _round_state(ctx: Any, round_index: int, elapsed_s: float,
                  extensions_used: int,
                  pending_tools: tuple[str, ...] = ()) -> P.RoundState | None:
@@ -782,6 +795,8 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
     ]
     last_tool: str | None = None
     unusable = 0
+    # One reach for a document per turn; see the rung-0 note below.
+    _reached_for_a_document = False
     extensions_used = 0
 
     emit("starting v2 (governor loop)…")
@@ -1020,6 +1035,19 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             if _suffix:
                 user = (user or "") + _suffix
 
+            # The rung-0 exit set this on the previous round: what we held did
+            # not answer, and we have not yet asked whether we can NAME a
+            # document. Deep Research owns the wording; we read it.
+            if getattr(ctx, "_v2_name_a_document", False):
+                try:
+                    from app.pipeline.v2 import ladder as _ladder
+                    _rung = _ladder.name_a_document_block()
+                    if _rung:
+                        user = (user or "") + _rung
+                except Exception:   # a rung must never end a turn
+                    logger.warning("[v2.loop] ladder rung failed", exc_info=True)
+                ctx._v2_name_a_document = False
+
             _llm_t0 = time.monotonic()
             raw = _call_llm_json(system, user, max_tokens=2048, ctx=ctx,
                                  stage=f"react_{rn}")
@@ -1083,6 +1111,45 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         _record_contract(ctx, decision_json, _preloaded, tool_results)
         tool = (decision_json.get("tool") or "").strip() or None
         answer = (decision_json.get("answer") or "").strip()
+
+        # 🔴 RUNG 0 IS NOT THE LADDER. The escalation question has TWO parts —
+        # "does what I am holding answer this, with a sentence I can quote?
+        # and if NOT, can I NAME a document?" — and this loop only ever asked
+        # the first. It answered "no" and completed.
+        #
+        # Measured on the A/B: v2 ran NO retrieval at all on 11 of 15 turns
+        # and issued 5 distinct queries where v1 issued 24. Live case, "does
+        # Aetna cover doula services": v1 retrieved twice and answered from
+        # the second query; v2 answered from preload alone with "not found in
+        # the available materials" while the corpus held it. v2's honesty was
+        # intact and its recall was not.
+        #
+        # THE PROMPT IS NOT THE GAP. Given the same not-found evidence, EXPLORE
+        # plans fetch_document 4 times out of 4 — measured directly against the
+        # live model. The model knows the move. It was never given the round.
+        #
+        # NOT KEYED ON THE WORDING OF THE ANSWER. "not found", "is not
+        # specified" and their cousins are prose, and matching prose is the
+        # defect this file has shipped four times. The signal is structural:
+        # the contract carries NO grounded facts, so the turn is completing
+        # without having learned anything it can cite.
+        #
+        # ONCE, and only while affordable. A second refusal is the model
+        # telling us the same thing twice, and paying for it again is how a
+        # retry becomes a loop.
+        if (decision_json.get("is_complete") and answer
+                and not _reached_for_a_document
+                and not _has_grounded_facts(ctx)):
+            _round_cost = float(getattr(state, "next_round_cost_s", 0.0) or 0.0)
+            if _round_cost > 0.0 and _left >= _round_cost:
+                _reached_for_a_document = True
+                ctx._v2_name_a_document = True   # read by the next prompt
+                logger.info(
+                    "[v2.loop] cid=%s completing with NO grounded facts and "
+                    "%.1fs left — one round to NAME a document before "
+                    "reporting absence",
+                    (getattr(ctx, "correlation_id", "") or "")[:8], _left)
+                continue
 
         if decision_json.get("is_complete") and answer:
             # THE MODEL SAYS IT IS DONE. In v1 this ends the turn. Here it is
