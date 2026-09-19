@@ -27,9 +27,34 @@ class TestTheSignalIsStructuralNotTextual:
         the defect this file has shipped four times. The signal is an empty
         facts tuple: the turn is completing without anything it can cite."""
         from types import SimpleNamespace as NS
+
+        from app.pipeline.v2.contract import Fact
+
         assert LOOP._has_grounded_facts(NS(_v2_last_contract=NS(facts=()))) is False
         assert LOOP._has_grounded_facts(NS(_v2_last_contract=None)) is False
-        assert LOOP._has_grounded_facts(NS(_v2_last_contract=NS(facts=(1,)))) is True
+        assert LOOP._has_grounded_facts(
+            NS(_v2_last_contract=NS(facts=(Fact("x", "Doc.pdf", 3, "id"),)))) is True
+
+    def test_a_fact_with_NO_DOCUMENT_does_not_count_as_grounded(self):
+        """🔴 THE MISS THAT MADE THE FIRST FIX INERT.
+
+        Live turn 31fa6200, the doula question, on the build that was supposed
+        to fix this: the model emitted facts, NONE carried a document, and
+        `verify` on that same turn logged "no facts with a document and page".
+        My predicate returned True on `bool(facts)`, so the rung-0 exit never
+        fired and the answer came back "not specified" with 9 sources again.
+
+        Two consumers of one contract, disagreeing about whether the turn had
+        learned anything, because I used a weaker bar than the one three lines
+        away.
+        """
+        from types import SimpleNamespace as NS
+
+        from app.pipeline.v2.contract import Fact
+
+        ungrounded = (Fact("doulas are not listed", "", None, ""),)
+        assert LOOP._has_grounded_facts(
+            NS(_v2_last_contract=NS(facts=ungrounded))) is False
 
     def test_the_exit_does_not_match_on_answer_wording(self):
         src = pathlib.Path(LOOP.__file__).read_text()

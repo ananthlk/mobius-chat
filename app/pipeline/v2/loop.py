@@ -454,13 +454,27 @@ class V2LoopResult:
 def _has_grounded_facts(ctx) -> bool:
     """Did this turn learn anything it could CITE?
 
-    Structural, not textual. A turn that completes with an empty `facts`
-    tuple has nothing with a document and page behind it, whatever its prose
-    says — which is the same signal `verify` already uses to decide there is
-    nothing to check ("no facts with a document and page").
+    Structural, not textual — the wording of the answer is prose and matching
+    prose is the defect this file has shipped four times.
+
+    🔴 A FACT WITHOUT A DOCUMENT IS NOT GROUNDED.
+
+    My first version returned `bool(facts)` and it read the doula turn as
+    grounded: the model emitted facts, NONE carried a document, and `verify`
+    on that same turn reported "no facts with a document and page". Two
+    consumers of one contract disagreeing about whether the turn learned
+    anything, because I picked the weaker test.
+
+    The contract's own parser already names this — a fact with no document is
+    recorded as a PROBLEM, not as evidence. So use the bar `verify` uses,
+    which is the bar that makes a fact checkable at all.
     """
     _c = getattr(ctx, "_v2_last_contract", None)
-    return bool(getattr(_c, "facts", ()) or ())
+    return any(
+        (getattr(f, "fact", "") or "").strip()
+        and (getattr(f, "document", "") or "").strip()
+        for f in (getattr(_c, "facts", ()) or ())
+    )
 
 
 def _round_state(ctx: Any, round_index: int, elapsed_s: float,
