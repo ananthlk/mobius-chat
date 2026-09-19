@@ -216,7 +216,8 @@ def _targeting(gaps: list[str], query: str | None) -> dict[str, bool]:
 
 def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
                    promise_latency_s: float, round_cost_s: float,
-                   acting_cost_s: float) -> RoundState | None:
+                   acting_cost_s: float,
+                   pending_tools: tuple[str, ...] = ()) -> RoundState | None:
     """Build v2's RoundState from what v1 already produces.
 
     R0 needs no new writes: the gap text v1 already emits per round
@@ -359,6 +360,7 @@ def state_from_ctx(ctx, *, round_index: int, elapsed_s: float,
         )
         remaining = max(0.0, promise_latency_s - elapsed_s)
         return RoundState(
+            pending_tools=tuple(pending_tools or ()),
             question=str(getattr(ctx, "message", "") or ""),
             round_index=round_index,
             open_gaps=gaps,

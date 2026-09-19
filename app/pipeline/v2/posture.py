@@ -361,6 +361,20 @@ class RoundState:
     # row that reports what was opened and never what was closed cannot show
     # whether a round bought anything.
     gaps_closed: tuple[str, ...] = ()
+    #: Tools CHOSEN for the next round and not yet executed.
+    #:
+    #: 🔴 A QUEUED ATTEMPT IS NOT A FAILED ATTEMPT. exit_mode() calls a gap
+    #: `exhausted` when every attempt on it RAN and returned nothing — which is
+    #: correct about attempts already made, and silent about one we have
+    #: decided to make and not yet run. Live turn 4d97dad2 declared CAPABILITY
+    #: ("I have no source for this") with 4 gaps open, 60.3s of budget left,
+    #: and `service_line_search` sitting in the queue. It dropped the tool on
+    #: the way out and reported the gap unreachable without running the source
+    #: it had already chosen.
+    #:
+    #: Empty by default so a caller that does not know about pending work
+    #: behaves exactly as before.
+    pending_tools: tuple[str, ...] = ()
 
 
 _IMPORTANCE_ORDER = {"low": 0, "normal": 1, "high": 2}
@@ -873,6 +887,20 @@ def exit_mode(state: RoundState) -> ExitMode:
     def exhausted(g: Gap) -> bool:
         _tried = targeted_attempts(g)
         return bool(_tried) and not any(a.returned_payload for a in _tried)
+
+    # 🔴 NOTHING IS EXHAUSTED WHILE AN ATTEMPT IS STILL QUEUED.
+    #
+    # CAPABILITY is terminal and tells the person we cannot reach this at all
+    # (offers_continuation is False for it). Saying that with a chosen,
+    # unexecuted tool in hand is a could-not-check reported as a checked-false,
+    # and it is the most expensive version of that error because it closes the
+    # turn AND tells the user not to expect more.
+    #
+    # BUDGET is the honest reading: we had somewhere left to look and stopped.
+    # It is also the one the executor can act on — its overrule declines to
+    # extend on CAPABILITY and will extend on BUDGET.
+    if state.pending_tools:
+        return ExitMode.BUDGET
 
     if all(exhausted(g) for g in material):
         return ExitMode.CAPABILITY

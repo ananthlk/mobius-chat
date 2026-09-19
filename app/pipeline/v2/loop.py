@@ -426,7 +426,8 @@ class V2LoopResult:
 
 
 def _round_state(ctx: Any, round_index: int, elapsed_s: float,
-                 extensions_used: int) -> P.RoundState | None:
+                 extensions_used: int,
+                 pending_tools: tuple[str, ...] = ()) -> P.RoundState | None:
     """The state this round's decision is made on.
 
     Uses shadow.state_from_ctx — the SAME builder the observer uses — so a v2
@@ -441,6 +442,7 @@ def _round_state(ctx: Any, round_index: int, elapsed_s: float,
         promise_latency_s=sh.promise_seconds(ctx, None),
         round_cost_s=0.0,
         acting_cost_s=0.0,
+        pending_tools=pending_tools,
     )
 
 
@@ -778,7 +780,8 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
             break
 
         # ── 1. DECIDE, before spending anything ─────────────────────────────
-        state = _round_state(ctx, rn, elapsed, extensions_used)
+        state = _round_state(ctx, rn, elapsed, extensions_used,
+                             pending_tools=tuple(t for t, _ in pending))
         if state is None:
             # No state means no decision. Ending here is honest; guessing is
             # not. The turn still publishes through the one terminal.
