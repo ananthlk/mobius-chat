@@ -54,7 +54,27 @@ logger = logging.getLogger(__name__)
 #: hallucinates less, and this change moves the metric in v2's favour. It is
 #: argued from operator cost and from the measured inversion above, not from
 #: the A/B — and it would have to hold if the arms were reversed.
-HARD_FLAG_CEILING = 0.35
+
+#: 🔴 REVERTED FROM 0.35 BACK TO 0.6 — the ordering constraint was right and
+#: this mechanism was the wrong way to enforce it.
+#:
+#: At 0.35 the ceiling stopped being a bound and became THE SCORE. Measured on
+#: a clean run (15 pairs, resized DB): v2 took 6 hard flags and FIVE turns
+#: landed on exactly 0.35 — Q4, Q5, Q7, Q8, Q12 — three of which the
+#: adjudicator had graded PASS. A third of one arm reporting one identical
+#: number is not a measurement of those turns.
+#:
+#: The ordering claim still holds and is still worth enforcing: a fabricated
+#: fact should not outrank an honest refusal, because a wrong deadline costs a
+#: missed appeal and a dead end costs a phone call. What it needs is a rule
+#: that caps a flag's CONTRIBUTION while preserving the spread between turns,
+#: not a hard clamp that flattens them onto the bound.
+#:
+#: Reverting rather than iterating, deliberately: I have changed this
+#: instrument twice in a day, the second change made it worse, and I am the
+#: one being measured by it. The baseline is the version whose behaviour we
+#: have four runs of.
+HARD_FLAG_CEILING = 0.6
 
 def _tool_fired_from_log(thinking_lines: list[str]) -> str:
     for line in reversed(thinking_lines or []):
