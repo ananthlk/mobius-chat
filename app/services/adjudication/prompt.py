@@ -42,12 +42,19 @@ PER-ROUND SCORING (ReAct pipelines):
   Score 0.0–1.0 per round. Round 1 and round 4 are very different — evaluate each independently.
   Include only stages that exist in LLM_CHAIN. Omit stage_scores if no react_* stages.
 
-Return ONLY valid JSON matching this exact schema:
+Return ONLY valid JSON matching this exact schema.
+
+🔴 THE FIRST FOUR KEYS ARE THE GRADE. EMIT THEM FIRST, IN THIS ORDER.
+A response that runs out of room must lose sub_scores and stage_scores,
+never the verdict — a truncated grade with sub_scores and no verdict
+cannot be read at all, while a verdict with no sub_scores is still a
+grade. Do not reorder these.
 {
-  "sub_scores": { "<dimension>": float_or_null, ... },
-  "overall_score": float,
   "verdict": "PASS"|"PARTIAL"|"FAIL",
+  "overall_score": float,
   "rationale": "one sentence",
+  "flags": ["FLAG1", "FLAG2"],
+  "sub_scores": { "<dimension>": float_or_null, ... },
   "attribution": {
     "failure_stage": "planner"|"rag"|"integrator"|"classifier"|null,
     "failure_reason": "one sentence or null",
@@ -56,7 +63,6 @@ Return ONLY valid JSON matching this exact schema:
     "is_integrator_fault": bool,
     "is_no_fault": bool
   },
-  "flags": ["FLAG1", "FLAG2"],
   "stage_scores": { "react_1": float, "react_2": float, ... } | null
 }"""
 
