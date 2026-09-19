@@ -144,8 +144,8 @@ reached and exactly when nobody has time to find out it no longer matches.
 
 ## Addendum, 2026-09-19 — `mobius-platform-dev-db` serves three databases, not one
 
-Retriever is resizing `mobius-platform-dev-db` (2 vCPU/7.5GB → 4/32, Ananth
-approved), described as taking down `/documents/import-from-html`. Re-read from
+Retriever is resizing `mobius-platform-dev-db` (2 vCPU/7.5GB → `db-custom-4-26624`, i.e. 4 vCPU/**26**GB — I wrote 32 here
+first, from the plan rather than the result; Ananth approved), described as taking down `/documents/import-from-html`. Re-read from
 the deployed chat service — **two more things are on that instance**:
 
 ```
@@ -197,3 +197,44 @@ than `could_not_run` through the executor. That needs the database, which is
 mid-resize. Holding until Retriever confirms it is back — and the first call
 after a restart measures the connection, not the service, so that check is worth
 running twice.
+
+### Post-resize verification (2026-09-19)
+
+Instance back as `db-custom-4-26624`. Ran the deferred check.
+
+**`payor_readiness` now returns `evidence` in 339ms.** It previously returned
+`could_not_run` — *"200 with a dict this executor cannot read as evidence"* —
+because the executor matched a fixed list of generic envelope keys and payor
+returns a flat domain object. The owner declaration (`evidence_shape='whole_body'`,
+`status_key='ok'`) closed it. That is the whole argument for owner declarations
+over a widened key list, confirmed end to end rather than reasoned about.
+
+**And it caught three errors of my own.** `healthcare_query` came back
+`could_not_run` at 20135ms — *"no response in 20000ms"* — which reads exactly
+like a service that had not recovered from the restart. It had: four warm calls
+ran 1.03–2.85s, raw HTTP 1.05–1.37s. The 20s was the executor's default timeout
+meeting a cold Cloud Run instance.
+
+Which indicted migration 139. Every number I wrote there was a **first call**:
+
+| tool | 139 recorded | warm (discard 1, then 3) | |
+|---|---|---|---|
+| `healthcare_query` | 12.65s | 1.09 / 1.11 / 1.20 | **11× over** |
+| `web_scrape` | 9.17s | 0.227 / 0.227 / 0.227 | **40× over** |
+| `healthcare_npi_lookup` | 4.10s | 4.98 / 6.27 / 5.43 | **under** |
+| `payor_readiness` | 0.28s | 0.26 / 0.24 / 0.22 | accurate |
+
+Two of those rows carried an explicit instruction — *"set the timeout above it
+or this will read as a failure"* — which is advice to make a probe runner **less
+sensitive to a hang**, derived from a cold start. A generous timeout on a 0.227s
+tool cannot tell a wedged scraper from a working one for forty seconds. Corrected
+in tool-manifest migration **151**; `payor_readiness` deliberately untouched,
+with a `DO $$` block that fails if it was, because restating a correct row would
+date a 09-14 measurement to 09-19.
+
+`healthcare_npi_lookup` is the row worth keeping: the only one whose warm time is
+**worse** than recorded, and ~5× `healthcare_query` on the *same* endpoint and
+service. The cost is in the **argument**, not the route — an NPI-shaped question
+makes that service search and miss, an ICD-10 code is a lookup that hits. It is
+the one chat route where a raised timeout is genuinely warranted, which is the
+opposite of what 139 implied for the other two.
