@@ -1174,7 +1174,23 @@ def run_react_v2(ctx: Any, emitter: Any = None) -> None:
         if (decision_json.get("is_complete") and answer
                 and not _reached_for_a_document
                 and not _has_grounded_facts(ctx)):
-            _round_cost = float(getattr(state, "next_round_cost_s", 0.0) or 0.0)
+            # 🔴 THIS BRANCH WAS DEAD FOR ITS ENTIRE LIFE.
+            #
+            # It read `next_round_cost_s or 0.0` and required `> 0.0`. The
+            # loop passes round_cost_s=0.0 into state_from_ctx on EVERY round,
+            # so the cost is ALWAYS 0.0 and the condition was always False.
+            # Three deploys, three live tests, and the log line never once
+            # appeared — because it could not.
+            #
+            # The rule I was applying is right — an unknown cost is not a
+            # licence to spend — but the value is unknown ALWAYS, so applying
+            # it here made the branch unreachable rather than careful.
+            # `spendable()` meets the same situation and falls back to the
+            # measured table, which is what "unknown" should mean here too:
+            # use the proxy, do not treat it as free and do not treat it as
+            # infinite.
+            _round_cost = (float(getattr(state, "next_round_cost_s", 0.0) or 0.0)
+                           or P.round_cost(P.Posture.EXPLORE).p50_s)
             if _round_cost > 0.0 and _left >= _round_cost:
                 _reached_for_a_document = True
                 ctx._v2_name_a_document = True   # read by the next prompt

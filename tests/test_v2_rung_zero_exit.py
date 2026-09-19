@@ -125,3 +125,49 @@ class TestTheRungIsReadNotCopied:
              "odds": "27%", "settled": 164}])
         out = L.name_a_document_block()
         assert "27%" not in out and "164" not in out
+
+
+class TestTheBranchIsNotDEAD:
+    """🔴 IT WAS DEAD FOR ITS ENTIRE LIFE.
+
+    The guard read `next_round_cost_s or 0.0` and required `> 0.0`. The loop
+    passes `round_cost_s=0.0` into state_from_ctx on EVERY round, so the cost
+    is ALWAYS 0.0 and the condition was ALWAYS False. Three deploys, three
+    live doula turns, and the log line never appeared once — because it could
+    not.
+
+    A guard with no reachable true-branch is the same defect as a gate with
+    no caller, and I shipped it while believing I had tested it.
+    """
+
+    def test_the_value_the_loop_actually_passes_does_not_kill_the_branch(self):
+        """The loop's real argument is 0.0 — assert the cost used is still
+        positive with that input, or the branch is unreachable again."""
+        import pathlib
+        import re
+
+        import app.pipeline.v2.loop as L
+        from app.pipeline.v2 import posture as P
+
+        src = pathlib.Path(L.__file__).read_text()
+        assert "round_cost_s=0.0" in src, (
+            "premise changed: the loop no longer passes 0.0, so re-derive this")
+        # what the branch computes when next_round_cost_s is the real 0.0
+        effective = 0.0 or P.round_cost(P.Posture.EXPLORE).p50_s
+        assert effective > 0.0, (
+            "with the loop's actual argument the round cost is 0.0 and the "
+            "affordability guard can never pass — the branch is dead")
+
+    def test_it_falls_back_rather_than_treating_unknown_as_free(self):
+        """Unknown must not mean zero-cost either: that would buy rounds the
+        budget cannot fund, which is the opposite failure."""
+        import pathlib
+
+        import app.pipeline.v2.loop as L
+
+        src = pathlib.Path(L.__file__).read_text()
+        i = src.index("_round_cost = (")
+        window = src[i:i + 260]
+        assert "round_cost(" in window, (
+            "no fallback to the measured table — unknown cost is being "
+            "treated as a literal, in one direction or the other")
